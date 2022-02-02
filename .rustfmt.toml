@@ -1,0 +1,13 @@
+edition = "2021"
+max_width = 120
+imports_granularity = "Module"
+imports_layout = "HorizontalVertical"
+newline_style = "Unix"
+normalize_comments = true
+normalize_doc_attributes = true
+brace_style = "PreferSameLine"
+use_small_heuristics = "Max"
+match_block_trailing_comma = true
+overflow_delimited_expr = true
+reorder_impl_items = true
+group_imports = "StdExternalCrate"

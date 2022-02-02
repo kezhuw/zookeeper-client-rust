@@ -1,0 +1,72 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+env:
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install latest nightly
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: nightly
+          override: true
+          components: rustfmt
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: Swatinem/rust-cache@v1
+    - name: Install rust stable
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          override: true
+    - name: Build code
+      run: cargo build
+  test:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: Swatinem/rust-cache@v1
+    - name: Install rust stable
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          override: true
+    - name: Test code
+      run: cargo test
+  lint:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: Swatinem/rust-cache@v1
+    - name: Install rust stable
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          override: true
+          components: clippy
+    - name: Lint code
+      run: cargo clippy --no-deps -- -D clippy::all
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, test, lint]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: Swatinem/rust-cache@v1
+    - name: publish crate
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      run: cargo publish
