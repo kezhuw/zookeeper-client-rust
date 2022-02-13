@@ -49,8 +49,11 @@ assert_eq!(session_event.session_state, zk::SessionState::Closed);
 For more examples, see [zookeeper.rs](tests/zookeeper.rs).
 
 ## TODO
-[ ] Drop for PersistentWatcher
-[ ] Sasl authentication
+* [ ] `Drop` for PersistentWatcher
+* [ ] Sasl authentication
 
 ## License
 The MIT License (MIT). See [LICENSE](LICENSE) for the full license text.
+
+## References
+* [ZooKeeper Documentation](https://zookeeper.apache.org/doc/current/index.html)
