@@ -4,6 +4,17 @@
 [![github-ci](https://img.shields.io/github/workflow/status/kezhuw/zookeeper-client-rust/CI?style=for-the-badge)](https://github.com/kezhuw/zookeeper-client-rust/actions)
 [![mit-license](https://img.shields.io/github/license/kezhuw/zookeeper-client-rust?style=for-the-badge)](LICENSE)
 
+ZooKeeper client writes in async rust.
+
+## Features
+* No callbacks.
+* No catch-all watcher.
+* `StateWatcher` trackes session state updates.
+* `OneshotWatcher` tracks oneshot ZooKeeper node event.
+* `PersistentWatcher` tracks persistent and recursive persistent ZooKeeper node events.
+* No event type `XyzWatchRemoved` as there is no way to receive such event after watchers dropped.
+* Cloneable `Client` and `Client::chroot` enables session sharing cross multiple different rooted clients.
+
 ## Examples
 ```rust
 use std::time::Duration;
