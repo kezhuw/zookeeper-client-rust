@@ -1,4 +1,8 @@
 # ZooKeeper client in async rust
+[![crates.io](https://img.shields.io/crates/v/zookeeper-client?style=for-the-badge)](https://crates.io/crates/zookeeper-client)
+[![docs.rs](https://img.shields.io/docsrs/zookeeper-client?style=for-the-badge)](https://docs.rs/zookeeper-client)
+[![github-ci](https://img.shields.io/github/workflow/status/kezhuw/zookeeper-client-rust/CI?style=for-the-badge)](https://github.com/kezhuw/zookeeper-client-rust/actions)
+[![mit-license](https://img.shields.io/github/license/kezhuw/zookeeper-client-rust?style=for-the-badge)](LICENSE)
 
 ## Examples
 ```rust
