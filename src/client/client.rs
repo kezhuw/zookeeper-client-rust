@@ -628,7 +628,10 @@ impl Client {
     /// * Session activities.
     ///
     /// # Cautions
-    /// Holds returned watcher without polling events may result in memory burst.
+    /// * Holds returned watcher without polling events may result in memory burst.
+    /// * See [ZOOKEEPER-4466](https://issues.apache.org/jira/browse/ZOOKEEPER-4466) for
+    /// interferences among different watch modes for same path or paths with parent-child
+    /// relationship.
     pub async fn watch(&self, path: &str, mode: AddWatchMode) -> Result<PersistentWatcher, Error> {
         let (leaf, _) = self.validate_path(path)?;
         let proto_mode = proto::AddWatchMode::from(mode);
