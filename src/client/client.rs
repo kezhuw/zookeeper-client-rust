@@ -495,7 +495,7 @@ impl Client {
         let request = GetChildrenRequest { path: RootedPath::new(&self.root, leaf), watch };
         let (body, watcher) = self.request(OpCode::GetChildren, &request).await?;
         let mut buf = body.as_slice();
-        let children = record::unmarshal_entity::<Vec<&str>>(&"children pathes", &mut buf)?;
+        let children = record::unmarshal_entity::<Vec<&str>>(&"children paths", &mut buf)?;
         let children = children.into_iter().map(|child| child.to_owned()).collect();
         return Ok((children, watcher));
     }

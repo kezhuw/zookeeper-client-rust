@@ -239,7 +239,7 @@ async fn test_ephemerals() {
     // List ephemerals from ephemeral node path.
     assert_eq!(vec![child_path], client.list_ephemerals(child_path).await.unwrap().into_sorted());
 
-    // Ephemeral pathes are located at client root but not ZooKeeper root.
+    // Ephemeral paths are located at client root but not ZooKeeper root.
     let path_ephemerals: Vec<_> =
         root_ephemerals.iter().filter(|p| p.strip_prefix(path).is_some()).map(|p| p.to_string()).collect();
 
