@@ -332,7 +332,7 @@ impl Client {
         return Ok(self);
     }
 
-    async fn request(&self, code: OpCode, body: &dyn Record) -> Result<(Vec<u8>, WatchReceiver), Error> {
+    async fn request(&self, code: OpCode, body: &impl Record) -> Result<(Vec<u8>, WatchReceiver), Error> {
         let (operation, receiver) = operation::build_state_operation(code, body);
         if self.requester.send(operation).await.is_err() {
             let state = self.state();

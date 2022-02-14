@@ -18,8 +18,7 @@ fn zookeeper_image() -> GenericImage {
         .with_wait_for(WaitFor::message_on_stdout("PrepRequestProcessor (sid:"));
 }
 
-#[tokio::test]
-async fn test_example() {
+async fn example() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
     let zk_port = zookeeper.get_host_port(2181).unwrap();
@@ -63,6 +62,11 @@ async fn test_example() {
     let session_event = event_watcher.changed().await;
     assert_eq!(session_event.event_type, zk::EventType::Session);
     assert_eq!(session_event.session_state, zk::SessionState::Closed);
+}
+
+#[tokio::test]
+async fn test_example() {
+    tokio::spawn(example()).await.unwrap()
 }
 
 #[tokio::test]
