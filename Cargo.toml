@@ -14,17 +14,13 @@ categories = ["api-bindings"]
 [dependencies]
 bytes = "1.1.0"
 tokio = {version = "1.15.0", features = ["full"]}
-async-trait = "0.1.52"
 thiserror = "1.0.30"
 strum = { version = "0.23", features = ["derive"] }
 num_enum = "0.5.6"
-# enum-kinds = "0.5.1"
-# enum_dispatch = "0.3.7"
 ignore-result = "0.2.0"
 compact_str = "0.2.0"
 const_format = "0.2.22"
 log = "0.4.14"
-futures = "0.3.19"
 
 [dev-dependencies]
 rand = "0.8.4"
