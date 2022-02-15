@@ -1,5 +1,5 @@
-use thiserror::Error;
 use static_assertions::assert_impl_all;
+use thiserror::Error;
 
 /// Errors for ZooKeeper operations.
 #[non_exhaustive]
