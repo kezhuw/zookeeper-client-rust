@@ -1,4 +1,5 @@
 use thiserror::Error;
+use static_assertions::assert_impl_all;
 
 /// Errors for ZooKeeper operations.
 #[non_exhaustive]
@@ -77,6 +78,8 @@ pub enum Error {
     ClientClosed,
 }
 
+assert_impl_all!(Error: Send, Sync);
+
 impl From<std::convert::Infallible> for Error {
     fn from(_: std::convert::Infallible) -> Error {
         unreachable!();
@@ -99,8 +102,10 @@ pub enum ConnectError {
     Timeout,
 
     #[error(transparent)]
-    Other(#[from] Box<dyn std::error::Error>),
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
+
+assert_impl_all!(ConnectError: Send, Sync);
 
 impl From<Error> for ConnectError {
     fn from(err: Error) -> ConnectError {
