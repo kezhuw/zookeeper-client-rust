@@ -7,7 +7,7 @@ description = "ZooKeeper async client"
 homepage = "https://github.com/kezhuw/zookeeper-client-rust/"
 repository = "https://github.com/kezhuw/zookeeper-client-rust/"
 documentation = "https://docs.rs/zookeeper-client/"
-license-file = "LICENSE"
+license = "MIT"
 keywords = ["ZooKeeper"]
 categories = ["api-bindings"]
 
