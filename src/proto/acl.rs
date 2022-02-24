@@ -35,7 +35,7 @@ impl TryFrom<i32> for Permission {
         if (raw & !all_bits) != 0 {
             return Err(InvalidData(&""));
         }
-        return Ok(Permission::from_raw(raw));
+        Ok(Permission::from_raw(raw))
     }
 }
 
@@ -48,7 +48,7 @@ impl DeserializableRecord<'_> for Acl {
         let id: &str = record::deserialize(buf)?;
         let permission = Permission::try_from(perms)?;
         let auth_id = AuthId::new(scheme, id);
-        return Ok(Acl::new(permission, auth_id));
+        Ok(Acl::new(permission, auth_id))
     }
 }
 
@@ -68,7 +68,7 @@ impl SerializableRecord for SetAclRequest<'_> {
 
 impl DynamicRecord for SetAclRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return self.path.serialized_len() + self.acl.serialized_len() + self.version.serialized_len();
+        self.path.serialized_len() + self.acl.serialized_len() + self.version.serialized_len()
     }
 }
 
@@ -83,6 +83,6 @@ impl DeserializableRecord<'_> for GetAclResponse {
     fn deserialize(buf: &mut ReadingBuf) -> Result<Self, Self::Error> {
         let acl = record::deserialize::<Vec<Acl>>(buf)?;
         let stat = record::deserialize::<Stat>(buf)?;
-        return Ok(GetAclResponse { acl, stat });
+        Ok(GetAclResponse { acl, stat })
     }
 }

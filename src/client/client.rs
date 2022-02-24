@@ -44,11 +44,11 @@ pub enum CreateMode {
 
 impl CreateMode {
     fn is_sequential(self) -> bool {
-        return self == CreateMode::PersistentSequential || self == CreateMode::EphemeralSequential;
+        self == CreateMode::PersistentSequential || self == CreateMode::EphemeralSequential
     }
 
     fn is_container(self) -> bool {
-        return self == CreateMode::Container;
+        self == CreateMode::Container
     }
 
     fn as_flags(self, ttl: bool) -> i32 {
@@ -109,7 +109,7 @@ const TTL_MAX_MILLIS: u128 = 0x00FFFFFFFFFF;
 impl<'a> CreateOptions<'a> {
     /// Constructs options with specified create mode and acls.
     pub fn new(mode: CreateMode, acls: &'a [Acl]) -> CreateOptions<'a> {
-        return CreateOptions { mode, acls, ttl: None };
+        CreateOptions { mode, acls, ttl: None }
     }
 
     /// Specifies ttl for persistent node.
@@ -131,7 +131,7 @@ impl<'a> CreateOptions<'a> {
         if self.acls.is_empty() {
             return Err(Error::InvalidAcl);
         }
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -155,13 +155,13 @@ pub struct StateWatcher {
 
 impl StateWatcher {
     fn new(receiver: watch::Receiver<SessionState>) -> StateWatcher {
-        return StateWatcher { receiver };
+        StateWatcher { receiver }
     }
 
     /// Returns and consumes most recently state.
     pub fn state(&mut self) -> SessionState {
         let state = self.receiver.borrow_and_update();
-        return *state;
+        *state
     }
 
     /// Waits until state changed and returns consumed state.
@@ -169,13 +169,13 @@ impl StateWatcher {
     /// This method will block indefinitely after one of terminal states consumed.
     pub async fn changed(&mut self) -> SessionState {
         self.receiver.changed().await.unwrap();
-        return self.state();
+        self.state()
     }
 
     /// Returns but not consumes most recently state.
     pub fn peek_state(&self) -> SessionState {
         let state = self.receiver.borrow();
-        return *state;
+        *state
     }
 }
 
@@ -191,7 +191,7 @@ impl OneshotWatcher {
     pub async fn changed(self) -> WatchedEvent {
         let mut event = self.receiver.await.unwrap();
         event.drain_root_len(self.root_len);
-        return event;
+        event
     }
 }
 
@@ -210,7 +210,7 @@ impl PersistentWatcher {
     pub async fn changed(&mut self) -> WatchedEvent {
         let mut event = self.receiver.recv().await.unwrap();
         event.drain_root_len(self.root_len);
-        return event;
+        event
     }
 }
 
@@ -285,32 +285,32 @@ impl Client {
     }
 
     fn validate_sequential_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool), Error> {
-        return util::validate_path(&self.root, path, true);
+        util::validate_path(&self.root, path, true)
     }
 
     /// ZooKeeper session id.
     pub fn session_id(&self) -> SessionId {
-        return self.session.0;
+        self.session.0
     }
 
     /// Session password.
     pub fn session_password(&self) -> &[u8] {
-        return self.session.1.as_slice();
+        self.session.1.as_slice()
     }
 
     /// Negotiated session timeout.
     pub fn session_timeout(&self) -> Duration {
-        return self.session_timeout;
+        self.session_timeout
     }
 
     /// Latest session state.
     pub fn state(&self) -> SessionState {
-        return self.state_watcher.peek_state();
+        self.state_watcher.peek_state()
     }
 
     /// Creates a [StateWatcher] to track state updates.
     pub fn state_watcher(&self) -> StateWatcher {
-        return self.state_watcher.clone();
+        self.state_watcher.clone()
     }
 
     /// Changes root directory to given absolute path.
@@ -329,7 +329,7 @@ impl Client {
         if !is_zookeeper_root {
             self.root.push_str(root);
         }
-        return Ok(self);
+        Ok(self)
     }
 
     async fn request(&self, code: OpCode, body: &impl Record) -> Result<(Vec<u8>, WatchReceiver), Error> {
@@ -388,7 +388,7 @@ impl Client {
         let client_path = util::strip_root_path(server_path, &self.root)?;
         let sequence = if sequential { Self::parse_sequence(client_path, path)? } else { CreateSequence(-1) };
         let stat = record::unmarshal::<Stat>(&mut buf)?;
-        return Ok((stat, sequence));
+        Ok((stat, sequence))
     }
 
     /// Deletes node with specified path.
@@ -405,7 +405,7 @@ impl Client {
         let request =
             DeleteRequest { path: RootedPath::new(&self.root, leaf), version: expected_version.unwrap_or(-1) };
         self.request(OpCode::Delete, &request).await?;
-        return Ok(());
+        Ok(())
     }
 
     async fn get_data_internally(
@@ -421,7 +421,7 @@ impl Client {
         let stat = record::unmarshal(&mut stat_buf)?;
         body.truncate(data_len);
         drop(body.drain(..4));
-        return Ok((body, stat, watcher));
+        Ok((body, stat, watcher))
     }
 
     /// Gets stat and data for node with given path.
@@ -431,7 +431,7 @@ impl Client {
     pub async fn get_data(&self, path: &str) -> Result<(Vec<u8>, Stat), Error> {
         let (leaf, _) = self.validate_path(path)?;
         let (data, stat, _) = self.get_data_internally(&self.root, leaf, false).await?;
-        return Ok((data, stat));
+        Ok((data, stat))
     }
 
     /// Gets stat and data for node with given path, and watches node deletion and data change.
@@ -446,7 +446,7 @@ impl Client {
     pub async fn get_and_watch_data(&self, path: &str) -> Result<(Vec<u8>, Stat, OneshotWatcher), Error> {
         let (leaf, _) = self.validate_path(path)?;
         let (data, stat, watch_receiver) = self.get_data_internally(&self.root, leaf, true).await?;
-        return Ok((data, stat, watch_receiver.into_oneshot(&self.root)));
+        Ok((data, stat, watch_receiver.into_oneshot(&self.root)))
     }
 
     async fn check_stat_internally(&self, path: &str, watch: bool) -> Result<(Option<Stat>, WatchReceiver), Error> {
@@ -455,13 +455,13 @@ impl Client {
         let (body, watcher) = self.request(OpCode::Exists, &request).await?;
         let mut buf = body.as_slice();
         let stat = record::try_deserialize(&mut buf)?;
-        return Ok((stat, watcher));
+        Ok((stat, watcher))
     }
 
     /// Checks stat for node with given path.
     pub async fn check_stat(&self, path: &str) -> Result<Option<Stat>, Error> {
         let (stat, _) = self.check_stat_internally(path, false).await?;
-        return Ok(stat);
+        Ok(stat)
     }
 
     /// Checks stat for node with given path, and watches node creation, deletion and data change.
@@ -472,7 +472,7 @@ impl Client {
     /// * Session expiration.
     pub async fn check_and_watch_stat(&self, path: &str) -> Result<(Option<Stat>, OneshotWatcher), Error> {
         let (stat, watch_receiver) = self.check_stat_internally(path, true).await?;
-        return Ok((stat, watch_receiver.into_oneshot(&self.root)));
+        Ok((stat, watch_receiver.into_oneshot(&self.root)))
     }
 
     /// Sets data for node with given path and returns updated stat.
@@ -487,7 +487,7 @@ impl Client {
         let (body, _) = self.request(OpCode::SetData, &request).await?;
         let mut buf = body.as_slice();
         let stat: Stat = record::unmarshal(&mut buf)?;
-        return Ok(stat);
+        Ok(stat)
     }
 
     async fn list_children_internally(&self, path: &str, watch: bool) -> Result<(Vec<String>, WatchReceiver), Error> {
@@ -497,7 +497,7 @@ impl Client {
         let mut buf = body.as_slice();
         let children = record::unmarshal_entity::<Vec<&str>>(&"children paths", &mut buf)?;
         let children = children.into_iter().map(|child| child.to_owned()).collect();
-        return Ok((children, watcher));
+        Ok((children, watcher))
     }
 
     /// Lists children for node with given path.
@@ -506,7 +506,7 @@ impl Client {
     /// * [Error::NoNode] if such node does not exist.
     pub async fn list_children(&self, path: &str) -> Result<Vec<String>, Error> {
         let (children, _) = self.list_children_internally(path, false).await?;
-        return Ok(children);
+        Ok(children)
     }
 
     /// Lists children for node with given path, and watches node deletion, children creation and
@@ -521,7 +521,7 @@ impl Client {
     /// * [Error::NoNode] if such node does not exist.
     pub async fn list_and_watch_children(&self, path: &str) -> Result<(Vec<String>, OneshotWatcher), Error> {
         let (children, watcher) = self.list_children_internally(path, true).await?;
-        return Ok((children, watcher.into_oneshot(&self.root)));
+        Ok((children, watcher.into_oneshot(&self.root)))
     }
 
     async fn get_children_internally(
@@ -535,7 +535,7 @@ impl Client {
         let mut buf = body.as_slice();
         let response = record::unmarshal::<GetChildren2Response>(&mut buf)?;
         let children = response.children.into_iter().map(|s| s.to_owned()).collect();
-        return Ok((children, response.stat, watcher));
+        Ok((children, response.stat, watcher))
     }
 
     /// Gets stat and children for node with given path.
@@ -544,7 +544,7 @@ impl Client {
     /// * [Error::NoNode] if such node does not exist.
     pub async fn get_children(&self, path: &str) -> Result<(Vec<String>, Stat), Error> {
         let (children, stat, _) = self.get_children_internally(path, false).await?;
-        return Ok((children, stat));
+        Ok((children, stat))
     }
 
     /// Gets stat and children for node with given path, and watches node deletion, children
@@ -559,7 +559,7 @@ impl Client {
     /// * [Error::NoNode] if such node does not exist.
     pub async fn get_and_watch_children(&self, path: &str) -> Result<(Vec<String>, Stat, OneshotWatcher), Error> {
         let (children, stat, watcher) = self.get_children_internally(path, true).await?;
-        return Ok((children, stat, watcher.into_oneshot(&self.root)));
+        Ok((children, stat, watcher.into_oneshot(&self.root)))
     }
 
     /// Counts descendants number for node with given path.
@@ -572,7 +572,7 @@ impl Client {
         let (body, _) = self.request(OpCode::GetAllChildrenNumber, &request).await?;
         let mut buf = body.as_slice();
         let n = record::unmarshal_entity::<i32>(&"all children number", &mut buf)?;
-        return Ok(n as usize);
+        Ok(n as usize)
     }
 
     /// Lists all ephemerals nodes that created by current session and starts with given path.
@@ -590,7 +590,7 @@ impl Client {
         for ephemeral_path in ephemerals.iter_mut() {
             util::drain_root_path(ephemeral_path, &self.root)?;
         }
-        return Ok(ephemerals);
+        Ok(ephemerals)
     }
 
     /// Gets acl and stat for node with given path.
@@ -603,7 +603,7 @@ impl Client {
         let (body, _) = self.request(OpCode::GetACL, &request).await?;
         let mut buf = body.as_slice();
         let response: GetAclResponse = record::unmarshal(&mut buf)?;
-        return Ok((response.acl, response.stat));
+        Ok((response.acl, response.stat))
     }
 
     /// Sets acl for node with given path and returns updated stat.
@@ -618,7 +618,7 @@ impl Client {
         let (body, _) = self.request(OpCode::SetACL, &request).await?;
         let mut buf = body.as_slice();
         let stat: Stat = record::unmarshal(&mut buf)?;
-        return Ok(stat);
+        Ok(stat)
     }
 
     /// Watches possible nonexistent path using specified mode.
@@ -637,7 +637,7 @@ impl Client {
         let proto_mode = proto::AddWatchMode::from(mode);
         let request = PersistentWatchRequest { path: RootedPath::new(&self.root, leaf), mode: proto_mode.into() };
         let (_, watcher) = self.request(OpCode::AddWatch, &request).await?;
-        return Ok(watcher.into_persistent(&self.root));
+        Ok(watcher.into_persistent(&self.root))
     }
 
     /// Syncs with ZooKeeper **leader**.
@@ -654,7 +654,7 @@ impl Client {
         let (body, _) = self.request(OpCode::Sync, &request).await?;
         let mut buf = body.as_slice();
         record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
-        return Ok(());
+        Ok(())
     }
 
     /// Authenticates session using given scheme and auth identication.
@@ -690,19 +690,19 @@ impl Client {
         let (body, _) = self.request(OpCode::WhoAmI, &request).await?;
         let mut buf = body.as_slice();
         let authed_users = record::unmarshal_entity::<Vec<AuthUser>>(&"authed users", &mut buf)?;
-        return Ok(authed_users);
+        Ok(authed_users)
     }
 
     /// Gets data for ZooKeeper config node, that is node with path "/zookeeper/config".
     pub async fn get_config(&self) -> Result<(Vec<u8>, Stat), Error> {
         let (data, stat, _) = self.get_data_internally(Self::CONFIG_NODE, Default::default(), false).await?;
-        return Ok((data, stat));
+        Ok((data, stat))
     }
 
     /// Gets stat and data for ZooKeeper config node, that is node with path "/zookeeper/config".
     pub async fn get_and_watch_config(&self) -> Result<(Vec<u8>, Stat, OneshotWatcher), Error> {
         let (data, stat, watcher) = self.get_data_internally(Self::CONFIG_NODE, Default::default(), false).await?;
-        return Ok((data, stat, watcher.into_oneshot(&self.root)));
+        Ok((data, stat, watcher.into_oneshot(&self.root)))
     }
 
     /// Updates ZooKeeper ensemble.
@@ -725,7 +725,7 @@ impl Client {
         let data_len = data.len();
         body.truncate(data_len + 4);
         drop(body.drain(..4));
-        return Ok((body, stat));
+        Ok((body, stat))
     }
 }
 
@@ -740,7 +740,7 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     /// Constructs a builder with given session timeout.
     pub fn new(session_timeout: Duration) -> ClientBuilder {
-        return ClientBuilder { timeout: session_timeout, authes: Default::default(), readonly: false };
+        ClientBuilder { timeout: session_timeout, authes: Default::default(), readonly: false }
     }
 
     /// Specifies whether readonly server is allowed.
@@ -782,6 +782,6 @@ impl ClientBuilder {
             session.serve(servers, sock, buf, connecting_state, receiver, auth_receiver).await;
         });
         let client = Client::new(root.to_string(), session_info, session_timeout, sender, auth_sender, state_receiver);
-        return Ok(client);
+        Ok(client)
     }
 }

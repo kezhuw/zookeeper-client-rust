@@ -58,7 +58,7 @@ impl RequestBuffer for Vec<u8> {
         let len = self.len() - i - 4;
         let mut buf = &mut self[i..i + 4];
         buf.put_i32(len as i32);
-        return len + 4;
+        len + 4
     }
 
     fn write_lenght_prefixed_record(&mut self, record: &dyn Record) -> usize {
@@ -69,18 +69,18 @@ impl RequestBuffer for Vec<u8> {
         let len = self.len() - i - 4;
         let mut buf = &mut self[i..i + 4];
         buf.put_i32(len as i32);
-        return len + 4;
+        len + 4
     }
 }
 
 pub fn build_record_request(record: &dyn Record) -> Vec<u8> {
     let mut buf = Vec::with_capacity(record.serialized_len() + 4);
     buf.write_lenght_prefixed_record(record);
-    return buf;
+    buf
 }
 
 pub fn build_session_request(header: &RequestHeader, body: &dyn Record) -> Vec<u8> {
     let mut buf = Vec::with_capacity(header.serialized_len() + body.serialized_len() + 4);
     buf.write_request(header, body);
-    return buf;
+    buf
 }

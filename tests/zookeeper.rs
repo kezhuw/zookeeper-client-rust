@@ -10,12 +10,11 @@ use zookeeper_client as zk;
 
 fn random_data() -> Vec<u8> {
     let rng = rand::thread_rng();
-    return rng.sample_iter(Standard).take(32).collect();
+    rng.sample_iter(Standard).take(32).collect()
 }
 
 fn zookeeper_image() -> GenericImage {
-    return GenericImage::new("zookeeper:3.7.0")
-        .with_wait_for(WaitFor::message_on_stdout("PrepRequestProcessor (sid:"));
+    GenericImage::new("zookeeper:3.7.0").with_wait_for(WaitFor::message_on_stdout("PrepRequestProcessor (sid:"))
 }
 
 async fn example() {

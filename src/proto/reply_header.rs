@@ -19,7 +19,7 @@ impl SerializableRecord for ReplyHeader {
 
 impl StaticRecord for ReplyHeader {
     fn record_len() -> usize {
-        return 16;
+        16
     }
 }
 
@@ -30,6 +30,6 @@ impl UnsafeRead<'_> for ReplyHeader {
         let xid = buf.get_unchecked_i32();
         let zxid = buf.get_unchecked_i64();
         let err = buf.get_unchecked_i32();
-        return Ok(ReplyHeader { xid, zxid, err });
+        Ok(ReplyHeader { xid, zxid, err })
     }
 }

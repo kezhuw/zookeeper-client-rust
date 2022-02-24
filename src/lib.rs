@@ -1,5 +1,3 @@
-#![allow(clippy::needless_return)]
-
 mod acl;
 mod client;
 mod error;

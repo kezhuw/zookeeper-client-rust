@@ -17,25 +17,25 @@ impl MarshalledRequest {
     pub fn new_request(code: OpCode, body: &dyn Record) -> MarshalledRequest {
         let header = RequestHeader::with_code(code);
         let buf = proto::build_session_request(&header, body);
-        return MarshalledRequest(buf);
+        MarshalledRequest(buf)
     }
 
     pub fn new_record(body: &dyn Record) -> MarshalledRequest {
-        return MarshalledRequest(proto::build_record_request(body));
+        MarshalledRequest(proto::build_record_request(body))
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        return self.0.as_slice();
+        self.0.as_slice()
     }
 
     pub fn get_code(&self) -> OpCode {
         let mut buf = &self.0[8..12];
-        return buf.get_i32().try_into().unwrap();
+        buf.get_i32().try_into().unwrap()
     }
 
     pub fn get_xid(&self) -> i32 {
         let mut xid_buf = &self.0[4..8];
-        return xid_buf.get_i32();
+        xid_buf.get_i32()
     }
 
     pub fn set_xid(&mut self, xid: i32) {
@@ -70,7 +70,7 @@ impl MarshalledRequest {
             },
             _ => None,
         };
-        return (op_code, watcher_info);
+        (op_code, watcher_info)
     }
 }
 
@@ -128,24 +128,24 @@ pub type StateResponser = oneshot::Sender<Result<(Vec<u8>, WatchReceiver), Error
 
 pub fn build_connect_operation(request: &ConnectRequest) -> ConnectOperation {
     let buf = proto::build_record_request(request);
-    return ConnectOperation { request: buf };
+    ConnectOperation { request: buf }
 }
 
 pub fn build_auth_operation(code: OpCode, body: &dyn Record) -> AuthOperation {
     let request = MarshalledRequest::new_request(code, body);
-    return AuthOperation { request };
+    AuthOperation { request }
 }
 
 pub fn build_state_operation(code: OpCode, body: &dyn Record) -> (SessionOperation, StateReceiver) {
     let request = MarshalledRequest::new_request(code, body);
     let (sender, receiver) = oneshot::channel();
     let operation = SessionOperation { request, responser: sender };
-    return (operation, receiver);
+    (operation, receiver)
 }
 
 pub fn build_session_operation(request: &dyn Record) -> SessionOperation {
     let request = MarshalledRequest::new_record(request);
     let (sender, _) = oneshot::channel();
-    let operation = SessionOperation { request, responser: sender };
-    return operation;
+
+    SessionOperation { request, responser: sender }
 }

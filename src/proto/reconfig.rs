@@ -24,7 +24,7 @@ impl<'a, 'b, T: Iterator<Item = &'b str> + Clone> SerializableRecord for ServerL
 impl<'a, 'b, T: Iterator<Item = &'b str> + Clone> DynamicRecord for ServerList<'a, 'b, T> {
     fn serialized_len(&self) -> usize {
         let n: usize = self.0.clone().filter(|s| !s.is_empty()).map(|s| s.len() + 1).sum();
-        return 4 + if n > 0 { n - 1 } else { 0 };
+        4 + if n > 0 { n - 1 } else { 0 }
     }
 }
 

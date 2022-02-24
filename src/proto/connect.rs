@@ -32,7 +32,7 @@ impl SerializableRecord for ConnectRequest<'_> {
 
 impl DynamicRecord for ConnectRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return 2 * i32::record_len() + 2 * i64::record_len() + self.password.serialized_len() + bool::record_len();
+        2 * i32::record_len() + 2 * i64::record_len() + self.password.serialized_len() + bool::record_len()
     }
 }
 
@@ -73,12 +73,6 @@ impl<'a> DeserializableRecord<'a> for ConnectResponse<'a> {
         if readonly != 0 && readonly != 1 {
             return Err(DeserializeError::Invalid(&"invalid session readonly value"));
         }
-        return Ok(ConnectResponse {
-            protocol_version,
-            session_timeout,
-            session_id,
-            password,
-            readonly: readonly == 1,
-        });
+        Ok(ConnectResponse { protocol_version, session_timeout, session_id, password, readonly: readonly == 1 })
     }
 }

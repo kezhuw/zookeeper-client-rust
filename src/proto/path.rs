@@ -6,7 +6,7 @@ pub struct RootedPath<'a>(&'a str, &'a str);
 
 impl RootedPath<'_> {
     pub fn new<'a>(root: &'a str, leaf: &'a str) -> RootedPath<'a> {
-        return RootedPath(root, leaf);
+        RootedPath(root, leaf)
     }
 }
 
@@ -21,6 +21,6 @@ impl SerializableRecord for RootedPath<'_> {
 
 impl DynamicRecord for RootedPath<'_> {
     fn serialized_len(&self) -> usize {
-        return i32::record_len() + self.0.len() + self.1.len();
+        i32::record_len() + self.0.len() + self.1.len()
     }
 }

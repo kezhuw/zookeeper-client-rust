@@ -19,11 +19,11 @@ impl Permission {
     }
 
     pub(crate) fn from_raw(raw: i32) -> Permission {
-        return Permission(raw);
+        Permission(raw)
     }
 
     pub fn has(self, perm: Permission) -> bool {
-        return (self.0 & perm.0) == perm.0;
+        (self.0 & perm.0) == perm.0
     }
 }
 
@@ -31,7 +31,7 @@ impl std::ops::BitOr for Permission {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        return Permission(self.0 | rhs.0);
+        Permission(self.0 | rhs.0)
     }
 }
 
@@ -73,11 +73,11 @@ pub struct AuthId {
 impl AuthId {
     /// Constructs an auth id with specified id under given scheme.
     pub fn new(scheme: &str, id: &str) -> AuthId {
-        return AuthId { scheme: CompactStr::new(scheme), id: CompactStr::new(id) };
+        AuthId { scheme: CompactStr::new(scheme), id: CompactStr::new(id) }
     }
 
     const fn new_const(scheme: &'static str, id: &'static str) -> AuthId {
-        return AuthId { scheme: CompactStr::new_inline(scheme), id: CompactStr::new_inline(id) };
+        AuthId { scheme: CompactStr::new_inline(scheme), id: CompactStr::new_inline(id) }
     }
 
     /// Returns the scheme this auth id serve for.
@@ -92,12 +92,12 @@ impl AuthId {
 
     /// Auth id that could represent anyone in access.
     pub const fn anyone() -> AuthId {
-        return Self::new_const("world", "anyone");
+        Self::new_const("world", "anyone")
     }
 
     /// Auth id that could only represent one that has same authes.
     pub const fn authed() -> AuthId {
-        return Self::new_const("auth", "");
+        Self::new_const("auth", "")
     }
 }
 
@@ -111,7 +111,7 @@ pub struct AuthUser {
 impl AuthUser {
     /// Constructs an auth user with auth scheme and user name.
     pub fn new(scheme: &str, user: &str) -> AuthUser {
-        return AuthUser { scheme: CompactStr::new(scheme), user: CompactStr::new(user) };
+        AuthUser { scheme: CompactStr::new(scheme), user: CompactStr::new(user) }
     }
 
     /// Returns authed scheme.
@@ -132,31 +132,28 @@ static CREATOR_ALL: [Acl; 1] = [Acl::new_const(Permission::ALL, "auth", "")];
 impl Acl {
     /// Constructs an acl with specified permission for given auth id.
     pub fn new(permission: Permission, auth_id: AuthId) -> Acl {
-        return Acl { permission, auth_id };
+        Acl { permission, auth_id }
     }
 
     const fn new_const(permission: Permission, scheme: &'static str, id: &'static str) -> Acl {
-        return Acl {
-            permission,
-            auth_id: AuthId { scheme: CompactStr::new_inline(scheme), id: CompactStr::new_inline(id) },
-        };
+        Acl { permission, auth_id: AuthId { scheme: CompactStr::new_inline(scheme), id: CompactStr::new_inline(id) } }
     }
 
     /// Returns acl that expresses anyone can have full permissions over nodes created by this
     /// session.
     pub fn anyone_all() -> &'static [Acl] {
-        return &ANYONE_ALL;
+        &ANYONE_ALL
     }
 
     /// Returns acl that expresses anyone can read nodes created by this session.
     pub fn anyone_read() -> &'static [Acl] {
-        return &ANYONE_READ;
+        &ANYONE_READ
     }
 
     /// Returns acl that expresses anyone who has same auth as creator can have full permisssions
     /// over nodes created by this session.
     pub fn creator_all() -> &'static [Acl] {
-        return &CREATOR_ALL;
+        &CREATOR_ALL
     }
 
     /// Returns the permission this auth id has.
@@ -166,7 +163,7 @@ impl Acl {
 
     /// Returns the auth id this acl serve for.
     pub fn auth_id(&self) -> &AuthId {
-        return &self.auth_id;
+        &self.auth_id
     }
 
     /// Returns the scheme this auth id serve for.

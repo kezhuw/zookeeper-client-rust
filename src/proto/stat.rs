@@ -57,7 +57,7 @@ impl SerializableRecord for Stat {
 
 impl StaticRecord for Stat {
     fn record_len() -> usize {
-        return 68;
+        68
     }
 }
 
@@ -76,7 +76,7 @@ impl UnsafeRead<'_> for Stat {
         let data_length = buf.get_unchecked_i32();
         let num_children = buf.get_unchecked_i32();
         let pzxid = buf.get_unchecked_i64();
-        return Ok(Stat {
+        Ok(Stat {
             czxid,
             mzxid,
             ctime,
@@ -88,7 +88,7 @@ impl UnsafeRead<'_> for Stat {
             data_length,
             num_children,
             pzxid,
-        });
+        })
     }
 }
 

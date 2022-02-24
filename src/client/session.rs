@@ -52,21 +52,21 @@ pub struct OperationState {
 impl OperationState {
     fn for_serving() -> OperationState {
         let writing_capacity = 128usize;
-        return OperationState {
+        OperationState {
             writing_slices: Vec::with_capacity(writing_capacity),
             writing_operations: VecDeque::with_capacity(writing_capacity),
             written_operations: VecDeque::with_capacity(128),
             pending_auth: None,
-        };
+        }
     }
 
     pub fn for_connecting() -> OperationState {
-        return OperationState {
+        OperationState {
             writing_slices: Vec::with_capacity(10),
             writing_operations: VecDeque::with_capacity(10),
             written_operations: VecDeque::with_capacity(10),
             pending_auth: None,
-        };
+        }
     }
 
     fn clear(&mut self) {
@@ -88,7 +88,7 @@ impl OperationState {
     }
 
     fn is_empty(&self) -> bool {
-        return self.writing_operations.is_empty() && self.written_operations.is_empty();
+        self.writing_operations.is_empty() && self.written_operations.is_empty()
     }
 
     fn pop_ping(&mut self) -> Result<(), Error> {
@@ -100,7 +100,7 @@ impl OperationState {
             }
             return Ok(());
         }
-        return Err(Error::UnexpectedError("expect pending ping request, got none".to_string()));
+        Err(Error::UnexpectedError("expect pending ping request, got none".to_string()))
     }
 
     fn push_operation(&mut self, operation: Operation) {
@@ -141,7 +141,7 @@ impl OperationState {
                     written_bytes -= slice.len();
                     return false;
                 }
-                return true;
+                true
             })
             .unwrap_or(self.writing_slices.len());
         if written_slices != 0 {
@@ -150,7 +150,7 @@ impl OperationState {
                 if let Operation::Session(operation) = operation {
                     return Some(operation);
                 }
-                return None;
+                None
             });
             self.written_operations.extend(written);
         }
@@ -159,7 +159,7 @@ impl OperationState {
             let rest = unsafe { std::mem::transmute::<&[u8], &'_ [u8]>(rest) };
             self.writing_slices[0] = IoSlice::new(rest);
         }
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -229,7 +229,7 @@ impl Session {
             persistent_recursive_watchers: HashMap::new(),
         };
         state.reset_session_timeout(timeout);
-        return (state, state_receiver);
+        (state, state_receiver)
     }
 
     async fn quit(&mut self, mut requester: mpsc::Receiver<SessionOperation>, err: &Error) {
@@ -270,7 +270,7 @@ impl Session {
     }
 
     fn state_error(&self) -> Error {
-        return self.session_state.to_error();
+        self.session_state.to_error()
     }
 
     fn change_state(&mut self, state: SessionState) {
@@ -363,7 +363,7 @@ impl Session {
         }
         let watchers = vec![sender];
         watches.insert(CompactStr::new(path), watchers);
-        return receiver;
+        receiver
     }
 
     fn add_persistent_watcher(
@@ -377,19 +377,19 @@ impl Session {
         }
         let watchers = vec![sender];
         watches.insert(CompactStr::new(path), watchers);
-        return receiver;
+        receiver
     }
 
     fn add_data_watch(&mut self, path: &str) -> OneshotReceiver {
-        return Self::add_oneshot_watcher(path, &mut self.data_watchers);
+        Self::add_oneshot_watcher(path, &mut self.data_watchers)
     }
 
     fn add_exist_watch(&mut self, path: &str) -> OneshotReceiver {
-        return Self::add_oneshot_watcher(path, &mut self.exist_watchers);
+        Self::add_oneshot_watcher(path, &mut self.exist_watchers)
     }
 
     fn add_child_watch(&mut self, path: &str) -> OneshotReceiver {
-        return Self::add_oneshot_watcher(path, &mut self.child_watchers);
+        Self::add_oneshot_watcher(path, &mut self.child_watchers)
     }
 
     fn create_watcher(&mut self, path: &str, watch_mode: WatchMode, op_code: OpCode, rc: ErrorCode) -> WatchReceiver {
@@ -408,7 +408,7 @@ impl Session {
             return WatchReceiver::Persistent(Self::add_persistent_watcher(path, &mut self.persistent_watchers));
         }
         assert!(watch_mode == WatchMode::PersistentRecursive);
-        return WatchReceiver::Persistent(Self::add_persistent_watcher(path, &mut self.persistent_recursive_watchers));
+        WatchReceiver::Persistent(Self::add_persistent_watcher(path, &mut self.persistent_recursive_watchers))
     }
 
     fn dispatch_data_event(&mut self, event: WatchedEvent) {
@@ -487,7 +487,7 @@ impl Session {
         let event_type = EventType::from_server(watcher_event.event_type)?;
         let event = WatchedEvent { event_type, session_state, path: watcher_event.path };
         self.dispatch_server_event(event);
-        return Ok(());
+        Ok(())
     }
 
     fn handle_session_reply(&mut self, operation: SessionOperation, rc: i32, body: &[u8]) {
@@ -555,7 +555,7 @@ impl Session {
             return Err(Error::UnexpectedError(format!("expect response xid {} but got {}", xid, header.xid)));
         }
         self.handle_session_reply(operation, header.err, body);
-        return Ok(());
+        Ok(())
     }
 
     fn reset_session_timeout(&mut self, timeout: Duration) {
@@ -584,7 +584,7 @@ impl Session {
         self.session_password.extend_from_slice(response.password);
         self.session_readonly = response.readonly;
         self.complete_connect();
-        return Ok(());
+        Ok(())
     }
 
     fn read_socket(&mut self, sock: &TcpStream, buf: &mut Vec<u8>) -> Result<(), Error> {
@@ -601,7 +601,7 @@ impl Session {
             },
             _ => {},
         }
-        return Ok(());
+        Ok(())
     }
 
     fn handle_recv_buf(&mut self, recved: &mut Vec<u8>, state: &mut OperationState) -> Result<(), Error> {
@@ -621,7 +621,7 @@ impl Session {
         let consumed_bytes = recved.len() - reading.len();
         recved.drain(..consumed_bytes);
         self.last_recv = Instant::now();
-        return Ok(());
+        Ok(())
     }
 
     fn next_xid(&mut self) -> i32 {
@@ -630,7 +630,7 @@ impl Session {
         } else {
             self.prev_xid += 1;
         };
-        return self.prev_xid;
+        self.prev_xid
     }
 
     async fn serve_connecting(
@@ -658,7 +658,7 @@ impl Session {
                 },
             }
         }
-        return Ok(());
+        Ok(())
     }
 
     async fn serve_session(
@@ -714,7 +714,7 @@ impl Session {
                 },
             }
         }
-        return Err(Error::ClientClosed);
+        Err(Error::ClientClosed)
     }
 
     async fn new_socket(
@@ -833,7 +833,7 @@ impl Session {
         self.last_recv = self.last_send;
         self.last_ping = None;
         self.serve_connecting(&sock, buf, state).await?;
-        return Ok(sock);
+        Ok(sock)
     }
 
     pub async fn start(
@@ -856,6 +856,6 @@ impl Session {
                 Ok(sock) => return Ok(sock),
             };
         }
-        return Err(last_error);
+        Err(last_error)
     }
 }

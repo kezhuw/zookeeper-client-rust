@@ -17,7 +17,7 @@ impl RequestHeader {
             OpCode::SetWatches | OpCode::SetWatches2 => PredefinedXid::SetWatches.into(),
             _ => 0,
         };
-        return RequestHeader { xid, code };
+        RequestHeader { xid, code }
     }
 }
 
@@ -30,7 +30,7 @@ impl UnsafeRead<'_> for RequestHeader {
             Ok(code) => code,
             Err(_) => return Err(InvalidData(&"unexpected op code")),
         };
-        return Ok(RequestHeader { xid, code });
+        Ok(RequestHeader { xid, code })
     }
 }
 
@@ -43,6 +43,6 @@ impl SerializableRecord for RequestHeader {
 
 impl StaticRecord for RequestHeader {
     fn record_len() -> usize {
-        return 8;
+        8
     }
 }

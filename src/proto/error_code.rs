@@ -54,6 +54,6 @@ pub enum ErrorCode {
 
 impl From<TryFromPrimitiveError<ErrorCode>> for Error {
     fn from(err: TryFromPrimitiveError<ErrorCode>) -> Error {
-        return Error::UnexpectedErrorCode(err.number);
+        Error::UnexpectedErrorCode(err.number)
     }
 }

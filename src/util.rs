@@ -7,7 +7,7 @@ struct InvalidAddress(&'static &'static str);
 
 impl From<InvalidAddress> for Error {
     fn from(_: InvalidAddress) -> Error {
-        return Error::BadArguments(&"invalid address");
+        Error::BadArguments(&"invalid address")
     }
 }
 
@@ -25,7 +25,7 @@ fn parse_host_port(host: &str, port: &str) -> Result<u16, InvalidAddress> {
     if port == 0 {
         return Err(InvalidAddress(&"invalid port number"));
     }
-    return Ok(port);
+    Ok(port)
 }
 
 pub type HostPort = (String, u16);
@@ -52,7 +52,7 @@ impl<'a> Ref<'a> for HostPortRef<'a> {
     type Value = HostPort;
 
     fn to_value(&self) -> HostPort {
-        return (self.0.to_owned(), self.1);
+        (self.0.to_owned(), self.1)
     }
 }
 
@@ -78,7 +78,7 @@ fn parse_address(s: &str) -> Result<(&str, u16), InvalidAddress> {
         }
     };
     let port = parse_host_port(host, port_str)?;
-    return Ok((host, port));
+    Ok((host, port))
 }
 
 pub fn parse_connect_string(s: &str) -> Result<(Vec<HostPortRef>, &str), Error> {
@@ -101,7 +101,7 @@ pub fn parse_connect_string(s: &str) -> Result<(Vec<HostPortRef>, &str), Error> 
     for server in cluster.split(',') {
         servers.push(parse_address(server)?);
     }
-    return Ok((servers, root));
+    Ok((servers, root))
 }
 
 pub fn validate_path<'a>(root: &str, path: &'a str, allow_trailing_slash: bool) -> Result<(&'a str, bool), Error> {
@@ -139,7 +139,7 @@ pub fn validate_path<'a>(root: &str, path: &'a str, allow_trailing_slash: bool) 
     if last_chars[2] == '/' && !allow_trailing_slash {
         return Err(Error::BadArguments(&"path must not end with '/'"));
     }
-    return Ok((path, false));
+    Ok((path, false))
 }
 
 pub fn strip_root_path<'a>(server_path: &'a str, root: &str) -> Result<&'a str, Error> {
@@ -149,7 +149,7 @@ pub fn strip_root_path<'a>(server_path: &'a str, root: &str) -> Result<&'a str, 
         }
         return Ok(client_path);
     }
-    return Err(Error::BadArguments(&"server path does not contain root path"));
+    Err(Error::BadArguments(&"server path does not contain root path"))
 }
 
 pub fn drain_root_path(server_path: &mut String, root: &str) -> Result<(), Error> {
@@ -160,7 +160,7 @@ pub fn drain_root_path(server_path: &mut String, root: &str) -> Result<(), Error
         }
         return Ok(());
     }
-    return Err(Error::BadArguments(&"server path does not contain root path"));
+    Err(Error::BadArguments(&"server path does not contain root path"))
 }
 
 pub fn drain_root_len(server_path: &mut String, root_len: usize) {
@@ -182,7 +182,7 @@ pub fn drain_root_len(server_path: &mut String, root_len: usize) {
 #[allow(dead_code)]
 pub fn into_client_path(mut server_path: String, root: &str) -> Result<String, Error> {
     drain_root_path(&mut server_path, root)?;
-    return Ok(server_path);
+    Ok(server_path)
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ impl DeserializeError {
             DeserializeError::InsufficientBuf => &"insufficient buf",
             DeserializeError::Invalid(reason) => reason,
         };
-        return ZkError::UnmarshalError { entity, reason };
+        ZkError::UnmarshalError { entity, reason }
     }
 }
 
@@ -39,7 +39,7 @@ where
 {
     fn with_context(self, context: &'static str) -> ZkError {
         let err: DeserializeError = self.into();
-        return err.with_entity(context);
+        err.with_entity(context)
     }
 }
 
@@ -114,13 +114,13 @@ impl std::fmt::Display for InvalidData {
 
 impl From<InsufficientBuf> for DeserializeError {
     fn from(_: InsufficientBuf) -> DeserializeError {
-        return DeserializeError::InsufficientBuf;
+        DeserializeError::InsufficientBuf
     }
 }
 
 impl From<InvalidData> for DeserializeError {
     fn from(err: InvalidData) -> DeserializeError {
-        return DeserializeError::Invalid(err.0);
+        DeserializeError::Invalid(err.0)
     }
 }
 
@@ -256,7 +256,7 @@ impl SerializableRecord for bool {
 
 impl StaticRecord for bool {
     fn record_len() -> usize {
-        return 1;
+        1
     }
 }
 
@@ -275,7 +275,7 @@ impl<'a> DeserializableRecord<'a> for bool {
         } else {
             return Err(DeserializeError::Invalid(&"invalid value for bool"));
         };
-        return Ok(b);
+        Ok(b)
     }
 }
 
@@ -299,7 +299,7 @@ impl<'a> DeserializableRecord<'a> for i32 {
             return Err(InsufficientBuf);
         }
         let v = unsafe { buf.get_unchecked_i32() };
-        return Ok(v);
+        Ok(v)
     }
 }
 
@@ -323,7 +323,7 @@ impl<'a> DeserializableRecord<'a> for i64 {
             return Err(InsufficientBuf);
         }
         let v = unsafe { buf.get_unchecked_i64() };
-        return Ok(v);
+        Ok(v)
     }
 }
 
@@ -345,13 +345,13 @@ impl SerializableRecord for &str {
 
 impl DynamicRecord for str {
     fn serialized_len(&self) -> usize {
-        return 4 + self.len();
+        4 + self.len()
     }
 }
 
 impl DynamicRecord for &str {
     fn serialized_len(&self) -> usize {
-        return 4 + self.len();
+        4 + self.len()
     }
 }
 
@@ -372,7 +372,7 @@ impl<'a> DeserializableRecord<'a> for &'a str {
             Ok(s) => s,
         };
         unsafe { *buf = buf.get_unchecked(n..) };
-        return Ok(s);
+        Ok(s)
     }
 }
 
@@ -381,7 +381,7 @@ impl DeserializableRecord<'_> for String {
 
     fn deserialize(buf: &mut ReadingBuf) -> Result<String, Self::Error> {
         let s: &str = DeserializableRecord::deserialize(buf)?;
-        return Ok(s.to_string());
+        Ok(s.to_string())
     }
 }
 
@@ -395,7 +395,7 @@ impl SerializableRecord for [u8] {
 
 impl DynamicRecord for [u8] {
     fn serialized_len(&self) -> usize {
-        return 4 + self.len();
+        4 + self.len()
     }
 }
 
@@ -412,7 +412,7 @@ impl<'a> DeserializableRecord<'a> for &'a [u8] {
         let n = n as usize;
         let bytes = unsafe { buf.get_unchecked(..n) };
         unsafe { *buf = buf.get_unchecked(n..) };
-        return Ok(bytes);
+        Ok(bytes)
     }
 }
 
@@ -435,7 +435,7 @@ where
 {
     fn serialized_len(&self) -> usize {
         let n: usize = self.iter().map(|v| v.serialized_len()).sum();
-        return 4 + n;
+        4 + n
     }
 }
 
@@ -458,7 +458,7 @@ where
 {
     fn serialized_len(&self) -> usize {
         let n: usize = self.iter().map(|v| v.serialized_len()).sum();
-        return 4 + n;
+        4 + n
     }
 }
 
@@ -478,7 +478,7 @@ where
         for _ in 0..n {
             v.push(T::deserialize(buf)?);
         }
-        return Ok(v);
+        Ok(v)
     }
 }
 
@@ -494,20 +494,20 @@ impl UnsafeBuf for &[u8] {
     unsafe fn get_unchecked_u8(&mut self) -> u8 {
         let u = *self.get_unchecked(0);
         *self = self.get_unchecked(1..);
-        return u;
+        u
     }
 
     unsafe fn get_unchecked_i32(&mut self) -> i32 {
         const LEN: usize = 4;
         let bytes = self.get_unchecked(..LEN) as *const _ as *const [_; LEN];
         *self = self.get_unchecked(LEN..);
-        return i32::from_be_bytes(*bytes);
+        i32::from_be_bytes(*bytes)
     }
 
     unsafe fn get_unchecked_i64(&mut self) -> i64 {
         const LEN: usize = 8;
         let bytes = self.get_unchecked(..LEN) as *const _ as *const [_; LEN];
         *self = self.get_unchecked(LEN..);
-        return i64::from_be_bytes(*bytes);
+        i64::from_be_bytes(*bytes)
     }
 }

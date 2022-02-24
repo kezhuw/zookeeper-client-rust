@@ -27,7 +27,7 @@ impl SerializableRecord for AuthPacket {
 
 impl DynamicRecord for AuthPacket {
     fn serialized_len(&self) -> usize {
-        return i32::record_len() + self.scheme.serialized_len() + self.auth.serialized_len();
+        i32::record_len() + self.scheme.serialized_len() + self.auth.serialized_len()
     }
 }
 
@@ -37,6 +37,6 @@ impl DeserializableRecord<'_> for AuthUser {
     fn deserialize(buf: &mut ReadingBuf) -> Result<Self, Self::Error> {
         let scheme: &str = record::deserialize(buf)?;
         let user: &str = record::deserialize(buf)?;
-        return Ok(AuthUser::new(scheme, user));
+        Ok(AuthUser::new(scheme, user))
     }
 }

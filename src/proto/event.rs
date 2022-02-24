@@ -16,6 +16,6 @@ impl DeserializableRecord<'_> for WatcherEvent {
         let event_type = unsafe { buf.get_unchecked_i32() };
         let session_state = unsafe { buf.get_unchecked_i32() };
         let path = record::deserialize(buf)?;
-        return Ok(WatcherEvent { event_type, session_state, path });
+        Ok(WatcherEvent { event_type, session_state, path })
     }
 }

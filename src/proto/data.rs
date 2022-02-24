@@ -50,11 +50,11 @@ impl SerializableRecord for CreateRequest<'_> {
 
 impl DynamicRecord for CreateRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return self.path.serialized_len()
+        self.path.serialized_len()
             + self.data.serialized_len()
             + self.acls.serialized_len()
             + i32::record_len()
-            + if self.ttl != 0 { i64::record_len() } else { 0 };
+            + if self.ttl != 0 { i64::record_len() } else { 0 }
     }
 }
 
@@ -73,7 +73,7 @@ impl SerializableRecord for SetWatchesRequest<'_> {
 impl DynamicRecord for SetWatchesRequest<'_> {
     fn serialized_len(&self) -> usize {
         let n: usize = self.watches.iter().map(|watches| watches.serialized_len()).sum();
-        return 8 + n;
+        8 + n
     }
 }
 
@@ -95,7 +95,7 @@ impl SerializableRecord for OneshotWatchRequest<'_> {
 
 impl DynamicRecord for OneshotWatchRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return self.path.serialized_len() + bool::record_len();
+        self.path.serialized_len() + bool::record_len()
     }
 }
 
@@ -111,7 +111,7 @@ impl<'a> DeserializableRecord<'a> for GetChildren2Response<'a> {
         let children = Vec::<&'a str>::deserialize(buf)?;
         let stat = Stat::deserialize(buf)?;
         let response = GetChildren2Response { children, stat };
-        return Ok(response);
+        Ok(response)
     }
 }
 
@@ -131,7 +131,7 @@ impl SerializableRecord for SetDataRequest<'_> {
 
 impl DynamicRecord for SetDataRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return self.path.serialized_len() + self.data.serialized_len() + i32::record_len();
+        self.path.serialized_len() + self.data.serialized_len() + i32::record_len()
     }
 }
 
@@ -149,7 +149,7 @@ impl SerializableRecord for DeleteRequest<'_> {
 
 impl DynamicRecord for DeleteRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return self.path.serialized_len() + i32::record_len();
+        self.path.serialized_len() + i32::record_len()
     }
 }
 
@@ -167,6 +167,6 @@ impl SerializableRecord for PersistentWatchRequest<'_> {
 
 impl DynamicRecord for PersistentWatchRequest<'_> {
     fn serialized_len(&self) -> usize {
-        return self.path.serialized_len() + i32::record_len();
+        self.path.serialized_len() + i32::record_len()
     }
 }

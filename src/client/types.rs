@@ -39,19 +39,16 @@ impl SessionState {
             3 => SessionState::SyncConnected,
             _ => return Err(Error::UnexpectedError(format!("keeper state value should not be {}", state))),
         };
-        return Ok(session_state);
+        Ok(session_state)
     }
 
     pub fn is_terminated(self) -> bool {
         use SessionState::*;
-        match self {
-            AuthFailed | Expired | Closed => return true,
-            _ => return false,
-        };
+        matches!(self, AuthFailed | Expired | Closed)
     }
 
     pub(crate) fn is_connected(self) -> bool {
-        return self == SessionState::SyncConnected || self == SessionState::ConnectedReadOnly;
+        self == SessionState::SyncConnected || self == SessionState::ConnectedReadOnly
     }
 
     pub(crate) fn to_error(self) -> Error {
@@ -107,6 +104,6 @@ impl EventType {
             4 => EventType::NodeChildrenChanged,
             _ => return Err(Error::UnexpectedError(format!("event type should not be {}", i))),
         };
-        return Ok(event_type);
+        Ok(event_type)
     }
 }
