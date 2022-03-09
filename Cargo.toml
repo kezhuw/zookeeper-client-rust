@@ -29,4 +29,4 @@ static_assertions = "1.1.0"
 rand = "0.8.4"
 pretty_assertions = "1.1.0"
 test-case = "1.2.3"
-testcontainers = "0.12.0"
+testcontainers = { git = "https://github.com/kezhuw/testcontainers-rs.git", branch = "zookeeper-client" }

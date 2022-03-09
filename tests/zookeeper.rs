@@ -4,8 +4,8 @@ use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
 use testcontainers::clients::Cli as DockerCli;
-use testcontainers::images::generic::{GenericImage, WaitFor};
-use testcontainers::Docker;
+use testcontainers::core::{Healthcheck, WaitFor};
+use testcontainers::images::generic::GenericImage;
 use zookeeper_client as zk;
 
 fn random_data() -> Vec<u8> {
@@ -14,13 +14,17 @@ fn random_data() -> Vec<u8> {
 }
 
 fn zookeeper_image() -> GenericImage {
-    GenericImage::new("zookeeper:3.7.0").with_wait_for(WaitFor::message_on_stdout("PrepRequestProcessor (sid:"))
+    let healthcheck = Healthcheck::default()
+        .with_cmd(["./bin/zkServer.sh", "status"].iter())
+        .with_interval(Duration::from_secs(6))
+        .with_retries(30);
+    GenericImage::new("zookeeper", "3.7.0").with_healthcheck(healthcheck).with_wait_for(WaitFor::Healthcheck)
 }
 
 async fn example() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
@@ -65,14 +69,14 @@ async fn example() {
 
 #[tokio::test]
 async fn test_example() {
-    tokio::spawn(example()).await.unwrap()
+    tokio::spawn(async move { example().await }).await.unwrap()
 }
 
 #[tokio::test]
 async fn test_no_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
@@ -96,7 +100,7 @@ async fn test_no_node() {
 async fn test_data_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -120,7 +124,7 @@ async fn test_data_node() {
 async fn test_create_sequential() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -143,7 +147,7 @@ async fn test_create_sequential() {
 async fn test_descendants_number() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -196,7 +200,7 @@ where
 async fn test_ephemerals() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -262,7 +266,7 @@ async fn test_ephemerals() {
 async fn test_chroot() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -303,7 +307,7 @@ async fn test_chroot() {
 async fn test_auth() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -332,7 +336,7 @@ async fn test_auth() {
 async fn test_delete() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -355,7 +359,7 @@ async fn test_delete() {
 async fn test_oneshot_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
@@ -439,7 +443,7 @@ async fn test_oneshot_watcher() {
 async fn test_persistent_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
@@ -526,7 +530,7 @@ async fn test_persistent_watcher() {
 async fn test_session_event() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
-    let zk_port = zookeeper.get_host_port(2181).unwrap();
+    let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
