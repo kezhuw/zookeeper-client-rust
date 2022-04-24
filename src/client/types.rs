@@ -1,4 +1,8 @@
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use strum::EnumIter;
+
 use crate::error::Error;
+use crate::proto::AddWatchMode;
 use crate::util;
 
 /// Thin wrapper for zookeeper session id. It prints in hex format headed with 0x.
@@ -105,5 +109,24 @@ impl EventType {
             _ => return Err(Error::UnexpectedError(format!("event type should not be {}", i))),
         };
         Ok(event_type)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, IntoPrimitive, TryFromPrimitive, EnumIter)]
+#[repr(i32)]
+pub enum WatchMode {
+    Child = 1,
+    Data = 2,
+    Any = 3,
+    PersistentNode = 4,
+    PersistentRecursive = 5,
+}
+
+impl From<AddWatchMode> for WatchMode {
+    fn from(mode: AddWatchMode) -> Self {
+        match mode {
+            AddWatchMode::Persistent => WatchMode::PersistentNode,
+            AddWatchMode::PersistentRecursive => WatchMode::PersistentRecursive,
+        }
     }
 }

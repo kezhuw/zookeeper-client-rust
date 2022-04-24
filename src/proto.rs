@@ -27,6 +27,7 @@ pub use self::data::{
     GetRequest,
     OneshotWatchRequest,
     PersistentWatchRequest,
+    RemoveWatchesRequest,
     SetDataRequest,
     SetWatchesRequest,
     SyncRequest,

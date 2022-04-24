@@ -1,4 +1,4 @@
-use num_enum::IntoPrimitive;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[repr(i32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, IntoPrimitive)]
@@ -10,7 +10,7 @@ pub enum PredefinedXid {
 }
 
 #[repr(i32)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, IntoPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum AddWatchMode {
     Persistent = 0,
     PersistentRecursive = 1,

@@ -8,6 +8,7 @@ impl From<ErrorCode> for Error {
         match ec {
             Ok => Error::UnexpectedError("error code 0 is treated as error".to_string()),
             MarshallingError => Error::MarshallingError,
+            Unimplemented => Error::Unimplemented,
             BadArguments => Error::BadArguments(&"server error"),
             NoNode => Error::NoNode,
             NoAuth => Error::NoAuth,
@@ -33,6 +34,7 @@ impl From<ErrorCode> for Error {
 pub enum ErrorCode {
     Ok = 0,
     MarshallingError = -5,
+    Unimplemented = -6,
     BadArguments = -8,
     NoNode = -101,
     NoAuth = -102,

@@ -58,21 +58,39 @@ impl DynamicRecord for CreateRequest<'_> {
     }
 }
 
+pub struct RemoveWatchesRequest<'a> {
+    pub path: &'a str,
+    pub mode: i32,
+}
+
+impl SerializableRecord for RemoveWatchesRequest<'_> {
+    fn serialize(&self, buf: &mut dyn BufMut) {
+        self.path.serialize(buf);
+        self.mode.serialize(buf)
+    }
+}
+
+impl DynamicRecord for RemoveWatchesRequest<'_> {
+    fn serialized_len(&self) -> usize {
+        self.path.serialized_len() + self.mode.serialized_len()
+    }
+}
+
 pub struct SetWatchesRequest<'a> {
     pub relative_zxid: i64,
-    pub watches: &'a [Vec<&'a str>],
+    pub paths: &'a [Vec<&'a str>],
 }
 
 impl SerializableRecord for SetWatchesRequest<'_> {
     fn serialize(&self, buf: &mut dyn BufMut) {
         buf.put_i64(self.relative_zxid);
-        self.watches.iter().for_each(|watches| watches.serialize(buf));
+        self.paths.iter().for_each(|paths| paths.serialize(buf));
     }
 }
 
 impl DynamicRecord for SetWatchesRequest<'_> {
     fn serialized_len(&self) -> usize {
-        let n: usize = self.watches.iter().map(|watches| watches.serialized_len()).sum();
+        let n: usize = self.paths.iter().map(|paths| paths.serialized_len()).sum();
         8 + n
     }
 }

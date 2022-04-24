@@ -1,25 +1,27 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io;
 use std::io::IoSlice;
 use std::time::Duration;
 
-use compact_str::CompactStr;
+use hashbrown::HashMap;
 use ignore_result::Ignore;
+use strum::IntoEnumIterator;
 use tokio::net::TcpStream;
 use tokio::select;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Instant};
 
+use self::watch::WatchManager;
 use super::operation::{
     self,
-    OneshotReceiver,
+    MarshalledRequest,
     Operation,
-    PersistentReceiver,
     SessionOperation,
-    WatchMode,
+    StateResponser,
     WatchReceiver,
+    WatcherId,
 };
-use super::types::{EventType, SessionId, SessionState, WatchedEvent};
+use super::types::{SessionId, SessionState, WatchMode};
 use crate::error::Error;
 use crate::proto::{
     AuthPacket,
@@ -28,18 +30,16 @@ use crate::proto::{
     ErrorCode,
     OpCode,
     PredefinedXid,
+    RemoveWatchesRequest,
     ReplyHeader,
     RequestHeader,
-    SetWatchesRequest,
     WatcherEvent,
 };
 use crate::record;
 
-const SET_WATCHES_MAX_BYTES: usize = 128 * 1024;
-pub type AuthResponser = oneshot::Sender<Result<(), Error>>;
+mod watch;
 
-type OneshotWatchSender = oneshot::Sender<WatchedEvent>;
-type PersistentWatchSender = mpsc::UnboundedSender<WatchedEvent>;
+pub type AuthResponser = oneshot::Sender<Result<(), Error>>;
 
 #[derive(Default)]
 pub struct OperationState {
@@ -47,6 +47,9 @@ pub struct OperationState {
     writing_operations: VecDeque<Operation>,
     written_operations: VecDeque<SessionOperation>,
     pending_auth: Option<(AuthPacket, AuthResponser)>,
+
+    watching_paths: HashMap<(&'static str, WatchMode), usize>,
+    unwatching_paths: HashMap<(&'static str, WatchMode), SessionOperation>,
 }
 
 impl OperationState {
@@ -57,6 +60,8 @@ impl OperationState {
             writing_operations: VecDeque::with_capacity(writing_capacity),
             written_operations: VecDeque::with_capacity(128),
             pending_auth: None,
+            watching_paths: HashMap::with_capacity(32),
+            unwatching_paths: HashMap::with_capacity(32),
         }
     }
 
@@ -66,25 +71,32 @@ impl OperationState {
             writing_operations: VecDeque::with_capacity(10),
             written_operations: VecDeque::with_capacity(10),
             pending_auth: None,
+            watching_paths: HashMap::new(),
+            unwatching_paths: HashMap::new(),
         }
     }
 
     fn clear(&mut self) {
         self.writing_slices.clear();
+        self.watching_paths.clear();
         self.writing_operations.clear();
         self.written_operations.clear();
     }
 
     fn error(&mut self, err: Error) {
         self.written_operations.drain(..).for_each(|operation| {
-            operation.responser.send(Err(err.clone())).ignore();
+            operation.responser.send(Err(err.clone()));
         });
         self.writing_operations.drain(..).for_each(|operation| {
             if let Operation::Session(operation) = operation {
-                operation.responser.send(Err(err.clone())).ignore();
+                operation.responser.send(Err(err.clone()));
             }
         });
+        self.unwatching_paths.drain().for_each(|(_, operation)| {
+            operation.responser.send(Err(err.clone()));
+        });
         self.writing_slices.clear();
+        self.watching_paths.clear();
     }
 
     fn is_empty(&self) -> bool {
@@ -113,6 +125,69 @@ impl OperationState {
         if let Some((auth, responser)) = self.pending_auth.take() {
             self.push_auth(auth, responser);
         }
+    }
+
+    fn cancel_unwatch(&mut self, path: &'static str, mode: WatchMode) {
+        if let Some(SessionOperation { responser, .. }) = self.unwatching_paths.remove(&(path, mode)) {
+            responser.send_empty();
+        }
+    }
+
+    fn fail_watch(&mut self, path: &str, mode: WatchMode) {
+        let path = unsafe { std::mem::transmute::<&str, &'_ str>(path) };
+        let count = self.watching_paths.get_mut(&(path, mode)).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            self.watching_paths.remove(&(path, mode));
+            if let Some(operation) = self.unwatching_paths.remove(&(path, mode)) {
+                self.push_operation(Operation::Session(operation));
+            }
+            if let Some(operation) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
+                self.push_operation(Operation::Session(operation));
+            }
+        }
+    }
+
+    fn succeed_watch(&mut self, path: &str, mode: WatchMode) {
+        let path = unsafe { std::mem::transmute::<&str, &'_ str>(path) };
+        let count = self.watching_paths.get_mut(&(path, mode)).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            self.watching_paths.remove(&(path, mode));
+        }
+        self.cancel_unwatch(path, mode);
+    }
+
+    fn push_session(&mut self, operation: SessionOperation) {
+        if let (op_code, Some((path, mode))) = operation.request.get_operation_info() {
+            let path = unsafe { std::mem::transmute::<&str, &'_ str>(path) };
+            if op_code == OpCode::RemoveWatches {
+                if self.watching_paths.contains_key(&(path, mode))
+                    || (mode == WatchMode::Any && self.has_watching_requests(path))
+                {
+                    self.unwatching_paths.insert((path, mode), operation);
+                    return;
+                }
+            } else {
+                // Overwrite old paths as they could be invalidated after reply.
+                let count = self.watching_paths.get(&(path, mode)).copied().unwrap_or(0) + 1;
+                self.watching_paths.insert((path, mode), count);
+            }
+        }
+        self.push_operation(Operation::Session(operation));
+    }
+
+    fn push_remove_watch(&mut self, path: &str, mode: WatchMode, responser: StateResponser) {
+        let record = RemoveWatchesRequest { path, mode: mode.into() };
+        let operation =
+            SessionOperation { request: MarshalledRequest::new_request(OpCode::RemoveWatches, &record), responser };
+        self.push_session(operation);
+    }
+
+    fn has_watching_requests(&self, path: &str) -> bool {
+        WatchMode::iter()
+            .filter(|mode| *mode != WatchMode::Any)
+            .any(|mode| self.watching_paths.contains_key(&(path, mode)))
     }
 
     fn push_auth(&mut self, auth: AuthPacket, responser: AuthResponser) {
@@ -184,20 +259,21 @@ pub struct Session {
     session_readonly: bool,
 
     pub authes: Vec<AuthPacket>,
-    state_sender: watch::Sender<SessionState>,
+    state_sender: tokio::sync::watch::Sender<SessionState>,
 
-    data_watchers: HashMap<CompactStr, Vec<OneshotWatchSender>>,
-    exist_watchers: HashMap<CompactStr, Vec<OneshotWatchSender>>,
-    child_watchers: HashMap<CompactStr, Vec<OneshotWatchSender>>,
-
-    persistent_watchers: HashMap<CompactStr, Vec<PersistentWatchSender>>,
-    persistent_recursive_watchers: HashMap<CompactStr, Vec<PersistentWatchSender>>,
+    watch_manager: WatchManager,
+    unwatch_receiver: Option<mpsc::UnboundedReceiver<(WatcherId, StateResponser)>>,
 }
 
 impl Session {
-    pub fn new(timeout: Duration, authes: Vec<AuthPacket>, readonly: bool) -> (Session, watch::Receiver<SessionState>) {
-        let (state_sender, state_receiver) = watch::channel(SessionState::Disconnected);
+    pub fn new(
+        timeout: Duration,
+        authes: Vec<AuthPacket>,
+        readonly: bool,
+    ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
+        let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
+        let (watch_manager, unwatch_receiver) = WatchManager::new();
         let mut state = Session {
             timeout,
             readonly,
@@ -220,13 +296,8 @@ impl Session {
 
             authes,
             state_sender,
-
-            data_watchers: HashMap::new(),
-            exist_watchers: HashMap::new(),
-            child_watchers: HashMap::new(),
-
-            persistent_watchers: HashMap::new(),
-            persistent_recursive_watchers: HashMap::new(),
+            watch_manager,
+            unwatch_receiver: Some(unwatch_receiver),
         };
         state.reset_session_timeout(timeout);
         (state, state_receiver)
@@ -235,7 +306,7 @@ impl Session {
     async fn quit(&mut self, mut requester: mpsc::Receiver<SessionOperation>, err: &Error) {
         requester.close();
         while let Some(operation) = requester.recv().await {
-            operation.responser.send(Err(err.clone())).ignore();
+            operation.responser.send(Err(err.clone()));
         }
     }
 
@@ -249,7 +320,8 @@ impl Session {
         mut auth_requester: mpsc::Receiver<(AuthPacket, AuthResponser)>,
     ) {
         let mut state = OperationState::for_serving();
-        self.serve_once(sock, &mut buf, &mut state, &mut requester, &mut auth_requester).await;
+        let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
+        self.serve_once(sock, &mut buf, &mut state, &mut requester, &mut auth_requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
             let mut hosts = servers.iter().map(|(host, port)| (host.as_str(), *port));
             let sock = match self.start(&mut hosts, &mut buf, &mut connecting_state).await {
@@ -260,7 +332,8 @@ impl Session {
                 },
                 Ok(sock) => sock,
             };
-            self.serve_once(sock, &mut buf, &mut state, &mut requester, &mut auth_requester).await;
+            self.serve_once(sock, &mut buf, &mut state, &mut requester, &mut auth_requester, &mut unwatch_requester)
+                .await;
         }
         let err = self.state_error();
         self.quit(requester, &err).await;
@@ -278,7 +351,7 @@ impl Session {
             return;
         }
         self.session_state = state;
-        self.dispatch_session_state(state);
+        self.watch_manager.dispatch_session_state(state);
         self.state_sender.send(state).ignore();
     }
 
@@ -308,8 +381,9 @@ impl Session {
         state: &mut OperationState,
         requester: &mut mpsc::Receiver<SessionOperation>,
         auth_requester: &mut mpsc::Receiver<(AuthPacket, AuthResponser)>,
+        unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) {
-        if let Err(err) = self.serve_session(&sock, buf, state, requester, auth_requester).await {
+        if let Err(err) = self.serve_session(&sock, buf, state, requester, auth_requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
             log::debug!("ZooKeeper session {} state {} error {}", self.session_id, self.session_state, err);
             state.error(err);
@@ -319,201 +393,61 @@ impl Session {
         }
     }
 
-    fn dispatch_oneshot_watcher(
-        watches: &mut HashMap<CompactStr, Vec<OneshotWatchSender>>,
-        path: &str,
-        event: &WatchedEvent,
-    ) {
-        if let Some(senders) = watches.get_mut(path) {
-            senders.drain(..).for_each(|sender| sender.send(event.clone()).ignore())
-        }
-    }
-
-    fn dispatch_persistent_watcher(
-        watches: &HashMap<CompactStr, Vec<PersistentWatchSender>>,
-        path: &str,
-        event: &WatchedEvent,
-    ) {
-        if let Some(senders) = watches.get(path) {
-            senders.iter().for_each(|sender| sender.send(event.clone()).ignore());
-        }
-    }
-
-    fn dispatch_recursive_watcher(
-        watches: &HashMap<CompactStr, Vec<PersistentWatchSender>>,
-        mut path: &str,
-        event: &WatchedEvent,
-    ) {
-        Self::dispatch_persistent_watcher(watches, path, event);
-        while path.len() > 1 {
-            let i = path.rfind('/').unwrap_or(0).max(1);
-            path = unsafe { path.get_unchecked(..i) };
-            Self::dispatch_persistent_watcher(watches, path, event);
-        }
-    }
-
-    fn add_oneshot_watcher(
-        path: &str,
-        watches: &mut HashMap<CompactStr, Vec<OneshotWatchSender>>,
-    ) -> oneshot::Receiver<WatchedEvent> {
-        let (sender, receiver) = oneshot::channel();
-        if let Some(watchers) = watches.get_mut(path) {
-            watchers.push(sender);
-            return receiver;
-        }
-        let watchers = vec![sender];
-        watches.insert(CompactStr::new(path), watchers);
-        receiver
-    }
-
-    fn add_persistent_watcher(
-        path: &str,
-        watches: &mut HashMap<CompactStr, Vec<PersistentWatchSender>>,
-    ) -> PersistentReceiver {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        if let Some(watchers) = watches.get_mut(path) {
-            watchers.push(sender);
-            return receiver;
-        }
-        let watchers = vec![sender];
-        watches.insert(CompactStr::new(path), watchers);
-        receiver
-    }
-
-    fn add_data_watch(&mut self, path: &str) -> OneshotReceiver {
-        Self::add_oneshot_watcher(path, &mut self.data_watchers)
-    }
-
-    fn add_exist_watch(&mut self, path: &str) -> OneshotReceiver {
-        Self::add_oneshot_watcher(path, &mut self.exist_watchers)
-    }
-
-    fn add_child_watch(&mut self, path: &str) -> OneshotReceiver {
-        Self::add_oneshot_watcher(path, &mut self.child_watchers)
-    }
-
-    fn create_watcher(&mut self, path: &str, watch_mode: WatchMode, op_code: OpCode, rc: ErrorCode) -> WatchReceiver {
-        if rc != ErrorCode::Ok {
-            if rc == ErrorCode::NoNode && op_code == OpCode::Exists {
-                return WatchReceiver::Oneshot(self.add_exist_watch(path));
-            }
-            return WatchReceiver::None;
-        }
-        if op_code == OpCode::GetData || op_code == OpCode::Exists {
-            return WatchReceiver::Oneshot(self.add_data_watch(path));
-        } else if op_code == OpCode::GetChildren || op_code == OpCode::GetChildren2 {
-            return WatchReceiver::Oneshot(self.add_child_watch(path));
-        }
-        if watch_mode == WatchMode::Persistent {
-            return WatchReceiver::Persistent(Self::add_persistent_watcher(path, &mut self.persistent_watchers));
-        }
-        assert!(watch_mode == WatchMode::PersistentRecursive);
-        WatchReceiver::Persistent(Self::add_persistent_watcher(path, &mut self.persistent_recursive_watchers))
-    }
-
-    fn dispatch_data_event(&mut self, event: WatchedEvent) {
-        let path = event.path.as_str();
-        Self::dispatch_oneshot_watcher(&mut self.data_watchers, path, &event);
-        Self::dispatch_oneshot_watcher(&mut self.exist_watchers, path, &event);
-        self.dispatch_persistent_event(&event);
-    }
-
-    fn dispatch_child_event(&mut self, event: WatchedEvent) {
-        let path = event.path.as_str();
-        Self::dispatch_oneshot_watcher(&mut self.child_watchers, path, &event);
-        Self::dispatch_persistent_watcher(&self.persistent_watchers, path, &event);
-    }
-
-    fn dispatch_node_delete_event(&mut self, event: WatchedEvent) {
-        let path = event.path.as_str();
-        Self::dispatch_oneshot_watcher(&mut self.data_watchers, path, &event);
-        Self::dispatch_oneshot_watcher(&mut self.exist_watchers, path, &event);
-        Self::dispatch_oneshot_watcher(&mut self.child_watchers, path, &event);
-        self.dispatch_persistent_event(&event);
-    }
-
-    fn dispatch_persistent_event(&mut self, event: &WatchedEvent) {
-        let path = event.path.as_str();
-        Self::dispatch_persistent_watcher(&self.persistent_watchers, path, event);
-        Self::dispatch_recursive_watcher(&self.persistent_recursive_watchers, path, event);
-    }
-
-    fn dispatch_session_state(&mut self, state: SessionState) {
-        let event = WatchedEvent { event_type: EventType::Session, session_state: state, path: String::default() };
-        self.persistent_watchers
-            .values()
-            .flat_map(|senders| senders.iter())
-            .for_each(|sender| sender.send(event.clone()).ignore());
-        self.persistent_recursive_watchers
-            .values()
-            .flat_map(|senders| senders.iter())
-            .for_each(|sender| sender.send(event.clone()).ignore());
-
-        if event.session_state.is_terminated() {
-            self.data_watchers
-                .values_mut()
-                .flat_map(|senders| senders.drain(..))
-                .for_each(|sender| sender.send(event.clone()).ignore());
-            self.exist_watchers
-                .values_mut()
-                .flat_map(|senders| senders.drain(..))
-                .for_each(|sender| sender.send(event.clone()).ignore());
-            self.child_watchers
-                .values_mut()
-                .flat_map(|senders| senders.drain(..))
-                .for_each(|sender| sender.send(event.clone()).ignore());
-
-            self.data_watchers.clear();
-            self.exist_watchers.clear();
-            self.child_watchers.clear();
-            self.persistent_watchers.clear();
-            self.persistent_recursive_watchers.clear();
-        }
-    }
-
-    fn dispatch_server_event(&mut self, event: WatchedEvent) {
-        use EventType::*;
-        match event.event_type {
-            NodeCreated | NodeDataChanged => self.dispatch_data_event(event),
-            NodeChildrenChanged => self.dispatch_child_event(event),
-            NodeDeleted => self.dispatch_node_delete_event(event),
-            _ => unreachable!("unexpected server watch event {:?}", event),
-        }
-    }
-
-    fn handle_notification(&mut self, mut body: &[u8]) -> Result<(), Error> {
-        let watcher_event = record::unmarshal_entity::<WatcherEvent>(&"watch notification", &mut body)?;
-        let session_state = SessionState::from_server(watcher_event.session_state)?;
-        let event_type = EventType::from_server(watcher_event.event_type)?;
-        let event = WatchedEvent { event_type, session_state, path: watcher_event.path };
-        self.dispatch_server_event(event);
+    fn handle_notification(&mut self, mut body: &[u8], state: &mut OperationState) -> Result<(), Error> {
+        let event = record::unmarshal_entity::<WatcherEvent>(&"watch notification", &mut body)?;
+        self.watch_manager.dispatch_server_event(event, state);
         Ok(())
     }
 
-    fn handle_session_reply(&mut self, operation: SessionOperation, rc: i32, body: &[u8]) {
+    fn handle_session_failure(&mut self, operation: SessionOperation, err: Error, state: &mut OperationState) {
         let SessionOperation { responser, request, .. } = operation;
+        let (op_code, watch_info) = request.get_operation_info();
+        if let Some((path, mode)) = watch_info {
+            if op_code != OpCode::RemoveWatches {
+                state.fail_watch(path, mode);
+            }
+        }
+        responser.send(Err(err));
+    }
+
+    fn handle_session_watcher(
+        &mut self,
+        request: &MarshalledRequest,
+        error_code: ErrorCode,
+        state: &mut OperationState,
+    ) -> (OpCode, WatchReceiver) {
+        let (op_code, watch_info) = request.get_operation_info();
+        if op_code == OpCode::RemoveWatches || watch_info.is_none() {
+            return (op_code, WatchReceiver::None);
+        }
+        let (path, mode) = watch_info.unwrap();
+        let watcher = self.watch_manager.create_watcher(path, mode, request.get_code(), error_code);
+        if watcher.is_none() {
+            state.fail_watch(path, mode);
+        } else {
+            state.succeed_watch(path, mode);
+        }
+        (op_code, watcher)
+    }
+
+    fn handle_session_reply(&mut self, operation: SessionOperation, rc: i32, body: &[u8], state: &mut OperationState) {
         let error_code = match ErrorCode::try_from(rc) {
             Ok(error_code) => error_code,
             Err(err) => {
-                let err = Error::from(err);
-                responser.send(Err(err)).ignore();
+                self.handle_session_failure(operation, Error::from(err), state);
                 return;
             },
         };
-        let (op_code, watch_info) = request.get_operation_info();
-        let watcher = if let Some((path, watch_mode)) = watch_info {
-            self.create_watcher(path, watch_mode, request.get_code(), error_code)
-        } else {
-            WatchReceiver::None
-        };
+        let SessionOperation { responser, request, .. } = operation;
+        let (op_code, watcher) = self.handle_session_watcher(&request, error_code, state);
         if error_code == ErrorCode::Ok || (error_code == ErrorCode::NoNode && op_code == OpCode::Exists) {
             let mut buf = request.0;
             buf.clear();
             buf.extend_from_slice(body);
-            responser.send(Ok((buf, watcher))).ignore();
+            responser.send(Ok((buf, watcher)));
         } else {
             assert!(watcher.is_none());
-            responser.send(Err(Error::from(error_code))).ignore();
+            responser.send(Err(Error::from(error_code)));
         }
     }
 
@@ -530,7 +464,7 @@ impl Session {
             }
             return Ok(());
         } else if header.xid == PredefinedXid::Notification.into() {
-            self.handle_notification(body)?;
+            self.handle_notification(body, state)?;
             return Ok(());
         } else if header.xid == PredefinedXid::Ping.into() {
             state.pop_ping()?;
@@ -554,7 +488,7 @@ impl Session {
             state.written_operations.push_front(operation);
             return Err(Error::UnexpectedError(format!("expect response xid {} but got {}", xid, header.xid)));
         }
-        self.handle_session_reply(operation, header.err, body);
+        self.handle_session_reply(operation, header.err, body, state);
         Ok(())
     }
 
@@ -668,6 +602,7 @@ impl Session {
         state: &mut OperationState,
         requester: &mut mpsc::Receiver<SessionOperation>,
         auth_requester: &mut mpsc::Receiver<(AuthPacket, AuthResponser)>,
+        unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) -> Result<(), Error> {
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -692,7 +627,7 @@ impl Session {
                         continue;
                     };
                     operation.request.set_xid(self.next_xid());
-                    state.push_operation(Operation::Session(operation));
+                    state.push_session(operation);
                     state.write_operations(sock, self)?;
                     self.last_send = Instant::now();
                 },
@@ -703,6 +638,7 @@ impl Session {
                         auth_closed = true;
                     };
                 },
+                Some((watcher_id, responser)) = unwatch_requester.recv() => self.watch_manager.drop_watcher(watcher_id, responser, state),
                 now = tick.tick() => {
                     if now >= self.last_recv + self.recv_timeout {
                         return Err(Error::SessionExpired);
@@ -761,53 +697,6 @@ impl Session {
         state.push_operation(Operation::Connect(operation));
     }
 
-    fn oneshot_watches(watchers: &HashMap<CompactStr, Vec<OneshotWatchSender>>) -> impl Iterator<Item = &str> {
-        watchers.iter().filter_map(|(k, v)| if v.is_empty() { None } else { Some(k.as_str()) })
-    }
-
-    fn persistent_watches(watchers: &HashMap<CompactStr, Vec<PersistentWatchSender>>) -> impl Iterator<Item = &str> {
-        watchers.iter().filter_map(|(k, v)| if v.is_empty() { None } else { Some(k.as_str()) })
-    }
-
-    fn send_and_clear_watches(&self, watches: &mut [Vec<&str>; 5], i: usize, state: &mut OperationState) {
-        let (n, op_code) = if i <= 2 { (3, OpCode::SetWatches) } else { (5, OpCode::SetWatches2) };
-        let request = SetWatchesRequest { relative_zxid: self.last_zxid, watches: &watches[..n] };
-        let (operation, _) = operation::build_state_operation(op_code, &request);
-        state.push_operation(Operation::Session(operation));
-        watches[..=i].iter_mut().for_each(|v| v.clear());
-    }
-
-    fn resend_watches(&self, state: &mut OperationState) {
-        use std::iter::repeat;
-        let mut watches = [vec![], vec![], vec![], vec![], vec![]];
-        let data_watchers = repeat(0usize).zip(Self::oneshot_watches(&self.data_watchers));
-        let exist_watchers = repeat(1usize).zip(Self::oneshot_watches(&self.exist_watchers));
-        let child_watchers = repeat(2usize).zip(Self::oneshot_watches(&self.child_watchers));
-        let persistent_watchers = repeat(3usize).zip(Self::persistent_watches(&self.persistent_watchers));
-        let persistent_recursive_watchers =
-            repeat(4usize).zip(Self::persistent_watches(&self.persistent_recursive_watchers));
-
-        let mut index = 0usize;
-        let mut bytes = 0usize;
-        data_watchers
-            .chain(exist_watchers)
-            .chain(child_watchers)
-            .chain(persistent_watchers)
-            .chain(persistent_recursive_watchers)
-            .for_each(|(i, path)| {
-                index = i;
-                bytes += path.len();
-                watches[i].push(path);
-                if bytes > SET_WATCHES_MAX_BYTES {
-                    self.send_and_clear_watches(&mut watches, i, state);
-                    bytes = 0;
-                }
-            });
-        if bytes != 0 {
-            self.send_and_clear_watches(&mut watches, index, state);
-        }
-    }
-
     fn send_authes(&self, state: &mut OperationState) {
         self.authes.iter().for_each(|auth| {
             let operation = operation::build_auth_operation(OpCode::Auth, auth);
@@ -828,7 +717,7 @@ impl Session {
         self.send_connect(state);
         // TODO: Sasl
         self.send_authes(state);
-        self.resend_watches(state);
+        self.watch_manager.resend_watches(self.last_zxid, state);
         self.last_send = Instant::now();
         self.last_recv = self.last_send;
         self.last_ping = None;

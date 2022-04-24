@@ -1,11 +1,13 @@
 use std::time::Duration;
 
+use futures::future;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
 use testcontainers::clients::Cli as DockerCli;
 use testcontainers::core::{Healthcheck, WaitFor};
 use testcontainers::images::generic::GenericImage;
+use tokio::select;
 use zookeeper_client as zk;
 
 fn random_data() -> Vec<u8> {
@@ -367,8 +369,15 @@ async fn test_oneshot_watcher() {
     let path = "/abc";
     let child_path = "/abc/efg";
 
+    // Drop or remove last watchers.
+    let (_, drop_watcher) = client.check_and_watch_stat(path).await.unwrap();
+    drop(drop_watcher);
+    let (_, remove_watcher) = client.check_and_watch_stat(child_path).await.unwrap();
+    remove_watcher.remove().await.unwrap();
+
     // Stat watcher for node creation.
     let (stat, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
+    let (_, child_stat_watcher) = client.check_and_watch_stat(child_path).await.unwrap();
     assert_eq!(stat, None);
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
     let (stat, _) = client.create(path, Default::default(), &create_options).await.unwrap();
@@ -383,9 +392,35 @@ async fn test_oneshot_watcher() {
     let (get_data, get_stat, get_watcher) = client.get_and_watch_data(path).await.unwrap();
     let (_, get_children_stat, get_children_watcher) = client.get_and_watch_children(path).await.unwrap();
     let (_, list_children_watcher) = client.list_and_watch_children(path).await.unwrap();
+    let (_, stat_watcher_same) = client.check_and_watch_stat(path).await.unwrap();
+    let (_, _, get_watcher_same) = client.get_and_watch_data(path).await.unwrap();
 
     assert_eq!((vec![], stat), (get_data, get_stat));
     assert_eq!(stat, get_children_stat);
+
+    let (_, stat_receiving_watcher) = client.check_and_watch_stat(path).await.unwrap();
+    let (_, _, get_receiving_watcher) = client.get_and_watch_data(path).await.unwrap();
+    let (_, stat_received_watcher) = client.check_and_watch_stat(path).await.unwrap();
+    let (_, _, get_received_watcher) = client.get_and_watch_data(path).await.unwrap();
+
+    // Drop or remove watchers before event.
+    let (_, drop_watcher1) = client.check_and_watch_stat(path).await.unwrap();
+    let (_, _, drop_watcher2) = client.get_and_watch_data(path).await.unwrap();
+    let (_, _, drop_watcher3) = client.get_and_watch_children(path).await.unwrap();
+    let (_, drop_watcher4) = client.list_and_watch_children(path).await.unwrap();
+
+    let (_, remove_watcher1) = client.check_and_watch_stat(path).await.unwrap();
+    let (_, _, remove_watcher2) = client.get_and_watch_data(path).await.unwrap();
+    let (_, _, remove_watcher3) = client.get_and_watch_children(path).await.unwrap();
+    let (_, remove_watcher4) = client.list_and_watch_children(path).await.unwrap();
+    drop(drop_watcher1);
+    drop(drop_watcher2);
+    drop(drop_watcher3);
+    drop(drop_watcher4);
+    remove_watcher1.remove().await.unwrap();
+    remove_watcher2.remove().await.unwrap();
+    remove_watcher3.remove().await.unwrap();
+    remove_watcher4.remove().await.unwrap();
 
     // Child creation.
     client.create(child_path, Default::default(), &create_options).await.unwrap();
@@ -395,10 +430,20 @@ async fn test_oneshot_watcher() {
     assert_eq!(child_event.path, path);
     assert_eq!(child_event, get_children_watcher.changed().await);
 
+    let event = child_stat_watcher.changed().await;
+    assert_eq!(event.event_type, zk::EventType::NodeCreated);
+    assert_eq!(event.path, child_path);
+
     eprintln!("child creation done");
 
     let (_, list_children_watcher) = client.list_and_watch_children(path).await.unwrap();
     let (_, _, get_children_watcher) = client.get_and_watch_children(path).await.unwrap();
+
+    let (_, drop_watcher1) = client.list_and_watch_children(path).await.unwrap();
+    let (_, _, drop_watcher2) = client.get_and_watch_children(path).await.unwrap();
+
+    let (_, remove_watcher1) = client.list_and_watch_children(path).await.unwrap();
+    let (_, _, remove_watcher2) = client.get_and_watch_children(path).await.unwrap();
 
     // Child deletion.
     client.delete(child_path, None).await.unwrap();
@@ -408,26 +453,76 @@ async fn test_oneshot_watcher() {
     assert_eq!(child_event.path, path);
     assert_eq!(child_event, get_children_watcher.changed().await);
 
+    // Drop or remove watchers after event delivered.
+    drop(drop_watcher1);
+    drop(drop_watcher2);
+    remove_watcher1.remove().await.unwrap();
+    remove_watcher2.remove().await.unwrap();
+
     let (_, list_children_watcher) = client.list_and_watch_children(path).await.unwrap();
     let (_, _, get_children_watcher) = client.get_and_watch_children(path).await.unwrap();
 
     eprintln!("child deletion done");
 
     // Node data change.
+
+    // Drop receiving watcher.
+    let mut get_receiving_watcher_future = get_receiving_watcher.changed();
+    select! {
+        biased;
+        _ = unsafe { Pin::new_unchecked(&mut get_receiving_watcher_future) } => {},
+        _ = future::ready(()) => {},
+    }
+    drop(get_receiving_watcher_future);
+    let mut stat_receiving_watcher_future = stat_receiving_watcher.changed();
+    select! {
+        biased;
+        _ = unsafe { Pin::new_unchecked(&mut stat_receiving_watcher_future) } => {},
+        _ = future::ready(()) => {},
+    }
+    drop(stat_receiving_watcher_future);
+
     client.set_data(path, Default::default(), None).await.unwrap();
+
+    // Drop probably received watcher.
+    let mut get_received_watcher_future = get_received_watcher.changed();
+    select! {
+        biased;
+        _ = unsafe { Pin::new_unchecked(&mut get_received_watcher_future) } => {},
+        _ = future::ready(()) => {},
+    }
+    drop(get_received_watcher_future);
 
     let node_event = get_watcher.changed().await;
     assert_eq!(node_event.event_type, zk::EventType::NodeDataChanged);
     assert_eq!(node_event.path, path);
     assert_eq!(node_event, stat_watcher.changed().await);
+    assert_eq!(node_event, get_watcher_same.changed().await);
+    assert_eq!(node_event, stat_watcher_same.changed().await);
+
+    // Drop received watcher.
+    let mut stat_received_watcher_future = stat_received_watcher.changed();
+    select! {
+        biased;
+        _ = unsafe { Pin::new_unchecked(&mut stat_received_watcher_future) } => {},
+        _ = future::ready(()) => {},
+    }
+    drop(stat_received_watcher_future);
 
     eprintln!("node data change done");
 
     let (_, _, get_watcher) = client.get_and_watch_data(path).await.unwrap();
     let (_, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
 
+    let (_, _, drop_watcher) = client.get_and_watch_data(path).await.unwrap();
+    let (_, remove_watcher) = client.check_and_watch_stat(path).await.unwrap();
+
     // Node deletion.
     client.delete(path, None).await.unwrap();
+
+    // Drop or remove watchers after event happened.
+    drop(drop_watcher);
+    remove_watcher.remove().await.unwrap();
 
     let node_event = get_watcher.changed().await;
     assert_eq!(node_event.event_type, zk::EventType::NodeDeleted);
@@ -455,9 +550,40 @@ async fn test_persistent_watcher() {
     let grandchild_path = "/abc/efg/123";
     let unrelated_path = "/xyz";
 
+    // Remove last watchers.
+    let root_recursive_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+    let path_persistent_watcher = client.watch(path, zk::AddWatchMode::PersistentRecursive).await.unwrap();
+    drop(root_recursive_watcher);
+    path_persistent_watcher.remove().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
     let mut root_recursive_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
     let mut path_recursive_watcher = client.watch(path, zk::AddWatchMode::PersistentRecursive).await.unwrap();
     let mut path_persistent_watcher = client.watch(path, zk::AddWatchMode::Persistent).await.unwrap();
+
+    let root_recursive_watcher1 = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+    let path_persistent_watcher1 = client.watch(path, zk::AddWatchMode::Persistent).await.unwrap();
+    let root_recursive_watcher2 = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+    let path_persistent_watcher2 = client.watch(path, zk::AddWatchMode::Persistent).await.unwrap();
+    let mut root_recursive_watcher3 = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+    let path_persistent_watcher3 = client.watch(path, zk::AddWatchMode::Persistent).await.unwrap();
+
+    // Remove shared watch before events should have not effect on existing watchers.
+    drop(root_recursive_watcher1);
+    path_persistent_watcher1.remove().await.unwrap();
+
+    let mut root_recursive_watcher3_changed = root_recursive_watcher3.changed();
+    select! {
+        biased;
+        _ = unsafe { Pin::new_unchecked(&mut root_recursive_watcher3_changed) } => {},
+        _ = future::ready(()) => {},
+    }
+    let mut path_persistent_watcher3_remove = path_persistent_watcher3.remove();
+    select! {
+        biased;
+        _ = unsafe { Pin::new_unchecked(&mut path_persistent_watcher3_remove) } => {},
+        _ = future::ready(()) => {},
+    }
 
     // Node creation.
     client.create(path, Default::default(), &create_options).await.unwrap();
@@ -477,6 +603,10 @@ async fn test_persistent_watcher() {
     let child_event = path_persistent_watcher.changed().await;
     assert_eq!(child_event.event_type, zk::EventType::NodeChildrenChanged);
     assert_eq!(child_event.path, path);
+
+    // Remove shared watch after events should have not effect on existing watchers.
+    drop(root_recursive_watcher2);
+    path_persistent_watcher2.remove().await.unwrap();
 
     // Grandchild node creation.
     client.create(grandchild_path, Default::default(), &create_options).await.unwrap();
@@ -508,6 +638,10 @@ async fn test_persistent_watcher() {
     let event = root_recursive_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, unrelated_path);
+
+    // Remove shared watch after events should have not effect on existing watchers.
+    drop(root_recursive_watcher3_changed);
+    drop(path_persistent_watcher3_remove);
 
     // Node deletion.
     client.delete(path, None).await.unwrap();

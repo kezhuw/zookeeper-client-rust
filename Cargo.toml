@@ -24,9 +24,13 @@ compact_str = "0.2.0"
 const_format = "0.2.22"
 log = "0.4.14"
 static_assertions = "1.1.0"
+hashbrown = "0.12.0"
+guard = "0.5.1"
+hashlink = "0.8.0"
 
 [dev-dependencies]
 rand = "0.8.4"
 pretty_assertions = "1.1.0"
 test-case = "1.2.3"
 testcontainers = { git = "https://github.com/kezhuw/testcontainers-rs.git", branch = "zookeeper-client" }
+futures = "0.3.21"

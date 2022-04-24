@@ -65,6 +65,9 @@ pub enum Error {
     #[error("server fail to marshal client request")]
     MarshallingError,
 
+    #[error("unimplemented operation")]
+    Unimplemented,
+
     #[error("connection to server has lost")]
     ConnectionLoss,
 

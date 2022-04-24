@@ -3,7 +3,7 @@ use std::time::Duration;
 use const_format::formatcp;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use super::operation::{self, SessionOperation, WatchReceiver};
+use super::operation::{self, OneshotReceiver, PersistentReceiver, SessionOperation, WatchReceiver};
 use super::session::{AuthResponser, OperationState, Session};
 use super::types::{SessionId, SessionState, WatchedEvent};
 use crate::acl::{Acl, AuthUser};
@@ -183,15 +183,24 @@ impl StateWatcher {
 #[derive(Debug)]
 pub struct OneshotWatcher {
     root_len: usize,
-    receiver: oneshot::Receiver<WatchedEvent>,
+    receiver: OneshotReceiver,
 }
 
 impl OneshotWatcher {
+    fn new(root_len: usize, receiver: OneshotReceiver) -> Self {
+        OneshotWatcher { root_len, receiver }
+    }
+
     /// Waits for node event or session broken.
     pub async fn changed(self) -> WatchedEvent {
-        let mut event = self.receiver.await.unwrap();
+        let mut event = self.receiver.recv().await;
         event.drain_root_len(self.root_len);
         event
+    }
+
+    /// Removes this watcher.
+    pub async fn remove(self) -> Result<(), Error> {
+        self.receiver.remove().await
     }
 }
 
@@ -199,18 +208,33 @@ impl OneshotWatcher {
 #[derive(Debug)]
 pub struct PersistentWatcher {
     root_len: usize,
-    receiver: mpsc::UnboundedReceiver<WatchedEvent>,
+    receiver: PersistentReceiver,
 }
 
 impl PersistentWatcher {
+    fn new(root_len: usize, receiver: PersistentReceiver) -> Self {
+        PersistentWatcher { root_len, receiver }
+    }
+
     /// Waits for next event which could be node event or session activities.
     ///
     /// # Panics
     /// Panic after terminal session event received.
     pub async fn changed(&mut self) -> WatchedEvent {
-        let mut event = self.receiver.recv().await.unwrap();
+        let mut event = self.receiver.recv().await;
         event.drain_root_len(self.root_len);
         event
+    }
+
+    /// Removes this watcher.
+    ///
+    /// # Cautions
+    /// It is a best effect as ZooKeper ([ZOOKEEPER-4472][]) does not support persistent watch
+    /// removing individually.
+    ///
+    /// [ZOOKEEPER-4472]: https://issues.apache.org/jira/browse/ZOOKEEPER-4472
+    pub async fn remove(self) -> Result<(), Error> {
+        self.receiver.remove().await
     }
 }
 
@@ -218,7 +242,7 @@ impl WatchReceiver {
     pub fn into_oneshot(self, root: &str) -> OneshotWatcher {
         match self {
             WatchReceiver::None => unreachable!("expect oneshot watcher, got none watcher"),
-            WatchReceiver::Oneshot(receiver) => OneshotWatcher { root_len: root.len(), receiver },
+            WatchReceiver::Oneshot(receiver) => OneshotWatcher::new(root.len(), receiver),
             WatchReceiver::Persistent(_) => {
                 unreachable!("expect oneshot watcher, got persistent watcher")
             },
@@ -231,14 +255,9 @@ impl WatchReceiver {
             WatchReceiver::Oneshot(_) => {
                 unreachable!("expect oneshot watcher, got oneshot watcher")
             },
-            WatchReceiver::Persistent(receiver) => PersistentWatcher { root_len: root.len(), receiver },
+            WatchReceiver::Persistent(receiver) => PersistentWatcher::new(root.len(), receiver),
         }
     }
-}
-
-impl Drop for PersistentWatcher {
-    // FIXME: remove watcher
-    fn drop(&mut self) {}
 }
 
 /// Client encapsulates ZooKeeper session to interact with ZooKeeper cluster.
@@ -629,9 +648,10 @@ impl Client {
     ///
     /// # Cautions
     /// * Holds returned watcher without polling events may result in memory burst.
-    /// * See [ZOOKEEPER-4466](https://issues.apache.org/jira/browse/ZOOKEEPER-4466) for
-    /// interferences among different watch modes for same path or paths with parent-child
-    /// relationship.
+    /// * At the time of written, ZooKeeper [ZOOKEEPER-4466][] does not support oneshot and
+    /// persistent watch on same path.
+    ///
+    /// [ZOOKEEPER-4466]: https://issues.apache.org/jira/browse/ZOOKEEPER-4466
     pub async fn watch(&self, path: &str, mode: AddWatchMode) -> Result<PersistentWatcher, Error> {
         let (leaf, _) = self.validate_path(path)?;
         let proto_mode = proto::AddWatchMode::from(mode);
@@ -646,8 +666,10 @@ impl Client {
     /// `sync + read` could not guarantee linearizable semantics as `sync` is not quorum acked and
     /// leader could change in between.
     ///
-    /// See [ZOOKEEPER-1675](https://issues.apache.org/jira/browse/ZOOKEEPER-1675) and
-    /// [ZOOKEEPER-2136](https://issues.apache.org/jira/browse/ZOOKEEPER-2136) for reference.
+    /// See [ZOOKEEPER-1675][] and [ZOOKEEPER-2136][] for reference.
+    ///
+    /// [ZOOKEEPER-1675]: https://issues.apache.org/jira/browse/ZOOKEEPER-1675
+    /// [ZOOKEEPER-2136]: https://issues.apache.org/jira/browse/ZOOKEEPER-2136
     pub async fn sync(&self, path: &str) -> Result<(), Error> {
         let (leaf, _) = self.validate_path(path)?;
         let request = SyncRequest { path: RootedPath::new(&self.root, leaf) };
@@ -683,8 +705,9 @@ impl Client {
     /// * ZooKeeper 3.7.0 and above
     ///
     /// # References
-    /// * [ZOOKEEPER-3969](https://issues.apache.org/jira/browse/ZOOKEEPER-3969) Add whoami API and
-    /// Cli command.
+    /// * [ZOOKEEPER-3969][] Add whoami API and Cli command.
+    ///
+    /// [ZOOKEEPER-3969]: https://issues.apache.org/jira/browse/ZOOKEEPER-3969
     pub async fn list_auth_users(&self) -> Result<Vec<AuthUser>, Error> {
         let request = ();
         let (body, _) = self.request(OpCode::WhoAmI, &request).await?;
