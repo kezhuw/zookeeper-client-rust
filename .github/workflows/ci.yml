@@ -46,6 +46,31 @@ jobs:
           override: true
     - name: Test code
       run: cargo test
+  coverage:
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'master')
+    needs: [test]
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Cinstrument-coverage -Dwarnings
+    steps:
+    - uses: actions/checkout@v2
+    - uses: Swatinem/rust-cache@v1
+    - name: Install latest nightly
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: nightly
+          override: true
+          components: llvm-tools-preview
+    - run: cargo install grcov
+    - run: cargo build --verbose
+    - name: Run tests
+      run: LLVM_PROFILE_FILE="zookeeper-client-%p-%m.profraw" cargo test --verbose
+    - name: Generate coverage report
+      run: grcov $(find . -name "zookeeper-*.profraw" -print) --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
+    - name: Upload to codecov.io
+      uses: codecov/codecov-action@v2
+      with:
+        verbose: true
   lint:
     needs: [build]
     runs-on: ubuntu-latest

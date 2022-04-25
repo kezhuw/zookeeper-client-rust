@@ -1,8 +1,9 @@
 # ZooKeeper client in async rust
-[![crates.io](https://img.shields.io/crates/v/zookeeper-client?style=for-the-badge)](https://crates.io/crates/zookeeper-client)
-[![docs.rs](https://img.shields.io/docsrs/zookeeper-client?style=for-the-badge)](https://docs.rs/zookeeper-client)
-[![github-ci](https://img.shields.io/github/workflow/status/kezhuw/zookeeper-client-rust/CI?style=for-the-badge)](https://github.com/kezhuw/zookeeper-client-rust/actions)
-[![mit-license](https://img.shields.io/github/license/kezhuw/zookeeper-client-rust?style=for-the-badge)](LICENSE)
+[![crates.io](https://img.shields.io/crates/v/zookeeper-client)](https://crates.io/crates/zookeeper-client)
+[![docs.rs](https://img.shields.io/docsrs/zookeeper-client)](https://docs.rs/zookeeper-client)
+[![github-ci](https://github.com/kezhuw/zookeeper-client-rust/actions/workflows/ci.yml/badge.svg?event=push)](https://github.com/kezhuw/zookeeper-client-rust/actions)
+[![mit-license](https://img.shields.io/github/license/kezhuw/zookeeper-client-rust)](LICENSE)
+[![codecov](https://codecov.io/gh/kezhuw/zookeeper-client-rust/branch/master/graph/badge.svg?token=C98TXPU5ZZ)](https://codecov.io/gh/kezhuw/zookeeper-client-rust)
 
 ZooKeeper client writes in async rust.
 
