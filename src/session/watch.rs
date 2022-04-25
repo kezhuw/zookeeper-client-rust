@@ -4,21 +4,126 @@ use hashlink::LinkedHashSet;
 use ignore_result::Ignore;
 use tokio::sync::{mpsc, oneshot};
 
-use super::OperationState;
-use crate::client::operation::{
-    self,
-    OneshotReceiver,
-    Operation,
-    PersistentReceiver,
-    StateResponser,
-    WatchReceiver,
-    WatcherId,
-};
-use crate::client::types::{EventType, SessionState, WatchMode, WatchedEvent};
-use crate::proto::{ErrorCode, OpCode, SetWatchesRequest, WatcherEvent};
+use super::depot::Depot;
+use super::event::WatcherEvent;
+use super::request::{self, Operation, StateResponser};
+use super::types::{EventType, SessionState, WatchMode, WatchedEvent};
+use crate::error::Error;
+use crate::proto::{ErrorCode, OpCode, SetWatchesRequest};
 use crate::util::Ref;
 
 const SET_WATCHES_MAX_BYTES: usize = 128 * 1024;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct WatcherId(u64);
+
+impl WatcherId {
+    pub fn new(id: u64) -> Self {
+        WatcherId(id)
+    }
+}
+
+#[derive(Debug)]
+pub enum WatchReceiver {
+    None,
+    Oneshot(OneshotReceiver),
+    Persistent(PersistentReceiver),
+}
+
+impl WatchReceiver {
+    pub fn is_none(&self) -> bool {
+        matches!(self, WatchReceiver::None)
+    }
+}
+
+#[derive(Debug)]
+pub struct OneshotReceiver {
+    id: WatcherId,
+    unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    receiver: Option<oneshot::Receiver<WatchedEvent>>,
+}
+
+impl OneshotReceiver {
+    pub fn new(
+        id: WatcherId,
+        receiver: oneshot::Receiver<WatchedEvent>,
+        unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    ) -> Self {
+        OneshotReceiver { id, receiver: Some(receiver), unwatch }
+    }
+
+    unsafe fn into_unwatch(self) -> mpsc::UnboundedSender<(WatcherId, StateResponser)> {
+        let unwatch = std::ptr::read(&self.unwatch);
+        std::ptr::read(&self.receiver);
+        std::mem::forget(self);
+        unwatch
+    }
+
+    pub async fn recv(mut self) -> WatchedEvent {
+        let receiver = self.receiver.take().unwrap();
+        let event = receiver.await.unwrap();
+        unsafe { self.into_unwatch() };
+        event
+    }
+
+    pub async fn remove(self) -> Result<(), Error> {
+        let id = self.id;
+        let unwatch = unsafe { self.into_unwatch() };
+        let (sender, receiver) = oneshot::channel();
+        unwatch.send((id, StateResponser::new(sender))).ignore();
+        receiver.await.unwrap()?;
+        Ok(())
+    }
+}
+
+impl Drop for OneshotReceiver {
+    fn drop(&mut self) {
+        self.unwatch.send((self.id, Default::default())).ignore();
+    }
+}
+
+#[derive(Debug)]
+pub struct PersistentReceiver {
+    id: WatcherId,
+    unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    receiver: mpsc::UnboundedReceiver<WatchedEvent>,
+}
+
+impl PersistentReceiver {
+    pub fn new(
+        id: WatcherId,
+        receiver: mpsc::UnboundedReceiver<WatchedEvent>,
+        unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    ) -> Self {
+        PersistentReceiver { id, receiver, unwatch }
+    }
+
+    unsafe fn into_unwatch(self) -> mpsc::UnboundedSender<(WatcherId, StateResponser)> {
+        let unwatch = std::ptr::read(&self.unwatch);
+        std::ptr::read(&self.receiver);
+        std::mem::forget(self);
+        unwatch
+    }
+
+    pub async fn recv(&mut self) -> WatchedEvent {
+        self.receiver.recv().await.unwrap()
+    }
+
+    pub async fn remove(self) -> Result<(), Error> {
+        let id = self.id;
+        let unwatch = unsafe { self.into_unwatch() };
+        let (sender, receiver) = oneshot::channel();
+        unwatch.send((id, StateResponser::new(sender))).ignore();
+        receiver.await.unwrap()?;
+        Ok(())
+    }
+}
+
+impl Drop for PersistentReceiver {
+    fn drop(&mut self) {
+        self.unwatch.send((self.id, Default::default())).ignore();
+    }
+}
 
 enum WatchSender {
     Oneshot(oneshot::Sender<WatchedEvent>),
@@ -223,15 +328,15 @@ impl WatchManager {
         }
     }
 
-    pub fn dispatch_server_event(&mut self, event: WatcherEvent, state: &mut OperationState) {
+    pub fn dispatch_server_event(&mut self, event: WatcherEvent, depot: &mut Depot) {
         use EventType::*;
         match event.event_type {
-            NodeCreated | NodeDeleted | NodeDataChanged | NodeChildrenChanged => self.dispatch_path_event(event, state),
+            NodeCreated | NodeDeleted | NodeDataChanged | NodeChildrenChanged => self.dispatch_path_event(event, depot),
             _ => unreachable!("unexpected server watch event {:?}", event),
         }
     }
 
-    fn dispatch_path_event(&mut self, event: WatcherEvent, state: &mut OperationState) {
+    fn dispatch_path_event(&mut self, event: WatcherEvent, depot: &mut Depot) {
         let mut path = event.path;
         let mut has_watch = false;
         if let Some(watch) = self.watches.get_mut(path) {
@@ -254,11 +359,11 @@ impl WatchManager {
         }
         if !has_watch {
             // Probably a dangling peristent watcher.
-            state.push_remove_watch(path, WatchMode::Any, StateResponser::none());
+            depot.push_remove_watch(path, WatchMode::Any, StateResponser::none());
         }
     }
 
-    pub fn drop_watcher(&mut self, watcher_id: WatcherId, responser: StateResponser, state: &mut OperationState) {
+    pub fn drop_watcher(&mut self, watcher_id: WatcherId, responser: StateResponser, depot: &mut Depot) {
         guard!(let Some(path) = self.watching_paths.remove(&watcher_id) else {
             responser.send_empty();
             return;
@@ -274,25 +379,25 @@ impl WatchManager {
         let mut mode = watcher.kind.into_remove_mode();
         if watch.is_empty() {
             self.remove_watches(path);
-            if mode != WatchMode::Any && !state.has_watching_requests(path) {
+            if mode != WatchMode::Any && !depot.has_watching_requests(path) {
                 mode = WatchMode::Any;
             }
         } else if mode == WatchMode::Any || watch.has_mode(mode) {
             responser.send_empty();
             return;
         }
-        state.push_remove_watch(path, mode, responser);
+        depot.push_remove_watch(path, mode, responser);
     }
 
-    fn send_and_clear_watches(&self, last_zxid: i64, paths: &mut [Vec<&str>; 5], i: usize, state: &mut OperationState) {
+    fn send_and_clear_watches(&self, last_zxid: i64, paths: &mut [Vec<&str>; 5], i: usize, depot: &mut Depot) {
         let (n, op_code) = if i <= 2 { (3, OpCode::SetWatches) } else { (5, OpCode::SetWatches2) };
         let request = SetWatchesRequest { relative_zxid: last_zxid, paths: &paths[..n] };
-        let (operation, _) = operation::build_state_operation(op_code, &request);
-        state.push_operation(Operation::Session(operation));
+        let (operation, _) = request::build_state_operation(op_code, &request);
+        depot.push_operation(Operation::Session(operation));
         paths[..=i].iter_mut().for_each(|v| v.clear());
     }
 
-    pub fn resend_watches(&self, last_zxid: i64, state: &mut OperationState) {
+    pub fn resend_watches(&self, last_zxid: i64, depot: &mut Depot) {
         if self.watches.is_empty() {
             return;
         }
@@ -309,7 +414,7 @@ impl WatchManager {
                     index = index.max(index);
                     bytes += path.len();
                     if bytes > SET_WATCHES_MAX_BYTES {
-                        self.send_and_clear_watches(last_zxid, &mut paths, index, state);
+                        self.send_and_clear_watches(last_zxid, &mut paths, index, depot);
                         index = 0;
                         bytes = 0;
                     }
@@ -317,7 +422,7 @@ impl WatchManager {
             }
         }
         if bytes != 0 {
-            self.send_and_clear_watches(last_zxid, &mut paths, index, state);
+            self.send_and_clear_watches(last_zxid, &mut paths, index, depot);
         }
     }
 }

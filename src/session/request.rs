@@ -1,8 +1,9 @@
 use bytes::{Buf, BufMut};
 use ignore_result::Ignore;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
-use super::types::{WatchMode, WatchedEvent};
+use super::types::WatchMode;
+use super::watch::WatchReceiver;
 use crate::error::Error;
 use crate::proto::{self, AddWatchMode, ConnectRequest, OpCode, RequestHeader};
 use crate::record::{self, Record, StaticRecord};
@@ -107,117 +108,6 @@ pub struct MarshalledRequest(pub Vec<u8>);
 pub struct SessionOperation {
     pub request: MarshalledRequest,
     pub responser: StateResponser,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct WatcherId(u64);
-
-impl WatcherId {
-    pub fn new(id: u64) -> Self {
-        WatcherId(id)
-    }
-}
-
-#[derive(Debug)]
-pub enum WatchReceiver {
-    None,
-    Oneshot(OneshotReceiver),
-    Persistent(PersistentReceiver),
-}
-
-impl WatchReceiver {
-    pub fn is_none(&self) -> bool {
-        matches!(self, WatchReceiver::None)
-    }
-}
-
-#[derive(Debug)]
-pub struct OneshotReceiver {
-    id: WatcherId,
-    unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
-    receiver: Option<oneshot::Receiver<WatchedEvent>>,
-}
-
-impl OneshotReceiver {
-    pub fn new(
-        id: WatcherId,
-        receiver: oneshot::Receiver<WatchedEvent>,
-        unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
-    ) -> Self {
-        OneshotReceiver { id, receiver: Some(receiver), unwatch }
-    }
-
-    unsafe fn into_unwatch(self) -> mpsc::UnboundedSender<(WatcherId, StateResponser)> {
-        let unwatch = std::ptr::read(&self.unwatch);
-        std::ptr::read(&self.receiver);
-        std::mem::forget(self);
-        unwatch
-    }
-
-    pub async fn recv(mut self) -> WatchedEvent {
-        let receiver = self.receiver.take().unwrap();
-        let event = receiver.await.unwrap();
-        unsafe { self.into_unwatch() };
-        event
-    }
-
-    pub async fn remove(self) -> Result<(), Error> {
-        let id = self.id;
-        let unwatch = unsafe { self.into_unwatch() };
-        let (sender, receiver) = oneshot::channel();
-        unwatch.send((id, StateResponser::new(sender))).ignore();
-        receiver.await.unwrap()?;
-        Ok(())
-    }
-}
-
-impl Drop for OneshotReceiver {
-    fn drop(&mut self) {
-        self.unwatch.send((self.id, Default::default())).ignore();
-    }
-}
-
-#[derive(Debug)]
-pub struct PersistentReceiver {
-    id: WatcherId,
-    unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
-    receiver: mpsc::UnboundedReceiver<WatchedEvent>,
-}
-
-impl PersistentReceiver {
-    pub fn new(
-        id: WatcherId,
-        receiver: mpsc::UnboundedReceiver<WatchedEvent>,
-        unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
-    ) -> Self {
-        PersistentReceiver { id, receiver, unwatch }
-    }
-
-    unsafe fn into_unwatch(self) -> mpsc::UnboundedSender<(WatcherId, StateResponser)> {
-        let unwatch = std::ptr::read(&self.unwatch);
-        std::ptr::read(&self.receiver);
-        std::mem::forget(self);
-        unwatch
-    }
-
-    pub async fn recv(&mut self) -> WatchedEvent {
-        self.receiver.recv().await.unwrap()
-    }
-
-    pub async fn remove(self) -> Result<(), Error> {
-        let id = self.id;
-        let unwatch = unsafe { self.into_unwatch() };
-        let (sender, receiver) = oneshot::channel();
-        unwatch.send((id, StateResponser::new(sender))).ignore();
-        receiver.await.unwrap()?;
-        Ok(())
-    }
-}
-
-impl Drop for PersistentReceiver {
-    fn drop(&mut self) {
-        self.unwatch.send((self.id, Default::default())).ignore();
-    }
 }
 
 pub type StateReceiver = oneshot::Receiver<Result<(Vec<u8>, WatchReceiver), Error>>;

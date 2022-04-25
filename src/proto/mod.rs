@@ -4,7 +4,6 @@ mod connect;
 mod consts;
 mod data;
 mod error_code;
-mod event;
 mod op_code;
 mod path;
 mod reconfig;
@@ -33,7 +32,6 @@ pub use self::data::{
     SyncRequest,
 };
 pub use self::error_code::ErrorCode;
-pub use self::event::WatcherEvent;
 pub use self::op_code::OpCode;
 pub use self::path::RootedPath;
 pub use self::reconfig::{EnsembleUpdate, ReconfigRequest};
