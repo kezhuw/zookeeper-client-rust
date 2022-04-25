@@ -359,7 +359,7 @@ impl WatchManager {
         }
         if !has_watch {
             // Probably a dangling peristent watcher.
-            depot.push_remove_watch(path, WatchMode::Any, StateResponser::none());
+            depot.push_remove_watch(event.path, WatchMode::Any, StateResponser::none());
         }
     }
 

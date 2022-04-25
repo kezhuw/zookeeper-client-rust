@@ -535,6 +535,46 @@ async fn test_oneshot_watcher() {
 }
 
 #[tokio::test]
+async fn test_persistent_watcher_passive_remove() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+
+    let path = "/abc";
+    let child_path = "/abc/efg";
+    let grandchild_path = "/abc/efg/123";
+
+    client.create(path, Default::default(), &create_options).await.unwrap();
+    client.create(child_path, Default::default(), &create_options).await.unwrap();
+    client.create(grandchild_path, Default::default(), &create_options).await.unwrap();
+    let (_, root_child_watcher) = client.list_and_watch_children("/").await.unwrap();
+
+    // Two watchers on same path, drop persistent watcher has no effect.
+    let (_, children_watcher) = client.list_and_watch_children(child_path).await.unwrap();
+    let persistent_watcher = client.watch(child_path, zk::AddWatchMode::Persistent).await.unwrap();
+    drop(persistent_watcher);
+
+    client.delete(grandchild_path, None).await.unwrap();
+    let child_event = children_watcher.changed().await;
+    assert_eq!(child_event.event_type, zk::EventType::NodeChildrenChanged);
+    assert_eq!(child_event.path, child_path);
+
+    // Now, no watcher remains, this deletion will detect dangling persistent watcher.
+    client.delete(child_path, None).await.unwrap();
+
+    // No other watchers should be affected.
+    client.delete(path, None).await.unwrap();
+    let child_event = root_child_watcher.changed().await;
+    assert_eq!(child_event.event_type, zk::EventType::NodeChildrenChanged);
+    assert_eq!(child_event.path, "/");
+}
+
+#[tokio::test]
 async fn test_persistent_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
