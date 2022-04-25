@@ -64,7 +64,6 @@ assert_eq!(session_event.session_state, zk::SessionState::Closed);
 For more examples, see [zookeeper.rs](tests/zookeeper.rs).
 
 ## TODO
-* [ ] `Drop` for PersistentWatcher
 * [ ] Sasl authentication
 
 ## License
