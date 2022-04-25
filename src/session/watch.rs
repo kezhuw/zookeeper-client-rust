@@ -363,18 +363,15 @@ impl WatchManager {
         }
     }
 
-    pub fn drop_watcher(&mut self, watcher_id: WatcherId, responser: StateResponser, depot: &mut Depot) {
+    fn try_remove_watcher(&mut self, watcher_id: WatcherId, depot: &Depot) -> Option<(&str, WatchMode)> {
         guard!(let Some(path) = self.watching_paths.remove(&watcher_id) else {
-            responser.send_empty();
-            return;
+            return None;
         });
         guard!(let Some(watch) = self.watches.get_mut(path) else {
-            responser.send_empty();
-            return;
+            return None;
         });
         guard!(let Some(watcher) = watch.remove_watcher(watcher_id) else {
-            responser.send_empty();
-            return;
+            return None;
         });
         let mut mode = watcher.kind.into_remove_mode();
         if watch.is_empty() {
@@ -383,10 +380,17 @@ impl WatchManager {
                 mode = WatchMode::Any;
             }
         } else if mode == WatchMode::Any || watch.has_mode(mode) {
-            responser.send_empty();
-            return;
+            return None;
         }
-        depot.push_remove_watch(path, mode, responser);
+        Some((path, mode))
+    }
+
+    pub fn remove_watcher(&mut self, watcher_id: WatcherId, responser: StateResponser, depot: &mut Depot) {
+        if let Some((path, mode)) = self.try_remove_watcher(watcher_id, depot) {
+            depot.push_remove_watch(path, mode, responser);
+        } else {
+            responser.send_empty();
+        }
     }
 
     fn send_and_clear_watches(&self, last_zxid: i64, paths: &mut [Vec<&str>; 5], i: usize, depot: &mut Depot) {

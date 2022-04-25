@@ -3,6 +3,7 @@ mod event;
 mod request;
 mod types;
 mod watch;
+mod xid;
 
 use std::io;
 use std::time::Duration;
@@ -35,8 +36,6 @@ use crate::record;
 pub struct Session {
     timeout: Duration,
     readonly: bool,
-
-    prev_xid: i32,
 
     last_zxid: i64,
     last_recv: Instant,
@@ -71,8 +70,6 @@ impl Session {
         let mut session = Session {
             timeout,
             readonly,
-
-            prev_xid: 0,
 
             last_zxid: 0,
             last_recv: now,
@@ -339,15 +336,6 @@ impl Session {
         Ok(())
     }
 
-    fn next_xid(&mut self) -> i32 {
-        if self.prev_xid == i32::MAX {
-            self.prev_xid = 1;
-        } else {
-            self.prev_xid += 1;
-        };
-        self.prev_xid
-    }
-
     async fn serve_connecting(&mut self, sock: &TcpStream, buf: &mut Vec<u8>, depot: &mut Depot) -> Result<(), Error> {
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -396,13 +384,12 @@ impl Session {
                     self.last_send = Instant::now();
                 },
                 r = requester.recv(), if !channel_closed => {
-                    let mut operation = if let Some(operation) = r {
+                    let operation = if let Some(operation) = r {
                         operation
                     } else {
                         channel_closed = true;
                         continue;
                     };
-                    operation.request.set_xid(self.next_xid());
                     depot.push_session(operation);
                     depot.write_operations(sock, self.session_id)?;
                     self.last_send = Instant::now();
@@ -412,7 +399,7 @@ impl Session {
                     None => auth_closed = true,
                 },
                 r = unwatch_requester.recv() => if let Some((watcher_id, responser)) = r {
-                    self.watch_manager.drop_watcher(watcher_id, responser, depot);
+                    self.watch_manager.remove_watcher(watcher_id, responser, depot);
                 },
                 now = tick.tick() => {
                     if now >= self.last_recv + self.recv_timeout {

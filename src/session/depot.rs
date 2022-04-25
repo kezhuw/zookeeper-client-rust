@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 
 use super::request::{self, MarshalledRequest, Operation, SessionOperation, StateResponser};
 use super::types::WatchMode;
+use super::xid::Xid;
 use super::SessionId;
 use crate::error::Error;
 use crate::proto::{AuthPacket, OpCode, RemoveWatchesRequest};
@@ -16,6 +17,8 @@ pub type AuthResponser = oneshot::Sender<Result<(), Error>>;
 
 #[derive(Default)]
 pub struct Depot {
+    xid: Xid,
+
     writing_slices: Vec<IoSlice<'static>>,
     writing_operations: VecDeque<Operation>,
     written_operations: VecDeque<SessionOperation>,
@@ -29,6 +32,7 @@ impl Depot {
     pub fn for_serving() -> Depot {
         let writing_capacity = 128usize;
         Depot {
+            xid: Default::default(),
             writing_slices: Vec::with_capacity(writing_capacity),
             writing_operations: VecDeque::with_capacity(writing_capacity),
             written_operations: VecDeque::with_capacity(128),
@@ -40,6 +44,7 @@ impl Depot {
 
     pub fn for_connecting() -> Depot {
         Depot {
+            xid: Default::default(),
             writing_slices: Vec::with_capacity(10),
             writing_operations: VecDeque::with_capacity(10),
             written_operations: VecDeque::with_capacity(10),
@@ -157,7 +162,7 @@ impl Depot {
         self.cancel_unwatch(path, mode);
     }
 
-    pub fn push_session(&mut self, operation: SessionOperation) {
+    pub fn push_session(&mut self, mut operation: SessionOperation) {
         if let (op_code, Some((path, mode))) = operation.request.get_operation_info() {
             let path = unsafe { std::mem::transmute::<&str, &'_ str>(path) };
             if op_code == OpCode::RemoveWatches {
@@ -173,6 +178,7 @@ impl Depot {
                 self.watching_paths.insert((path, mode), count);
             }
         }
+        operation.request.set_xid(self.xid.next());
         self.push_operation(Operation::Session(operation));
     }
 
