@@ -1,4 +1,4 @@
-use compact_str::CompactStr;
+use compact_str::CompactString;
 
 /// Permission expresses rights accessors should have to operate on attached node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,18 +66,18 @@ pub struct Acl {
 /// AuthId represents authenticated identity and expresses authentication requirement in [Acl].
 #[derive(Clone, Debug)]
 pub struct AuthId {
-    scheme: CompactStr,
-    id: CompactStr,
+    scheme: CompactString,
+    id: CompactString,
 }
 
 impl AuthId {
     /// Constructs an auth id with specified id under given scheme.
     pub fn new(scheme: &str, id: &str) -> AuthId {
-        AuthId { scheme: CompactStr::new(scheme), id: CompactStr::new(id) }
+        AuthId { scheme: CompactString::new(scheme), id: CompactString::new(id) }
     }
 
     const fn new_const(scheme: &'static str, id: &'static str) -> AuthId {
-        AuthId { scheme: CompactStr::new_inline(scheme), id: CompactStr::new_inline(id) }
+        AuthId { scheme: CompactString::new_inline(scheme), id: CompactString::new_inline(id) }
     }
 
     /// Returns the scheme this auth id serve for.
@@ -104,14 +104,14 @@ impl AuthId {
 /// AuthUser represents display info for authenticated identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthUser {
-    scheme: CompactStr,
-    user: CompactStr,
+    scheme: CompactString,
+    user: CompactString,
 }
 
 impl AuthUser {
     /// Constructs an auth user with auth scheme and user name.
     pub fn new(scheme: &str, user: &str) -> AuthUser {
-        AuthUser { scheme: CompactStr::new(scheme), user: CompactStr::new(user) }
+        AuthUser { scheme: CompactString::new(scheme), user: CompactString::new(user) }
     }
 
     /// Returns authed scheme.
@@ -136,7 +136,10 @@ impl Acl {
     }
 
     const fn new_const(permission: Permission, scheme: &'static str, id: &'static str) -> Acl {
-        Acl { permission, auth_id: AuthId { scheme: CompactStr::new_inline(scheme), id: CompactStr::new_inline(id) } }
+        Acl {
+            permission,
+            auth_id: AuthId { scheme: CompactString::new_inline(scheme), id: CompactString::new_inline(id) },
+        }
     }
 
     /// Returns acl that expresses anyone can have full permissions over nodes created by this
