@@ -20,7 +20,13 @@ fn zookeeper_image() -> GenericImage {
         .with_cmd(["./bin/zkServer.sh", "status"].iter())
         .with_interval(Duration::from_secs(6))
         .with_retries(30);
-    GenericImage::new("zookeeper", "3.7.0").with_healthcheck(healthcheck).with_wait_for(WaitFor::Healthcheck)
+    GenericImage::new("zookeeper", "3.7.0")
+        .with_healthcheck(healthcheck)
+        .with_env_var(
+            "SERVER_JVMFLAGS",
+            "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU=",
+        )
+        .with_wait_for(WaitFor::Healthcheck)
 }
 
 async fn example() {
@@ -532,6 +538,27 @@ async fn test_oneshot_watcher() {
     assert_eq!(node_event, list_children_watcher.changed().await);
 
     eprintln!("node deletion done");
+}
+
+#[tokio::test]
+async fn test_config_watch() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let connect = format!("{}/root", cluster);
+    let client1 = zk::Client::connect(&connect, Duration::from_secs(10)).await.unwrap();
+    let (config_bytes, stat, watcher) = client1.get_and_watch_config().await.unwrap();
+
+    let client2 = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    client2.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
+    client2.set_data("/zookeeper/config", &config_bytes, Some(stat.version)).await.unwrap();
+
+    let event = watcher.changed().await;
+    assert_eq!(event.event_type, zk::EventType::NodeDataChanged);
+    assert_eq!(event.path, "/zookeeper/config");
 }
 
 #[tokio::test]

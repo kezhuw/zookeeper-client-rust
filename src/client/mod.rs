@@ -612,8 +612,8 @@ impl Client {
 
     /// Gets stat and data for ZooKeeper config node, that is node with path "/zookeeper/config".
     pub async fn get_and_watch_config(&self) -> Result<(Vec<u8>, Stat, OneshotWatcher), Error> {
-        let (data, stat, watcher) = self.get_data_internally(Self::CONFIG_NODE, Default::default(), false).await?;
-        Ok((data, stat, watcher.into_oneshot(&self.root)))
+        let (data, stat, watcher) = self.get_data_internally(Self::CONFIG_NODE, Default::default(), true).await?;
+        Ok((data, stat, watcher.into_oneshot("")))
     }
 
     /// Updates ZooKeeper ensemble.
