@@ -597,8 +597,7 @@ impl Client {
     ///
     /// [ZOOKEEPER-3969]: https://issues.apache.org/jira/browse/ZOOKEEPER-3969
     pub async fn list_auth_users(&self) -> Result<Vec<AuthUser>, Error> {
-        let request = ();
-        let (body, _) = self.request(OpCode::WhoAmI, &request).await?;
+        let (body, _) = self.request(OpCode::WhoAmI, &()).await?;
         let mut buf = body.as_slice();
         let authed_users = record::unmarshal_entity::<Vec<AuthUser>>(&"authed users", &mut buf)?;
         Ok(authed_users)
