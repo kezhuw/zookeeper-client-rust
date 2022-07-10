@@ -14,24 +14,38 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
 
-pub use self::depot::{AuthResponser, Depot};
+pub use self::depot::Depot;
 use self::event::WatcherEvent;
-pub use self::request::{build_state_operation, MarshalledRequest, Operation, SessionOperation, StateResponser};
+pub use self::request::{
+    ConnectOperation,
+    MarshalledRequest,
+    Operation,
+    SessionOperation,
+    StateReceiver,
+    StateResponser,
+};
 pub use self::types::{EventType, SessionId, SessionState, WatchedEvent};
 pub use self::watch::{OneshotReceiver, PersistentReceiver, WatchReceiver};
 use self::watch::{WatchManager, WatcherId};
 use crate::error::Error;
-use crate::proto::{
-    AuthPacket,
-    ConnectRequest,
-    ConnectResponse,
-    ErrorCode,
-    OpCode,
-    PredefinedXid,
-    ReplyHeader,
-    RequestHeader,
-};
+use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
 use crate::record;
+
+trait RequestOperation {
+    fn into_responser(self) -> StateResponser;
+}
+
+impl RequestOperation for SessionOperation {
+    fn into_responser(self) -> StateResponser {
+        self.responser
+    }
+}
+
+impl RequestOperation for (WatcherId, StateResponser) {
+    fn into_responser(self) -> StateResponser {
+        self.1
+    }
+}
 
 pub struct Session {
     timeout: Duration,
@@ -51,7 +65,7 @@ pub struct Session {
     pub session_password: Vec<u8>,
     session_readonly: bool,
 
-    pub authes: Vec<AuthPacket>,
+    pub authes: Vec<MarshalledRequest>,
     state_sender: tokio::sync::watch::Sender<SessionState>,
 
     watch_manager: WatchManager,
@@ -61,7 +75,7 @@ pub struct Session {
 impl Session {
     pub fn new(
         timeout: Duration,
-        authes: Vec<AuthPacket>,
+        authes: &[AuthPacket],
         readonly: bool,
     ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
         let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
@@ -85,7 +99,7 @@ impl Session {
             session_password: Vec::with_capacity(16),
             session_readonly: false,
 
-            authes,
+            authes: authes.iter().map(|auth| MarshalledRequest::new_request(OpCode::Auth, auth)).collect(),
             state_sender,
             watch_manager,
             unwatch_receiver: Some(unwatch_receiver),
@@ -94,10 +108,11 @@ impl Session {
         (session, state_receiver)
     }
 
-    async fn quit(&mut self, mut requester: mpsc::Receiver<SessionOperation>, err: &Error) {
+    async fn close_requester<T: RequestOperation>(mut requester: mpsc::UnboundedReceiver<T>, err: &Error) {
         requester.close();
         while let Some(operation) = requester.recv().await {
-            operation.responser.send(Err(err.clone()));
+            let responser = operation.into_responser();
+            responser.send(Err(err.clone()));
         }
     }
 
@@ -107,12 +122,11 @@ impl Session {
         sock: TcpStream,
         mut buf: Vec<u8>,
         mut connecting_trans: Depot,
-        mut requester: mpsc::Receiver<SessionOperation>,
-        mut auth_requester: mpsc::Receiver<(AuthPacket, AuthResponser)>,
+        mut requester: mpsc::UnboundedReceiver<SessionOperation>,
     ) {
         let mut depot = Depot::for_serving();
         let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
-        self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut auth_requester, &mut unwatch_requester).await;
+        self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
             let mut hosts = servers.iter().map(|(host, port)| (host.as_str(), *port));
             let sock = match self.start(&mut hosts, &mut buf, &mut connecting_trans).await {
@@ -123,14 +137,12 @@ impl Session {
                 },
                 Ok(sock) => sock,
             };
-            self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut auth_requester, &mut unwatch_requester)
-                .await;
+            self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         }
         let err = self.state_error();
-        self.quit(requester, &err).await;
-        if let Some((_, responser)) = depot.pop_pending_auth() {
-            responser.send(Err(err)).ignore();
-        }
+        Self::close_requester(requester, &err).await;
+        Self::close_requester(unwatch_requester, &err).await;
+        depot.terminate(err);
     }
 
     fn state_error(&self) -> Error {
@@ -170,14 +182,13 @@ impl Session {
         sock: TcpStream,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
-        requester: &mut mpsc::Receiver<SessionOperation>,
-        auth_requester: &mut mpsc::Receiver<(AuthPacket, AuthResponser)>,
+        requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
         unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) {
-        if let Err(err) = self.serve_session(&sock, buf, depot, requester, auth_requester, unwatch_requester).await {
+        if let Err(err) = self.serve_session(&sock, buf, depot, requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
             log::debug!("ZooKeeper session {} state {} error {}", self.session_id, self.session_state, err);
-            depot.error(err);
+            depot.error(&err);
         } else {
             self.change_state(SessionState::Disconnected);
             self.change_state(SessionState::Closed);
@@ -231,7 +242,13 @@ impl Session {
         };
         let SessionOperation { responser, request, .. } = operation;
         let (op_code, watcher) = self.handle_session_watcher(&request, error_code, depot);
-        if error_code == ErrorCode::Ok || (error_code == ErrorCode::NoNode && op_code == OpCode::Exists) {
+        if error_code == ErrorCode::Ok || (op_code == OpCode::Exists && error_code == ErrorCode::NoNode) {
+            if op_code == OpCode::Auth {
+                if responser.send_empty() {
+                    self.authes.push(request);
+                }
+                return;
+            }
             let mut buf = request.0;
             buf.clear();
             buf.extend_from_slice(body);
@@ -248,13 +265,7 @@ impl Session {
         } else if header.err == ErrorCode::AuthFailed.into() {
             return Err(Error::AuthFailed);
         }
-        if header.xid == PredefinedXid::Auth.into() {
-            if let Some((auth, responser)) = depot.pop_pending_auth() {
-                self.authes.push(auth);
-                responser.send(Ok(())).ignore();
-            }
-            return Ok(());
-        } else if header.xid == PredefinedXid::Notification.into() {
+        if header.xid == PredefinedXid::Notification.into() {
             self.handle_notification(body, depot)?;
             return Ok(());
         } else if header.xid == PredefinedXid::Ping.into() {
@@ -265,7 +276,7 @@ impl Session {
             }
             return Ok(());
         }
-        let operation = depot.pop_reqeust(header.xid)?;
+        let operation = depot.pop_request(header.xid)?;
         self.handle_session_reply(operation, header.err, body, depot);
         Ok(())
     }
@@ -364,14 +375,12 @@ impl Session {
         sock: &TcpStream,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
-        requester: &mut mpsc::Receiver<SessionOperation>,
-        auth_requester: &mut mpsc::Receiver<(AuthPacket, AuthResponser)>,
+        requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
         unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) -> Result<(), Error> {
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let mut channel_closed = false;
-        let mut auth_closed = false;
         depot.start();
         while !(channel_closed && depot.is_empty()) {
             select! {
@@ -393,10 +402,6 @@ impl Session {
                     depot.push_session(operation);
                     depot.write_operations(sock, self.session_id)?;
                     self.last_send = Instant::now();
-                },
-                r = auth_requester.recv(), if !auth_closed && !depot.has_pending_auth() => match r {
-                    Some((auth, responser)) => depot.push_auth(auth, responser),
-                    None => auth_closed = true,
                 },
                 r = unwatch_requester.recv() => if let Some((watcher_id, responser)) = r {
                     self.watch_manager.remove_watcher(watcher_id, responser, depot);
@@ -439,8 +444,7 @@ impl Session {
     }
 
     fn send_ping(&mut self, depot: &mut Depot, now: Instant) {
-        let header = RequestHeader::with_code(OpCode::Ping);
-        let operation = request::build_session_operation(&header);
+        let operation = SessionOperation::new_without_body(OpCode::Ping);
         depot.push_operation(Operation::Session(operation));
         self.last_send = now;
         self.last_ping = Some(self.last_send);
@@ -455,14 +459,14 @@ impl Session {
             password: self.session_password.as_slice(),
             readonly: self.readonly,
         };
-        let operation = request::build_connect_operation(&request);
+        let operation = ConnectOperation::new(&request);
         depot.push_operation(Operation::Connect(operation));
     }
 
     fn send_authes(&self, depot: &mut Depot) {
         self.authes.iter().for_each(|auth| {
-            let operation = request::build_auth_operation(OpCode::Auth, auth);
-            depot.push_operation(Operation::Auth(operation));
+            let operation = SessionOperation::from(auth.clone());
+            depot.push_session(operation);
         });
     }
 

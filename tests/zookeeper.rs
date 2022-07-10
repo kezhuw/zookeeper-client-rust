@@ -4,6 +4,7 @@ use futures::future;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
+use speculoos::prelude::*;
 use testcontainers::clients::Cli as DockerCli;
 use testcontainers::core::{Healthcheck, WaitFor};
 use testcontainers::images::generic::GenericImage;
@@ -24,7 +25,7 @@ fn zookeeper_image() -> GenericImage {
         .with_healthcheck(healthcheck)
         .with_env_var(
             "SERVER_JVMFLAGS",
-            "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU=",
+            "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU= -Dzookeeper.enableEagerACLCheck=true",
         )
         .with_wait_for(WaitFor::Healthcheck)
 }
@@ -102,6 +103,40 @@ async fn test_no_node() {
         client.create("/nonexistent/child", Default::default(), &create_options).await.unwrap_err(),
         zk::Error::NoNode
     );
+}
+
+#[tokio::test]
+async fn test_request_order() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+
+    let path = "/abc";
+    let child_path = "/abc/efg";
+
+    let create = client.create(path, Default::default(), &create_options);
+    let get_data = client.get_and_watch_children(path);
+    let get_child_data = client.get_data(child_path);
+    let (child_stat, _) = client.create(child_path, Default::default(), &create_options).await.unwrap();
+    let (stat, _) = create.await.unwrap();
+
+    assert_that!(child_stat.czxid).is_greater_than(stat.czxid);
+
+    let (children, stat1, watcher) = get_data.await.unwrap();
+
+    assert_that!(children).is_empty();
+    assert_that!(stat1).is_equal_to(stat);
+
+    let child_event = watcher.changed().await;
+    assert_that!(child_event.event_type).is_equal_to(zk::EventType::NodeChildrenChanged);
+    assert_that!(child_event.path).is_equal_to(path.to_owned());
+
+    assert_that!(get_child_data.await).is_equal_to(Err(zk::Error::NoNode));
 }
 
 #[tokio::test]
