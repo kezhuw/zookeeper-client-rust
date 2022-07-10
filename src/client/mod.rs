@@ -1,12 +1,13 @@
 mod watcher;
 
+use std::future::Future;
 use std::time::Duration;
 
 use const_format::formatcp;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
-use super::session::{self, AuthResponser, Depot, Session, SessionOperation, WatchReceiver};
+use super::session::{Depot, Session, SessionOperation, WatchReceiver};
 use crate::acl::{Acl, AuthUser};
 use crate::error::{ConnectError, Error};
 use crate::proto::{
@@ -29,8 +30,10 @@ use crate::proto::{
 };
 pub use crate::proto::{EnsembleUpdate, Stat};
 use crate::record::{self, Record, StaticRecord};
-pub use crate::session::{EventType, SessionId, SessionState, WatchedEvent};
+pub use crate::session::{EventType, SessionId, SessionState, StateReceiver, WatchedEvent};
 use crate::util::{self, Ref as _};
+
+type Result<T> = std::result::Result<T, Error>;
 
 /// CreateMode specifies ZooKeeper znode type. It covers all znode types with help from
 /// [CreateOptions::with_ttl].
@@ -119,7 +122,7 @@ impl<'a> CreateOptions<'a> {
         self
     }
 
-    fn validate(&'a self) -> Result<(), Error> {
+    fn validate(&'a self) -> Result<()> {
         if let Some(ref ttl) = self.ttl {
             if self.mode != CreateMode::Persistent && self.mode != CreateMode::PersistentSequential {
                 return Err(Error::BadArguments(&"ttl can only be specified with persistent node"));
@@ -157,13 +160,15 @@ impl std::fmt::Display for CreateSequence {
 ///
 /// # Notable behaviors
 /// * All cloned clients share same authentication identities.
+/// * All methods construct resulting future by sending request synchronously and polling output
+///   asynchronously. This guarantees that requests are sending to server in the order of method
+///   call but not future evaluation.
 #[derive(Clone, Debug)]
 pub struct Client {
     root: String,
     session: (SessionId, Vec<u8>),
     session_timeout: Duration,
-    requester: mpsc::Sender<SessionOperation>,
-    auth_requester: mpsc::Sender<(AuthPacket, AuthResponser)>,
+    requester: mpsc::UnboundedSender<SessionOperation>,
     state_watcher: StateWatcher,
 }
 
@@ -171,7 +176,7 @@ impl Client {
     const CONFIG_NODE: &'static str = "/zookeeper/config";
 
     /// Connects to ZooKeeper cluster with specified session timeout.
-    pub async fn connect(cluster: &str, timeout: Duration) -> Result<Client, ConnectError> {
+    pub async fn connect(cluster: &str, timeout: Duration) -> std::result::Result<Client, ConnectError> {
         return ClientBuilder::new(timeout).connect(cluster).await;
     }
 
@@ -179,19 +184,18 @@ impl Client {
         root: String,
         session: (SessionId, Vec<u8>),
         timeout: Duration,
-        requester: mpsc::Sender<SessionOperation>,
-        auth_requester: mpsc::Sender<(AuthPacket, AuthResponser)>,
+        requester: mpsc::UnboundedSender<SessionOperation>,
         state_receiver: watch::Receiver<SessionState>,
     ) -> Client {
         let state_watcher = StateWatcher::new(state_receiver);
-        Client { root, session, session_timeout: timeout, requester, auth_requester, state_watcher }
+        Client { root, session, session_timeout: timeout, requester, state_watcher }
     }
 
-    fn validate_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool), Error> {
+    fn validate_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool)> {
         return util::validate_path(self.root.as_str(), path, false);
     }
 
-    fn validate_sequential_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool), Error> {
+    fn validate_sequential_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool)> {
         util::validate_path(&self.root, path, true)
     }
 
@@ -227,7 +231,7 @@ impl Client {
     ///
     /// # Notable behaviors
     /// * Existing watchers are not affected.
-    pub fn chroot(mut self, root: &str) -> Result<Client, Client> {
+    pub fn chroot(mut self, root: &str) -> std::result::Result<Client, Client> {
         let is_zookeeper_root = match util::validate_path("", root, false) {
             Err(_) => return Err(self),
             Ok((_, is_zookeeper_root)) => is_zookeeper_root,
@@ -239,16 +243,38 @@ impl Client {
         Ok(self)
     }
 
-    async fn request(&self, code: OpCode, body: &impl Record) -> Result<(Vec<u8>, WatchReceiver), Error> {
-        let (operation, receiver) = session::build_state_operation(code, body);
-        if self.requester.send(operation).await.is_err() {
+    fn send_request(&self, code: OpCode, body: &impl Record) -> StateReceiver {
+        let (operation, receiver) = SessionOperation::new(code, body).with_responser();
+        if let Err(mpsc::error::SendError(operation)) = self.requester.send(operation) {
             let state = self.state();
-            return Err(state.to_error());
+            operation.responser.send(Err(state.to_error()));
         }
-        return receiver.await.unwrap();
+        receiver
     }
 
-    fn parse_sequence(client_path: &str, path: &str) -> Result<CreateSequence, Error> {
+    async fn wait<T, F>(result: Result<F>) -> Result<T>
+    where
+        F: Future<Output = Result<T>>, {
+        match result {
+            Err(err) => Err(err),
+            Ok(future) => future.await,
+        }
+    }
+
+    async fn map_wait<T, U, Fu, Fn>(result: Result<Fu>, f: Fn) -> Result<U>
+    where
+        Fu: Future<Output = Result<T>>,
+        Fn: FnOnce(T) -> U, {
+        match result {
+            Err(err) => Err(err),
+            Ok(future) => match future.await {
+                Err(err) => Err(err),
+                Ok(t) => Ok(f(t)),
+            },
+        }
+    }
+
+    fn parse_sequence(client_path: &str, path: &str) -> Result<CreateSequence> {
         if let Some(sequence_path) = client_path.strip_prefix(path) {
             match sequence_path.parse::<i32>() {
                 Err(_) => Err(Error::UnexpectedError(format!("sequential node get no i32 path {}", client_path))),
@@ -269,12 +295,21 @@ impl Client {
     /// * [Error::NoNode] if parent node does not exist.
     /// * [Error::NoChildrenForEphemerals] if parent node is ephemeral.
     /// * [Error::InvalidAcl] if acl is invalid or empty.
-    pub async fn create(
-        &self,
-        path: &str,
+    pub fn create<'a: 'f, 'b: 'f, 'f>(
+        &'a self,
+        path: &'b str,
         data: &[u8],
         options: &CreateOptions<'_>,
-    ) -> Result<(Stat, CreateSequence), Error> {
+    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'f {
+        Self::wait(self.create_internally(path, data, options))
+    }
+
+    fn create_internally<'a: 'f, 'b: 'f, 'f>(
+        &'a self,
+        path: &'b str,
+        data: &[u8],
+        options: &CreateOptions<'_>,
+    ) -> Result<impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'f> {
         options.validate()?;
         let create_mode = options.mode;
         let sequential = create_mode.is_sequential();
@@ -289,13 +324,16 @@ impl Client {
         };
         let flags = create_mode.as_flags(ttl != 0);
         let request = CreateRequest { path: RootedPath::new(&self.root, leaf), data, acls: options.acls, flags, ttl };
-        let (body, _) = self.request(op_code, &request).await?;
-        let mut buf = body.as_slice();
-        let server_path = record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
-        let client_path = util::strip_root_path(server_path, &self.root)?;
-        let sequence = if sequential { Self::parse_sequence(client_path, path)? } else { CreateSequence(-1) };
-        let stat = record::unmarshal::<Stat>(&mut buf)?;
-        Ok((stat, sequence))
+        let receiver = self.send_request(op_code, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let server_path = record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
+            let client_path = util::strip_root_path(server_path, &self.root)?;
+            let sequence = if sequential { Self::parse_sequence(client_path, path)? } else { CreateSequence(-1) };
+            let stat = record::unmarshal::<Stat>(&mut buf)?;
+            Ok((stat, sequence))
+        })
     }
 
     /// Deletes node with specified path.
@@ -304,41 +342,51 @@ impl Client {
     /// * [Error::NoNode] if such node does not exist.
     /// * [Error::BadVersion] if such node exists but has different version.
     /// * [Error::NotEmpty] if such node exists but has children.
-    pub async fn delete(&self, path: &str, expected_version: Option<i32>) -> Result<(), Error> {
+    pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send {
+        Self::wait(self.delete_internally(path, expected_version))
+    }
+
+    fn delete_internally(&self, path: &str, expected_version: Option<i32>) -> Result<impl Future<Output = Result<()>>> {
         let (leaf, _) = self.validate_path(path)?;
         if leaf.is_empty() {
             return Err(Error::BadArguments(&"can not delete root node"));
         }
         let request =
             DeleteRequest { path: RootedPath::new(&self.root, leaf), version: expected_version.unwrap_or(-1) };
-        self.request(OpCode::Delete, &request).await?;
-        Ok(())
+        let receiver = self.send_request(OpCode::Delete, &request);
+        Ok(async move {
+            receiver.await?;
+            Ok(())
+        })
     }
 
-    async fn get_data_internally(
+    fn get_data_internally(
         &self,
         root: &str,
-        leaf: &str,
+        path: &str,
         watch: bool,
-    ) -> Result<(Vec<u8>, Stat, WatchReceiver), Error> {
+    ) -> Result<impl Future<Output = Result<(Vec<u8>, Stat, WatchReceiver)>> + Send> {
+        let (leaf, _) = self.validate_path(path)?;
         let request = GetRequest { path: RootedPath::new(root, leaf), watch };
-        let (mut body, watcher) = self.request(OpCode::GetData, &request).await?;
-        let data_len = body.len() - Stat::record_len();
-        let mut stat_buf = &body[data_len..];
-        let stat = record::unmarshal(&mut stat_buf)?;
-        body.truncate(data_len);
-        drop(body.drain(..4));
-        Ok((body, stat, watcher))
+        let receiver = self.send_request(OpCode::GetData, &request);
+        Ok(async move {
+            let (mut body, watcher) = receiver.await?;
+            let data_len = body.len() - Stat::record_len();
+            let mut stat_buf = &body[data_len..];
+            let stat = record::unmarshal(&mut stat_buf)?;
+            body.truncate(data_len);
+            drop(body.drain(..4));
+            Ok((body, stat, watcher))
+        })
     }
 
     /// Gets stat and data for node with given path.
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn get_data(&self, path: &str) -> Result<(Vec<u8>, Stat), Error> {
-        let (leaf, _) = self.validate_path(path)?;
-        let (data, stat, _) = self.get_data_internally(&self.root, leaf, false).await?;
-        Ok((data, stat))
+    pub fn get_data(&self, path: &str) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
+        let result = self.get_data_internally(&self.root, path, false);
+        Self::map_wait(result, |(data, stat, _)| (data, stat))
     }
 
     /// Gets stat and data for node with given path, and watches node deletion and data change.
@@ -350,25 +398,33 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn get_and_watch_data(&self, path: &str) -> Result<(Vec<u8>, Stat, OneshotWatcher), Error> {
-        let (leaf, _) = self.validate_path(path)?;
-        let (data, stat, watch_receiver) = self.get_data_internally(&self.root, leaf, true).await?;
-        Ok((data, stat, watch_receiver.into_oneshot(&self.root)))
+    pub fn get_and_watch_data(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + '_ {
+        let result = self.get_data_internally(&self.root, path, true);
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&self.root)))
     }
 
-    async fn check_stat_internally(&self, path: &str, watch: bool) -> Result<(Option<Stat>, WatchReceiver), Error> {
+    fn check_stat_internally(
+        &self,
+        path: &str,
+        watch: bool,
+    ) -> Result<impl Future<Output = Result<(Option<Stat>, WatchReceiver)>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request = ExistsRequest { path: RootedPath::new(&self.root, leaf), watch };
-        let (body, watcher) = self.request(OpCode::Exists, &request).await?;
-        let mut buf = body.as_slice();
-        let stat = record::try_deserialize(&mut buf)?;
-        Ok((stat, watcher))
+        let receiver = self.send_request(OpCode::Exists, &request);
+        Ok(async move {
+            let (body, watcher) = receiver.await?;
+            let mut buf = body.as_slice();
+            let stat = record::try_deserialize(&mut buf)?;
+            Ok((stat, watcher))
+        })
     }
 
     /// Checks stat for node with given path.
-    pub async fn check_stat(&self, path: &str) -> Result<Option<Stat>, Error> {
-        let (stat, _) = self.check_stat_internally(path, false).await?;
-        Ok(stat)
+    pub fn check_stat(&self, path: &str) -> impl Future<Output = Result<Option<Stat>>> + Send {
+        Self::map_wait(self.check_stat_internally(path, false), |(stat, _)| stat)
     }
 
     /// Checks stat for node with given path, and watches node creation, deletion and data change.
@@ -377,9 +433,12 @@ impl Client {
     /// * Data change.
     /// * Node creation and deletion.
     /// * Session expiration.
-    pub async fn check_and_watch_stat(&self, path: &str) -> Result<(Option<Stat>, OneshotWatcher), Error> {
-        let (stat, watch_receiver) = self.check_stat_internally(path, true).await?;
-        Ok((stat, watch_receiver.into_oneshot(&self.root)))
+    pub fn check_and_watch_stat(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<(Option<Stat>, OneshotWatcher)>> + Send + '_ {
+        let result = self.check_stat_internally(path, true);
+        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(&self.root)))
     }
 
     /// Sets data for node with given path and returns updated stat.
@@ -387,33 +446,56 @@ impl Client {
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
     /// * [Error::BadVersion] if such node exists but has different version.
-    pub async fn set_data(&self, path: &str, data: &[u8], expected_version: Option<i32>) -> Result<Stat, Error> {
+    pub fn set_data(
+        &self,
+        path: &str,
+        data: &[u8],
+        expected_version: Option<i32>,
+    ) -> impl Future<Output = Result<Stat>> + Send {
+        Self::wait(self.set_data_internally(path, data, expected_version))
+    }
+
+    pub fn set_data_internally(
+        &self,
+        path: &str,
+        data: &[u8],
+        expected_version: Option<i32>,
+    ) -> Result<impl Future<Output = Result<Stat>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request =
             SetDataRequest { path: RootedPath::new(&self.root, leaf), data, version: expected_version.unwrap_or(-1) };
-        let (body, _) = self.request(OpCode::SetData, &request).await?;
-        let mut buf = body.as_slice();
-        let stat: Stat = record::unmarshal(&mut buf)?;
-        Ok(stat)
+        let receiver = self.send_request(OpCode::SetData, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let stat: Stat = record::unmarshal(&mut buf)?;
+            Ok(stat)
+        })
     }
 
-    async fn list_children_internally(&self, path: &str, watch: bool) -> Result<(Vec<String>, WatchReceiver), Error> {
+    fn list_children_internally(
+        &self,
+        path: &str,
+        watch: bool,
+    ) -> Result<impl Future<Output = Result<(Vec<String>, WatchReceiver)>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request = GetChildrenRequest { path: RootedPath::new(&self.root, leaf), watch };
-        let (body, watcher) = self.request(OpCode::GetChildren, &request).await?;
-        let mut buf = body.as_slice();
-        let children = record::unmarshal_entity::<Vec<&str>>(&"children paths", &mut buf)?;
-        let children = children.into_iter().map(|child| child.to_owned()).collect();
-        Ok((children, watcher))
+        let receiver = self.send_request(OpCode::GetChildren, &request);
+        Ok(async move {
+            let (body, watcher) = receiver.await?;
+            let mut buf = body.as_slice();
+            let children = record::unmarshal_entity::<Vec<&str>>(&"children paths", &mut buf)?;
+            let children = children.into_iter().map(|child| child.to_owned()).collect();
+            Ok((children, watcher))
+        })
     }
 
     /// Lists children for node with given path.
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn list_children(&self, path: &str) -> Result<Vec<String>, Error> {
-        let (children, _) = self.list_children_internally(path, false).await?;
-        Ok(children)
+    pub fn list_children(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send + '_ {
+        Self::map_wait(self.list_children_internally(path, false), |(children, _)| children)
     }
 
     /// Lists children for node with given path, and watches node deletion, children creation and
@@ -426,32 +508,38 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn list_and_watch_children(&self, path: &str) -> Result<(Vec<String>, OneshotWatcher), Error> {
-        let (children, watcher) = self.list_children_internally(path, true).await?;
-        Ok((children, watcher.into_oneshot(&self.root)))
+    pub fn list_and_watch_children(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<(Vec<String>, OneshotWatcher)>> + Send + '_ {
+        let result = self.list_children_internally(path, true);
+        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(&self.root)))
     }
 
-    async fn get_children_internally(
+    fn get_children_internally(
         &self,
         path: &str,
         watch: bool,
-    ) -> Result<(Vec<String>, Stat, WatchReceiver), Error> {
+    ) -> Result<impl Future<Output = Result<(Vec<String>, Stat, WatchReceiver)>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request = GetChildrenRequest { path: RootedPath::new(&self.root, leaf), watch };
-        let (body, watcher) = self.request(OpCode::GetChildren2, &request).await?;
-        let mut buf = body.as_slice();
-        let response = record::unmarshal::<GetChildren2Response>(&mut buf)?;
-        let children = response.children.into_iter().map(|s| s.to_owned()).collect();
-        Ok((children, response.stat, watcher))
+        let receiver = self.send_request(OpCode::GetChildren2, &request);
+        Ok(async move {
+            let (body, watcher) = receiver.await?;
+            let mut buf = body.as_slice();
+            let response = record::unmarshal::<GetChildren2Response>(&mut buf)?;
+            let children = response.children.into_iter().map(|s| s.to_owned()).collect();
+            Ok((children, response.stat, watcher))
+        })
     }
 
     /// Gets stat and children for node with given path.
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn get_children(&self, path: &str) -> Result<(Vec<String>, Stat), Error> {
-        let (children, stat, _) = self.get_children_internally(path, false).await?;
-        Ok((children, stat))
+    pub fn get_children(&self, path: &str) -> impl Future<Output = Result<(Vec<String>, Stat)>> + Send {
+        let result = self.get_children_internally(path, false);
+        Self::map_wait(result, |(children, stat, _)| (children, stat))
     }
 
     /// Gets stat and children for node with given path, and watches node deletion, children
@@ -464,22 +552,32 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn get_and_watch_children(&self, path: &str) -> Result<(Vec<String>, Stat, OneshotWatcher), Error> {
-        let (children, stat, watcher) = self.get_children_internally(path, true).await?;
-        Ok((children, stat, watcher.into_oneshot(&self.root)))
+    pub fn get_and_watch_children(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<(Vec<String>, Stat, OneshotWatcher)>> + Send + '_ {
+        let result = self.get_children_internally(path, true);
+        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(&self.root)))
     }
 
     /// Counts descendants number for node with given path.
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn count_descendants_number(&self, path: &str) -> Result<usize, Error> {
+    pub fn count_descendants_number(&self, path: &str) -> impl Future<Output = Result<usize>> + Send {
+        Self::wait(self.count_descendants_number_internally(path))
+    }
+
+    fn count_descendants_number_internally(&self, path: &str) -> Result<impl Future<Output = Result<usize>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request = RootedPath::new(&self.root, leaf);
-        let (body, _) = self.request(OpCode::GetAllChildrenNumber, &request).await?;
-        let mut buf = body.as_slice();
-        let n = record::unmarshal_entity::<i32>(&"all children number", &mut buf)?;
-        Ok(n as usize)
+        let receiver = self.send_request(OpCode::GetAllChildrenNumber, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let n = record::unmarshal_entity::<i32>(&"all children number", &mut buf)?;
+            Ok(n as usize)
+        })
     }
 
     /// Lists all ephemerals nodes that created by current session and starts with given path.
@@ -488,29 +586,43 @@ impl Client {
     /// * No [Error::NoNode] if node with give path does not exist.
     /// * Result will include given path if that node is ephemeral.
     /// * Returned paths are located at chroot but not ZooKeeper root.
-    pub async fn list_ephemerals(&self, path: &str) -> Result<Vec<String>, Error> {
+    pub fn list_ephemerals(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send + '_ {
+        Self::wait(self.list_ephemerals_internally(path))
+    }
+
+    fn list_ephemerals_internally(&self, path: &str) -> Result<impl Future<Output = Result<Vec<String>>> + Send + '_> {
         let (leaf, _) = self.validate_path(path)?;
         let request = RootedPath::new(&self.root, leaf);
-        let (body, _) = self.request(OpCode::GetEphemerals, &request).await?;
-        let mut buf = body.as_slice();
-        let mut ephemerals = record::unmarshal_entity::<Vec<String>>(&"ephemerals", &mut buf)?;
-        for ephemeral_path in ephemerals.iter_mut() {
-            util::drain_root_path(ephemeral_path, &self.root)?;
-        }
-        Ok(ephemerals)
+        let receiver = self.send_request(OpCode::GetEphemerals, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let mut ephemerals = record::unmarshal_entity::<Vec<String>>(&"ephemerals", &mut buf)?;
+            for ephemeral_path in ephemerals.iter_mut() {
+                util::drain_root_path(ephemeral_path, &self.root)?;
+            }
+            Ok(ephemerals)
+        })
     }
 
     /// Gets acl and stat for node with given path.
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub async fn get_acl(&self, path: &str) -> Result<(Vec<Acl>, Stat), Error> {
+    pub fn get_acl(&self, path: &str) -> impl Future<Output = Result<(Vec<Acl>, Stat)>> + Send + '_ {
+        Self::wait(self.get_acl_internally(path))
+    }
+
+    fn get_acl_internally(&self, path: &str) -> Result<impl Future<Output = Result<(Vec<Acl>, Stat)>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request = RootedPath::new(&self.root, leaf);
-        let (body, _) = self.request(OpCode::GetACL, &request).await?;
-        let mut buf = body.as_slice();
-        let response: GetAclResponse = record::unmarshal(&mut buf)?;
-        Ok((response.acl, response.stat))
+        let receiver = self.send_request(OpCode::GetACL, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let response: GetAclResponse = record::unmarshal(&mut buf)?;
+            Ok((response.acl, response.stat))
+        })
     }
 
     /// Sets acl for node with given path and returns updated stat.
@@ -518,14 +630,31 @@ impl Client {
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
     /// * [Error::BadVersion] if such node exists but has different acl version.
-    pub async fn set_acl(&self, path: &str, acl: &[Acl], expected_acl_version: Option<i32>) -> Result<Stat, Error> {
+    pub fn set_acl(
+        &self,
+        path: &str,
+        acl: &[Acl],
+        expected_acl_version: Option<i32>,
+    ) -> impl Future<Output = Result<Stat>> + Send + '_ {
+        Self::wait(self.set_acl_internally(path, acl, expected_acl_version))
+    }
+
+    fn set_acl_internally(
+        &self,
+        path: &str,
+        acl: &[Acl],
+        expected_acl_version: Option<i32>,
+    ) -> Result<impl Future<Output = Result<Stat>>> {
         let (leaf, _) = self.validate_path(path)?;
         let request =
             SetAclRequest { path: RootedPath::new(&self.root, leaf), acl, version: expected_acl_version.unwrap_or(-1) };
-        let (body, _) = self.request(OpCode::SetACL, &request).await?;
-        let mut buf = body.as_slice();
-        let stat: Stat = record::unmarshal(&mut buf)?;
-        Ok(stat)
+        let receiver = self.send_request(OpCode::SetACL, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let stat: Stat = record::unmarshal(&mut buf)?;
+            Ok(stat)
+        })
     }
 
     /// Watches possible nonexistent path using specified mode.
@@ -540,12 +669,23 @@ impl Client {
     /// persistent watch on same path.
     ///
     /// [ZOOKEEPER-4466]: https://issues.apache.org/jira/browse/ZOOKEEPER-4466
-    pub async fn watch(&self, path: &str, mode: AddWatchMode) -> Result<PersistentWatcher, Error> {
+    pub fn watch(&self, path: &str, mode: AddWatchMode) -> impl Future<Output = Result<PersistentWatcher>> + Send + '_ {
+        Self::wait(self.watch_internally(path, mode))
+    }
+
+    fn watch_internally(
+        &self,
+        path: &str,
+        mode: AddWatchMode,
+    ) -> Result<impl Future<Output = Result<PersistentWatcher>> + Send + '_> {
         let (leaf, _) = self.validate_path(path)?;
         let proto_mode = proto::AddWatchMode::from(mode);
         let request = PersistentWatchRequest { path: RootedPath::new(&self.root, leaf), mode: proto_mode.into() };
-        let (_, watcher) = self.request(OpCode::AddWatch, &request).await?;
-        Ok(watcher.into_persistent(&self.root))
+        let receiver = self.send_request(OpCode::AddWatch, &request);
+        Ok(async move {
+            let (_, watcher) = receiver.await?;
+            Ok(watcher.into_persistent(&self.root))
+        })
     }
 
     /// Syncs with ZooKeeper **leader**.
@@ -558,16 +698,24 @@ impl Client {
     ///
     /// [ZOOKEEPER-1675]: https://issues.apache.org/jira/browse/ZOOKEEPER-1675
     /// [ZOOKEEPER-2136]: https://issues.apache.org/jira/browse/ZOOKEEPER-2136
-    pub async fn sync(&self, path: &str) -> Result<(), Error> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = SyncRequest { path: RootedPath::new(&self.root, leaf) };
-        let (body, _) = self.request(OpCode::Sync, &request).await?;
-        let mut buf = body.as_slice();
-        record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
-        Ok(())
+    pub fn sync(&self, path: &str) -> impl Future<Output = Result<()>> + Send + '_ {
+        Self::wait(self.sync_internally(path))
     }
 
-    /// Authenticates session using given scheme and auth identication.
+    fn sync_internally(&self, path: &str) -> Result<impl Future<Output = Result<()>>> {
+        let (leaf, _) = self.validate_path(path)?;
+        let request = SyncRequest { path: RootedPath::new(&self.root, leaf) };
+        let receiver = self.send_request(OpCode::Sync, &request);
+        Ok(async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
+            Ok(())
+        })
+    }
+
+    /// Authenticates session using given scheme and auth identication. This affects only
+    /// subsequent operations.
     ///
     /// # Errors
     /// * [Error::AuthFailed] if authentication failed.
@@ -576,15 +724,16 @@ impl Client {
     /// # Notable behaviors
     /// * Same auth will be resubmitted for authentication after session reestablished.
     /// * This method is resistent to temporary session unavailability, that means
-    /// [SessionState::Disconnected] will not end authentication.
-    pub async fn auth(&self, scheme: String, auth: Vec<u8>) -> Result<(), Error> {
-        let (sender, receiver) = oneshot::channel();
-        let auth_packet = AuthPacket { scheme, auth };
-        if self.auth_requester.send((auth_packet, sender)).await.is_err() {
-            let state = self.state();
-            return Err(state.to_error());
+    ///   [SessionState::Disconnected] will not end authentication.
+    /// * It is ok to ignore resulting future of this method as request is sending synchronously
+    ///   and auth failure will fail ZooKeeper session with [SessionState::AuthFailed].
+    pub fn auth(&self, scheme: String, auth: Vec<u8>) -> impl Future<Output = Result<()>> + Send + '_ {
+        let request = AuthPacket { scheme, auth };
+        let receiver = self.send_request(OpCode::Auth, &request);
+        async move {
+            receiver.await?;
+            Ok(())
         }
-        return receiver.await.unwrap();
     }
 
     /// Gets all authentication informations attached to current session.
@@ -596,23 +745,26 @@ impl Client {
     /// * [ZOOKEEPER-3969][] Add whoami API and Cli command.
     ///
     /// [ZOOKEEPER-3969]: https://issues.apache.org/jira/browse/ZOOKEEPER-3969
-    pub async fn list_auth_users(&self) -> Result<Vec<AuthUser>, Error> {
-        let (body, _) = self.request(OpCode::WhoAmI, &()).await?;
-        let mut buf = body.as_slice();
-        let authed_users = record::unmarshal_entity::<Vec<AuthUser>>(&"authed users", &mut buf)?;
-        Ok(authed_users)
+    pub fn list_auth_users(&self) -> impl Future<Output = Result<Vec<AuthUser>>> + Send {
+        let receiver = self.send_request(OpCode::WhoAmI, &());
+        async move {
+            let (body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let authed_users = record::unmarshal_entity::<Vec<AuthUser>>(&"authed users", &mut buf)?;
+            Ok(authed_users)
+        }
     }
 
     /// Gets data for ZooKeeper config node, that is node with path "/zookeeper/config".
-    pub async fn get_config(&self) -> Result<(Vec<u8>, Stat), Error> {
-        let (data, stat, _) = self.get_data_internally(Self::CONFIG_NODE, Default::default(), false).await?;
-        Ok((data, stat))
+    pub fn get_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
+        let result = self.get_data_internally("", Self::CONFIG_NODE, false);
+        Self::map_wait(result, |(data, stat, _)| (data, stat))
     }
 
     /// Gets stat and data for ZooKeeper config node, that is node with path "/zookeeper/config".
-    pub async fn get_and_watch_config(&self) -> Result<(Vec<u8>, Stat, OneshotWatcher), Error> {
-        let (data, stat, watcher) = self.get_data_internally(Self::CONFIG_NODE, Default::default(), true).await?;
-        Ok((data, stat, watcher.into_oneshot("")))
+    pub fn get_and_watch_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send {
+        let result = self.get_data_internally("", Self::CONFIG_NODE, true);
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot("")))
     }
 
     /// Updates ZooKeeper ensemble.
@@ -622,20 +774,23 @@ impl Client {
     ///
     /// # References
     /// See [ZooKeeper Dynamic Reconfiguration](https://zookeeper.apache.org/doc/current/zookeeperReconfig.html).
-    pub async fn update_ensemble<'a, I: Iterator<Item = &'a str> + Clone>(
+    pub fn update_ensemble<'a, I: Iterator<Item = &'a str> + Clone>(
         &self,
         update: EnsembleUpdate<'a, I>,
         expected_version: Option<i32>,
-    ) -> Result<(Vec<u8>, Stat), Error> {
+    ) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
         let request = ReconfigRequest { update, version: expected_version.unwrap_or(-1) };
-        let (mut body, _) = self.request(OpCode::Reconfig, &request).await?;
-        let mut buf = body.as_slice();
-        let data: &str = record::unmarshal_entity(&"reconfig data", &mut buf)?;
-        let stat = record::unmarshal_entity(&"reconfig stat", &mut buf)?;
-        let data_len = data.len();
-        body.truncate(data_len + 4);
-        drop(body.drain(..4));
-        Ok((body, stat))
+        let receiver = self.send_request(OpCode::Reconfig, &request);
+        async move {
+            let (mut body, _) = receiver.await?;
+            let mut buf = body.as_slice();
+            let data: &str = record::unmarshal_entity(&"reconfig data", &mut buf)?;
+            let stat = record::unmarshal_entity(&"reconfig stat", &mut buf)?;
+            let data_len = data.len();
+            body.truncate(data_len + 4);
+            drop(body.drain(..4));
+            Ok((body, stat))
+        }
     }
 }
 
@@ -666,32 +821,24 @@ impl ClientBuilder {
     }
 
     /// Connects to ZooKeeper cluster.
-    ///
-    /// # Notable behaviors
-    /// * On success, authes were consumed.
-    pub async fn connect(&mut self, cluster: &str) -> Result<Client, ConnectError> {
+    pub async fn connect(&mut self, cluster: &str) -> std::result::Result<Client, ConnectError> {
         let (hosts, root) = util::parse_connect_string(cluster)?;
         let mut buf = Vec::with_capacity(4096);
         let mut connecting_depot = Depot::for_connecting();
-        let authes = std::mem::take(&mut self.authes);
-        let (mut session, state_receiver) = Session::new(self.timeout, authes, self.readonly);
+        let (mut session, state_receiver) = Session::new(self.timeout, &self.authes, self.readonly);
         let mut hosts_iter = hosts.iter().copied();
         let sock = match session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await {
             Ok(sock) => sock,
-            Err(err) => {
-                self.authes = std::mem::take(&mut session.authes);
-                return Err(ConnectError::from(err));
-            },
+            Err(err) => return Err(ConnectError::from(err)),
         };
-        let (sender, receiver) = mpsc::channel(512);
-        let (auth_sender, auth_receiver) = mpsc::channel(10);
+        let (sender, receiver) = mpsc::unbounded_channel();
         let servers = hosts.into_iter().map(|addr| addr.to_value()).collect();
         let session_info = (session.session_id, session.session_password.clone());
         let session_timeout = session.session_timeout;
         tokio::spawn(async move {
-            session.serve(servers, sock, buf, connecting_depot, receiver, auth_receiver).await;
+            session.serve(servers, sock, buf, connecting_depot, receiver).await;
         });
-        let client = Client::new(root.to_string(), session_info, session_timeout, sender, auth_sender, state_receiver);
+        let client = Client::new(root.to_string(), session_info, session_timeout, sender, state_receiver);
         Ok(client)
     }
 }

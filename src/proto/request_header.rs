@@ -13,7 +13,6 @@ impl RequestHeader {
     pub fn with_code(code: OpCode) -> RequestHeader {
         let xid = match code {
             OpCode::Ping => PredefinedXid::Ping.into(),
-            OpCode::Auth => PredefinedXid::Auth.into(),
             OpCode::SetWatches | OpCode::SetWatches2 => PredefinedXid::SetWatches.into(),
             _ => 0,
         };

@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::depot::Depot;
 use super::event::WatcherEvent;
-use super::request::{self, Operation, StateResponser};
+use super::request::{Operation, SessionOperation, StateReceiver, StateResponser};
 use super::types::{EventType, SessionState, WatchMode, WatchedEvent};
 use crate::error::Error;
 use crate::proto::{ErrorCode, OpCode, SetWatchesRequest};
@@ -71,7 +71,8 @@ impl OneshotReceiver {
         let unwatch = unsafe { self.into_unwatch() };
         let (sender, receiver) = oneshot::channel();
         unwatch.send((id, StateResponser::new(sender))).ignore();
-        receiver.await.unwrap()?;
+        let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
+        receiver.await?;
         Ok(())
     }
 }
@@ -114,7 +115,8 @@ impl PersistentReceiver {
         let unwatch = unsafe { self.into_unwatch() };
         let (sender, receiver) = oneshot::channel();
         unwatch.send((id, StateResponser::new(sender))).ignore();
-        receiver.await.unwrap()?;
+        let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
+        receiver.await?;
         Ok(())
     }
 }
@@ -396,7 +398,7 @@ impl WatchManager {
     fn send_and_clear_watches(&self, last_zxid: i64, paths: &mut [Vec<&str>; 5], i: usize, depot: &mut Depot) {
         let (n, op_code) = if i <= 2 { (3, OpCode::SetWatches) } else { (5, OpCode::SetWatches2) };
         let request = SetWatchesRequest { relative_zxid: last_zxid, paths: &paths[..n] };
-        let (operation, _) = request::build_state_operation(op_code, &request);
+        let operation = SessionOperation::new(op_code, &request);
         depot.push_operation(Operation::Session(operation));
         paths[..=i].iter_mut().for_each(|v| v.clear());
     }

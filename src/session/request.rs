@@ -1,3 +1,7 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use bytes::{Buf, BufMut};
 use ignore_result::Ignore;
 use tokio::sync::oneshot;
@@ -79,7 +83,6 @@ impl MarshalledRequest {
 
 pub enum Operation {
     Connect(ConnectOperation),
-    Auth(AuthOperation),
     Session(SessionOperation),
 }
 
@@ -88,7 +91,6 @@ impl Operation {
         match self {
             Operation::Connect(operation) => operation.request.as_slice(),
             Operation::Session(operation) => operation.request.as_slice(),
-            Operation::Auth(operation) => operation.request.as_slice(),
         }
     }
 }
@@ -97,11 +99,14 @@ pub struct ConnectOperation {
     pub request: Vec<u8>,
 }
 
-pub struct AuthOperation {
-    pub request: MarshalledRequest,
+impl ConnectOperation {
+    pub fn new(request: &ConnectRequest) -> Self {
+        let buf = proto::build_record_request(request);
+        Self { request: buf }
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MarshalledRequest(pub Vec<u8>);
 
 #[derive(Debug)]
@@ -110,7 +115,62 @@ pub struct SessionOperation {
     pub responser: StateResponser,
 }
 
-pub type StateReceiver = oneshot::Receiver<Result<(Vec<u8>, WatchReceiver), Error>>;
+impl SessionOperation {
+    pub fn new(code: OpCode, body: &dyn Record) -> Self {
+        let request = MarshalledRequest::new_request(code, body);
+        Self { request, responser: Default::default() }
+    }
+
+    pub fn new_without_body(code: OpCode) -> Self {
+        let header = RequestHeader::with_code(code);
+        let request = MarshalledRequest::new_record(&header);
+        Self { request, responser: StateResponser::default() }
+    }
+
+    pub fn with_responser(self) -> (Self, StateReceiver) {
+        let (sender, receiver) = oneshot::channel();
+        let request = self.request;
+        let code = request.get_code();
+        let operation = Self { request, responser: StateResponser::new(sender) };
+        (operation, StateReceiver { code, receiver })
+    }
+}
+
+impl From<MarshalledRequest> for SessionOperation {
+    fn from(request: MarshalledRequest) -> Self {
+        SessionOperation { request, responser: StateResponser::none() }
+    }
+}
+
+pub struct StateReceiver {
+    code: OpCode,
+    receiver: oneshot::Receiver<Result<(Vec<u8>, WatchReceiver), Error>>,
+}
+
+impl StateReceiver {
+    pub fn new(code: OpCode, receiver: oneshot::Receiver<Result<(Vec<u8>, WatchReceiver), Error>>) -> Self {
+        Self { code, receiver }
+    }
+}
+
+impl Future for StateReceiver {
+    type Output = Result<(Vec<u8>, WatchReceiver), Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let code = self.code;
+        let receiver = unsafe { self.map_unchecked_mut(|r| &mut r.receiver) };
+        match receiver.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => match result {
+                Err(_) => {
+                    Poll::Ready(Err(Error::UnexpectedError(format!("BUG: {} expect response, but got none", code))))
+                },
+                Ok(r) => Poll::Ready(r),
+            },
+        }
+    }
+}
+
 type StateSender = oneshot::Sender<Result<(Vec<u8>, WatchReceiver), Error>>;
 
 #[derive(Default, Debug)]
@@ -125,35 +185,19 @@ impl StateResponser {
         StateResponser(None)
     }
 
-    pub fn send(mut self, result: Result<(Vec<u8>, WatchReceiver), Error>) {
+    pub fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub fn send(mut self, result: Result<(Vec<u8>, WatchReceiver), Error>) -> bool {
         if let Some(sender) = self.0.take() {
             sender.send(result).ignore();
+            return true;
         }
+        false
     }
 
-    pub fn send_empty(self) {
-        self.send(Ok((Vec::new(), WatchReceiver::None)));
+    pub fn send_empty(self) -> bool {
+        self.send(Ok((Vec::new(), WatchReceiver::None)))
     }
-}
-
-pub fn build_connect_operation(request: &ConnectRequest) -> ConnectOperation {
-    let buf = proto::build_record_request(request);
-    ConnectOperation { request: buf }
-}
-
-pub fn build_auth_operation(code: OpCode, body: &dyn Record) -> AuthOperation {
-    let request = MarshalledRequest::new_request(code, body);
-    AuthOperation { request }
-}
-
-pub fn build_state_operation(code: OpCode, body: &dyn Record) -> (SessionOperation, StateReceiver) {
-    let request = MarshalledRequest::new_request(code, body);
-    let (sender, receiver) = oneshot::channel();
-    let operation = SessionOperation { request, responser: StateResponser::new(sender) };
-    (operation, receiver)
-}
-
-pub fn build_session_operation(request: &dyn Record) -> SessionOperation {
-    let request = MarshalledRequest::new_record(request);
-    SessionOperation { request, responser: StateResponser::default() }
 }
