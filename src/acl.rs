@@ -6,13 +6,26 @@ pub struct Permission(i32);
 
 #[rustfmt::skip]
 impl Permission {
-    pub const NONE: Permission = Permission(0);
-    pub const READ: Permission = Permission(1);
-    pub const WRITE: Permission = Permission(2);
-    pub const CREATE: Permission = Permission(4);
-    pub const DELETE: Permission = Permission(8);
-    pub const ADMIN: Permission = Permission(16);
-    pub const ALL: Permission = Permission(31);
+    /// Permission to get data from a node and list its children.
+    pub const READ:     Permission = Permission(1);
+
+    /// Permission to set data for a node.
+    pub const WRITE:    Permission = Permission(2);
+
+    /// Permission to create a child node.
+    pub const CREATE:   Permission = Permission(4);
+
+    /// Permission to delete a child node.
+    pub const DELETE:   Permission = Permission(8);
+
+    /// Permission to set ACL permissions.
+    pub const ADMIN:    Permission = Permission(16);
+
+    /// Permission to do all above.
+    pub const ALL:      Permission = Permission(31);
+
+    /// Permission to do none of above.
+    pub const NONE:     Permission = Permission(0);
 
     pub(crate) fn into_raw(self) -> i32 {
         self.0
@@ -22,14 +35,25 @@ impl Permission {
         Permission(raw)
     }
 
+    /// Test whether this permission has given permission. Same as `self & perm == perm`.
     pub fn has(self, perm: Permission) -> bool {
         (self.0 & perm.0) == perm.0
+    }
+}
+
+impl std::ops::BitAnd for Permission {
+    type Output = Self;
+
+    /// Compute common permission between the two.
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Permission(self.0 & rhs.0)
     }
 }
 
 impl std::ops::BitOr for Permission {
     type Output = Self;
 
+    /// Compute sum permission of the two.
     fn bitor(self, rhs: Self) -> Self::Output {
         Permission(self.0 | rhs.0)
     }
@@ -187,14 +211,19 @@ mod tests {
     use super::Permission;
 
     #[test]
-    fn test_permission() {
+    fn permission_test() {
         let all = Permission::READ | Permission::WRITE | Permission::CREATE | Permission::DELETE | Permission::ADMIN;
 
         assert!(Permission::ALL.has(all));
+        assert_eq!(Permission::ALL & Permission::ALL, Permission::ALL);
+
+        assert_eq!(Permission::ALL & Permission::READ, Permission::READ);
+        assert_eq!(Permission::READ & Permission::READ, Permission::READ);
+        assert_eq!(Permission::CREATE & Permission::READ, Permission::NONE);
     }
 
     #[test]
-    fn test_permission_display() {
+    fn permission_display() {
         assert_eq!(Permission::ALL.to_string(), "ALL");
         assert_eq!(Permission::ADMIN.to_string(), "ADMIN");
 
