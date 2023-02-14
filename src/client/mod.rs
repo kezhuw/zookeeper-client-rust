@@ -4,15 +4,17 @@ use std::future::Future;
 use std::time::Duration;
 
 use const_format::formatcp;
+use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
-use super::session::{Depot, Session, SessionOperation, WatchReceiver};
+use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver};
 use crate::acl::{Acl, AuthUser};
 use crate::error::{ConnectError, Error};
 use crate::proto::{
     self,
     AuthPacket,
+    CheckVersionRequest,
     CreateRequest,
     DeleteRequest,
     ExistsRequest,
@@ -20,9 +22,14 @@ use crate::proto::{
     GetChildren2Response,
     GetChildrenRequest,
     GetRequest,
+    MultiHeader,
+    MultiReadResponse,
+    MultiWriteResponse,
     OpCode,
     PersistentWatchRequest,
     ReconfigRequest,
+    RequestBuffer,
+    RequestHeader,
     RootedPath,
     SetAclRequest,
     SetDataRequest,
@@ -30,7 +37,8 @@ use crate::proto::{
 };
 pub use crate::proto::{EnsembleUpdate, Stat};
 use crate::record::{self, Record, StaticRecord};
-pub use crate::session::{EventType, SessionId, SessionState, StateReceiver, WatchedEvent};
+use crate::session::StateReceiver;
+pub use crate::session::{EventType, SessionId, SessionState, WatchedEvent};
 use crate::util::{self, Ref as _};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -177,7 +185,7 @@ impl Client {
 
     /// Connects to ZooKeeper cluster with specified session timeout.
     pub async fn connect(cluster: &str, timeout: Duration) -> std::result::Result<Client, ConnectError> {
-        return ClientBuilder::new(timeout).connect(cluster).await;
+        ClientBuilder::new(timeout).connect(cluster).await
     }
 
     pub(crate) fn new(
@@ -244,7 +252,12 @@ impl Client {
     }
 
     fn send_request(&self, code: OpCode, body: &impl Record) -> StateReceiver {
-        let (operation, receiver) = SessionOperation::new(code, body).with_responser();
+        let request = MarshalledRequest::new(code, body);
+        self.send_marshalled_request(request)
+    }
+
+    fn send_marshalled_request(&self, request: MarshalledRequest) -> StateReceiver {
+        let (operation, receiver) = SessionOperation::new_marshalled(request).with_responser();
         if let Err(mpsc::error::SendError(operation)) = self.requester.send(operation) {
             let state = self.state();
             operation.responser.send(Err(state.to_error()));
@@ -281,10 +294,10 @@ impl Client {
                 Ok(i) => Ok(CreateSequence(i)),
             }
         } else {
-            return Err(Error::UnexpectedError(format!(
+            Err(Error::UnexpectedError(format!(
                 "sequential path {} does not contain prefix path {}",
                 client_path, path
-            )));
+            )))
         }
     }
 
@@ -484,8 +497,7 @@ impl Client {
         Ok(async move {
             let (body, watcher) = receiver.await?;
             let mut buf = body.as_slice();
-            let children = record::unmarshal_entity::<Vec<&str>>(&"children paths", &mut buf)?;
-            let children = children.into_iter().map(|child| child.to_owned()).collect();
+            let children = record::unmarshal_entity::<Vec<String>>(&"children paths", &mut buf)?;
             Ok((children, watcher))
         })
     }
@@ -528,8 +540,7 @@ impl Client {
             let (body, watcher) = receiver.await?;
             let mut buf = body.as_slice();
             let response = record::unmarshal::<GetChildren2Response>(&mut buf)?;
-            let children = response.children.into_iter().map(|s| s.to_owned()).collect();
-            Ok((children, response.stat, watcher))
+            Ok((response.children, response.stat, watcher))
         })
     }
 
@@ -792,6 +803,16 @@ impl Client {
             Ok((body, stat))
         }
     }
+
+    /// Creates a multi reader.
+    pub fn new_multi_reader(&self) -> MultiReader<'_> {
+        MultiReader::new(self)
+    }
+
+    /// Creates a multi writer.
+    pub fn new_multi_writer(&self) -> MultiWriter<'_> {
+        MultiWriter::new(self)
+    }
 }
 
 /// Builder for [Client] with more options than [Client::connect].
@@ -840,5 +861,297 @@ impl ClientBuilder {
         });
         let client = Client::new(root.to_string(), session_info, session_timeout, sender, state_receiver);
         Ok(client)
+    }
+}
+
+trait MultiBuffer {
+    fn buffer(&mut self) -> &mut Vec<u8>;
+
+    fn op_code() -> OpCode;
+
+    fn build_request(&mut self) -> MarshalledRequest {
+        let header = MultiHeader { op: OpCode::Error, done: true, err: -1 };
+        let buffer = self.buffer();
+        buffer.append_record(&header);
+        buffer.finish();
+        MarshalledRequest(std::mem::take(buffer))
+    }
+
+    fn add_operation(&mut self, op: OpCode, request: &impl Record) {
+        let buffer = self.buffer();
+        if buffer.is_empty() {
+            let n = RequestHeader::record_len() + MultiHeader::record_len() + request.serialized_len();
+            buffer.prepare_and_reserve(n);
+            buffer.append_record(&RequestHeader::with_code(Self::op_code()));
+        }
+        let header = MultiHeader { op, done: false, err: -1 };
+        self.buffer().append_record2(&header, request);
+    }
+}
+
+/// Individual result for one operation in [MultiReader].
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum MultiReadResult {
+    /// Response for [`MultiReader::add_get_data`].
+    Data { data: Vec<u8>, stat: Stat },
+
+    /// Response for [`MultiReader::add_get_children`].
+    Children { children: Vec<String> },
+
+    /// Response for individual error.
+    Error { err: Error },
+}
+
+/// MultiReader commits multiple read operations in one request to achieve snapshot like semantics.
+pub struct MultiReader<'a> {
+    client: &'a Client,
+    buf: Vec<u8>,
+}
+
+impl MultiBuffer for MultiReader<'_> {
+    fn buffer(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+
+    fn op_code() -> OpCode {
+        OpCode::MultiRead
+    }
+}
+
+impl<'a> MultiReader<'a> {
+    fn new(client: &'a Client) -> MultiReader<'a> {
+        MultiReader { client, buf: Default::default() }
+    }
+
+    /// Adds operation to get stat and data for node with given path.
+    ///
+    /// See [Client::get_data] for more details.
+    pub fn add_get_data(&mut self, path: &str) -> Result<()> {
+        let (leaf, _) = self.client.validate_path(path)?;
+        let request = GetRequest { path: RootedPath::new(&self.client.root, leaf), watch: false };
+        self.add_operation(OpCode::GetData, &request);
+        Ok(())
+    }
+
+    /// Adds operation to get stat and children for node with given path.
+    ///
+    /// See [Client::get_children] for more details.
+    pub fn add_get_children(&mut self, path: &str) -> Result<()> {
+        let (leaf, _) = self.client.validate_path(path)?;
+        let request = GetChildrenRequest { path: RootedPath::new(&self.client.root, leaf), watch: false };
+        self.add_operation(OpCode::GetChildren, &request);
+        Ok(())
+    }
+
+    /// Commits multiple operations in one request to reach consistent read.
+    ///
+    /// # Notable behaviors
+    /// Individual errors(eg. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
+    pub async fn commit(&mut self) -> Result<Vec<MultiReadResult>> {
+        if self.buf.is_empty() {
+            return Ok(Default::default());
+        }
+        let request = self.build_request();
+        let receiver = self.client.send_marshalled_request(request);
+        let (body, _) = receiver.await?;
+        let response = record::unmarshal::<Vec<MultiReadResponse>>(&mut body.as_slice())?;
+        let mut results = Vec::with_capacity(response.len());
+        for result in response {
+            match result {
+                MultiReadResponse::Data { data, stat } => results.push(MultiReadResult::Data { data, stat }),
+                MultiReadResponse::Children { children } => results.push(MultiReadResult::Children { children }),
+                MultiReadResponse::Error(err) => results.push(MultiReadResult::Error { err }),
+            }
+        }
+        Ok(results)
+    }
+
+    /// Clears collected operations.
+    pub fn abort(&mut self) {
+        self.buf.clear();
+    }
+}
+
+/// Individual result for one operation in [MultiWriter].
+#[non_exhaustive]
+#[derive(Debug, PartialEq, Eq)]
+pub enum MultiWriteResult {
+    /// Response for [MultiWriter::add_check_version].
+    Check,
+
+    /// Response for [MultiWriter::add_delete].
+    Delete,
+
+    /// Response for [MultiWriter::add_create].
+    Create {
+        /// Path of created znode.
+        path: String,
+
+        /// Stat for newly created node which could be [Stat::is_invalid] due to bugs in ZooKeeper server.
+        ///
+        /// See [ZOOKEEPER-4026][] and [ZOOKEEPER-4667][] for reference.
+        ///
+        /// [ZOOKEEPER-4026]: https://issues.apache.org/jira/browse/ZOOKEEPER-4026
+        /// [ZOOKEEPER-4667]: https://issues.apache.org/jira/browse/ZOOKEEPER-4667
+        stat: Stat,
+    },
+
+    /// Response for [MultiWriter::add_set_data].
+    SetData {
+        /// Updated stat.
+        stat: Stat,
+    },
+}
+
+/// Error for [MultiWriter::commit].
+#[derive(Error, Clone, Debug, PartialEq, Eq)]
+pub enum MultiWriteError {
+    #[error("{source}")]
+    RequestFailed {
+        #[from]
+        source: Error,
+    },
+
+    #[error("operation at index {index} failed: {source}")]
+    OperationFailed { index: usize, source: Error },
+}
+
+impl From<MultiWriteError> for Error {
+    fn from(err: MultiWriteError) -> Self {
+        match err {
+            MultiWriteError::RequestFailed { source } => source,
+            MultiWriteError::OperationFailed { source, .. } => source,
+        }
+    }
+}
+
+/// MultiWriter commits write and condition check operations in one request to achieve transaction like semantics.
+pub struct MultiWriter<'a> {
+    client: &'a Client,
+    buf: Vec<u8>,
+}
+
+impl MultiBuffer for MultiWriter<'_> {
+    fn buffer(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+
+    fn op_code() -> OpCode {
+        OpCode::Multi
+    }
+}
+
+impl<'a> MultiWriter<'a> {
+    fn new(client: &'a Client) -> MultiWriter<'a> {
+        MultiWriter { client, buf: Default::default() }
+    }
+
+    /// Adds operation to check version for node with given path.
+    ///
+    /// # Notable behaviors
+    /// Effects of changes to data of given path in preceding operations affect this operation.
+    pub fn add_check_version(&mut self, path: &str, version: i32) -> Result<()> {
+        let (leaf, _) = self.client.validate_path(path)?;
+        let request = CheckVersionRequest { path: RootedPath::new(&self.client.root, leaf), version };
+        self.add_operation(OpCode::Check, &request);
+        Ok(())
+    }
+
+    /// Adds operation to create node with given path and data.
+    ///
+    /// See [Client::create] for more details.
+    ///
+    /// # Notable behaviors
+    /// [MultiWriteResult::Create::stat] could be [Stat::is_invalid] due to bugs in ZooKeeper server.
+    /// See [ZOOKEEPER-4026][] and [ZOOKEEPER-4667][] for reference.
+    ///
+    /// [ZOOKEEPER-4026]: https://issues.apache.org/jira/browse/ZOOKEEPER-4026
+    /// [ZOOKEEPER-4667]: https://issues.apache.org/jira/browse/ZOOKEEPER-4667
+    pub fn add_create(&mut self, path: &str, data: &[u8], options: &CreateOptions<'_>) -> Result<()> {
+        options.validate()?;
+        let ttl = options.ttl.map(|ttl| ttl.as_millis() as i64).unwrap_or(0);
+        let create_mode = options.mode;
+        let sequential = create_mode.is_sequential();
+        let (leaf, _) =
+            if sequential { self.client.validate_sequential_path(path)? } else { self.client.validate_path(path)? };
+        let op_code = if ttl != 0 {
+            OpCode::CreateTtl
+        } else if create_mode.is_container() {
+            OpCode::CreateContainer
+        } else {
+            OpCode::Create2
+        };
+        let flags = create_mode.as_flags(ttl != 0);
+        let request =
+            CreateRequest { path: RootedPath::new(&self.client.root, leaf), data, acls: options.acls, flags, ttl };
+        self.add_operation(op_code, &request);
+        Ok(())
+    }
+
+    /// Adds operation to set data for node with given path.
+    ///
+    /// See [Client::set_data] for more details.
+    pub fn add_set_data(&mut self, path: &str, data: &[u8], expected_version: Option<i32>) -> Result<()> {
+        let (leaf, _) = self.client.validate_path(path)?;
+        let request = SetDataRequest {
+            path: RootedPath::new(&self.client.root, leaf),
+            data,
+            version: expected_version.unwrap_or(-1),
+        };
+        self.add_operation(OpCode::SetData, &request);
+        Ok(())
+    }
+
+    /// Adds operation to delete node with given path.
+    ///
+    /// See [Client::delete] for more details.
+    pub fn add_delete(&mut self, path: &str, expected_version: Option<i32>) -> Result<()> {
+        let (leaf, _) = self.client.validate_path(path)?;
+        if leaf.is_empty() {
+            return Err(Error::BadArguments(&"can not delete root node"));
+        }
+        let request =
+            DeleteRequest { path: RootedPath::new(&self.client.root, leaf), version: expected_version.unwrap_or(-1) };
+        self.add_operation(OpCode::Delete, &request);
+        Ok(())
+    }
+
+    /// Commits multiple operations in one request to write transactionally.
+    ///
+    /// # Notable behaviors
+    /// Failure of individual operation will fail whole request and commit no effect in server.
+    ///
+    /// # Notable errors
+    /// * [Error::BadVersion] if check version failed.
+    pub async fn commit(&mut self) -> std::result::Result<Vec<MultiWriteResult>, MultiWriteError> {
+        if self.buf.is_empty() {
+            return Ok(Default::default());
+        }
+        let request = self.build_request();
+        let receiver = self.client.send_marshalled_request(request);
+        let (body, _) = receiver.await?;
+        let response = record::unmarshal::<Vec<MultiWriteResponse>>(&mut body.as_slice())?;
+        let failed = response.first().map(|r| matches!(r, MultiWriteResponse::Error(_))).unwrap_or(false);
+        let mut results = if failed { Vec::new() } else { Vec::with_capacity(response.len()) };
+        for (index, result) in response.into_iter().enumerate() {
+            match result {
+                MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
+                MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
+                MultiWriteResponse::Create { path, stat } => {
+                    util::strip_root_path(path, &self.client.root)?;
+                    results.push(MultiWriteResult::Create { path: path.to_string(), stat });
+                },
+                MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),
+                MultiWriteResponse::Error(Error::UnexpectedErrorCode(0)) => {},
+                MultiWriteResponse::Error(err) => return Err(MultiWriteError::OperationFailed { index, source: err }),
+            }
+        }
+        Ok(results)
+    }
+
+    /// Clears collected operations.
+    pub fn abort(&mut self) {
+        self.buf.clear();
     }
 }

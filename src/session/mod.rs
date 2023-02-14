@@ -99,7 +99,7 @@ impl Session {
             session_password: Vec::with_capacity(16),
             session_readonly: false,
 
-            authes: authes.iter().map(|auth| MarshalledRequest::new_request(OpCode::Auth, auth)).collect(),
+            authes: authes.iter().map(|auth| MarshalledRequest::new(OpCode::Auth, auth)).collect(),
             state_sender,
             watch_manager,
             unwatch_receiver: Some(unwatch_receiver),

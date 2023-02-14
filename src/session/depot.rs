@@ -182,8 +182,7 @@ impl Depot {
 
     pub fn push_remove_watch(&mut self, path: &str, mode: WatchMode, responser: StateResponser) {
         let record = RemoveWatchesRequest { path, mode: mode.into() };
-        let operation =
-            SessionOperation { request: MarshalledRequest::new_request(OpCode::RemoveWatches, &record), responser };
+        let operation = SessionOperation { request: MarshalledRequest::new(OpCode::RemoveWatches, &record), responser };
         self.push_session(operation);
     }
 

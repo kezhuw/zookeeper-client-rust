@@ -57,21 +57,23 @@ impl<'a> DeserializableRecord<'a> for ConnectResponse<'a> {
         let session_timeout = unsafe { buf.get_unchecked_i32() };
         let session_id = unsafe { buf.get_unchecked_i64() };
         if protocol_version != 0 {
-            return Err(DeserializeError::Invalid(&"unsupported server version"));
+            return Err(DeserializeError::UnmarshalError(format!("unsupported server version {protocol_version}")));
         } else if session_timeout < 0 {
-            return Err(DeserializeError::Invalid(&"invalid negotiated session timeout"));
+            return Err(DeserializeError::UnmarshalError(format!(
+                "invalid negotiated session timeout {session_timeout}"
+            )));
         } else if session_id < 0 {
-            return Err(DeserializeError::Invalid(&"invalid session id"));
+            return Err(DeserializeError::UnmarshalError(format!("invalid session id {session_id}")));
         }
         let len = unsafe { buf.get_unchecked_i32() };
         if len <= 0 || len != (buf.len() - 1) as i32 {
-            return Err(DeserializeError::Invalid(&"invalid session password length"));
+            return Err(DeserializeError::UnmarshalError(format!("invalid session password length {len}")));
         }
         let len = len as usize;
         let password = unsafe { buf.get_unchecked(..len) };
         let readonly = unsafe { *buf.get_unchecked(len) };
         if readonly != 0 && readonly != 1 {
-            return Err(DeserializeError::Invalid(&"invalid session readonly value"));
+            return Err(DeserializeError::UnmarshalError(format!("invalid session readonly value {readonly}")));
         }
         Ok(ConnectResponse { protocol_version, session_timeout, session_id, password, readonly: readonly == 1 })
     }

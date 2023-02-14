@@ -25,10 +25,7 @@ impl UnsafeRead<'_> for RequestHeader {
 
     unsafe fn read(buf: &mut ReadingBuf) -> Result<Self, InvalidData> {
         let xid = buf.get_unchecked_i32();
-        let code = match buf.get_unchecked_i32().try_into() {
-            Ok(code) => code,
-            Err(_) => return Err(InvalidData(&"unexpected op code")),
-        };
+        let code = OpCode::read(buf)?;
         Ok(RequestHeader { xid, code })
     }
 }

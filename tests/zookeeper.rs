@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use assert_matches::assert_matches;
 use futures::future;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
@@ -53,8 +54,21 @@ async fn example() {
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, path);
 
+    let mut multi_reader = client.new_multi_reader();
+    multi_reader.add_get_data(path).unwrap();
+    multi_reader.add_get_children("/").unwrap();
+    let mut results = multi_reader.commit().await.unwrap();
+    assert_eq!(results.len(), 2);
+    assert_matches!(results.remove(0), zk::MultiReadResult::Data { data: got_data, stat: got_stat } => {
+        assert_eq!(got_data, data);
+        assert_eq!(got_stat, stat);
+    });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Children { children } => {
+        assert_that!(children).contains("abc".to_string());
+    });
+
     let path_client = client.clone().chroot(path).unwrap();
-    assert_eq!((data, stat), path_client.get_data("/").await.unwrap());
+    assert_eq!((data.clone(), stat), path_client.get_data("/").await.unwrap());
 
     let (_, _, child_watcher) = client.get_and_watch_children(path).await.unwrap();
 
@@ -66,6 +80,18 @@ async fn example() {
 
     let relative_child_path = child_path.strip_prefix(path).unwrap();
     assert_eq!((child_data.clone(), child_stat), path_client.get_data(relative_child_path).await.unwrap());
+
+    multi_reader.add_get_children(path).unwrap();
+    multi_reader.add_get_data(child_path).unwrap();
+    let mut results = multi_reader.commit().await.unwrap();
+    assert_eq!(results.len(), 2);
+    assert_matches!(results.remove(0), zk::MultiReadResult::Children { children } => {
+        assert_eq!(children, vec!["efg"]);
+    });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Data { data, stat } => {
+        assert_eq!(data, child_data);
+        assert_eq!(stat, child_stat);
+    });
 
     let (_, _, event_watcher) = client.get_and_watch_data("/").await.unwrap();
     drop(client);
@@ -79,6 +105,112 @@ async fn example() {
 #[tokio::test]
 async fn test_example() {
     tokio::spawn(async move { example().await }).await.unwrap()
+}
+
+#[tokio::test]
+async fn test_multi() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+
+    let mut writer = client.new_multi_writer();
+    assert_that!(writer.commit().await.unwrap()).is_empty();
+
+    writer.add_set_data("/a", &random_data(), None).unwrap();
+    writer.abort();
+    assert_that!(writer.commit().await.unwrap()).is_empty();
+
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+    writer.add_create("/a", "/a.0".as_bytes(), &create_options).unwrap();
+    let mut results = writer.commit().await.unwrap();
+    assert_matches!(results.remove(0), zk::MultiWriteResult::Create { path, stat } => {
+        assert_eq!(path, "/a");
+        assert_that!(stat.czxid).is_equal_to(-1);
+    });
+    assert_that!(results).is_empty();
+    assert_that!(writer.commit().await.unwrap()).is_empty();
+
+    let (data, a_stat) = client.get_data("/a").await.unwrap();
+    assert_eq!(data, "/a.0".as_bytes());
+
+    writer.add_check_version("/a", a_stat.version + 1).unwrap();
+    writer.add_set_data("/a", &random_data(), None).unwrap();
+    writer.add_create("/a", &random_data(), &create_options).unwrap();
+    assert_eq!(writer.commit().await.unwrap_err(), zk::MultiWriteError::OperationFailed {
+        index: 0,
+        source: zk::Error::BadVersion
+    });
+
+    writer.add_set_data("/a", &random_data(), None).unwrap();
+    writer.add_check_version("/a", a_stat.version + 1).unwrap();
+    writer.add_create("/a", &random_data(), &create_options).unwrap();
+    assert_eq!(writer.commit().await.unwrap_err(), zk::MultiWriteError::OperationFailed {
+        index: 2,
+        source: zk::Error::NodeExists
+    });
+
+    writer.add_set_data("/a", "/a.1".as_bytes(), None).unwrap();
+    writer.add_check_version("/a", a_stat.version + 1).unwrap();
+    writer.add_set_data("/a", "/a.2".as_bytes(), None).unwrap();
+    writer.add_check_version("/a", a_stat.version + 2).unwrap();
+    writer.add_create("/a/b", "/a/b.0".as_bytes(), &create_options).unwrap();
+    let mut results = writer.commit().await.unwrap();
+    assert_matches!(results.remove(0), zk::MultiWriteResult::SetData { stat } => {
+        assert_that!(stat.czxid).is_equal_to(a_stat.czxid);
+        assert_that!(stat.mzxid).is_greater_than(a_stat.mzxid);
+        assert_that!(stat.version).is_equal_to(a_stat.version + 1);
+    });
+    assert_matches!(results.remove(0), zk::MultiWriteResult::Check);
+    assert_matches!(results.remove(0), zk::MultiWriteResult::SetData { stat } => {
+        assert_that!(stat.czxid).is_equal_to(a_stat.czxid);
+        assert_that!(stat.mzxid).is_greater_than(a_stat.mzxid);
+        assert_that!(stat.version).is_equal_to(a_stat.version + 2);
+    });
+    assert_matches!(results.remove(0), zk::MultiWriteResult::Check);
+    assert_matches!(results.remove(0), zk::MultiWriteResult::Create { path, stat } => {
+        assert_eq!(path, "/a/b");
+        assert_that!(stat.czxid).is_equal_to(-1);
+    });
+    assert_that!(results).is_empty();
+
+    let (_, a_stat) = client.get_data("/a").await.unwrap();
+    let (_, b_stat) = client.get_data("/a/b").await.unwrap();
+
+    let mut reader = client.new_multi_reader();
+    assert_that!(reader.commit().await.unwrap()).is_empty();
+
+    reader.add_get_data("/a").unwrap();
+    reader.abort();
+    assert_that!(reader.commit().await.unwrap()).is_empty();
+
+    reader.add_get_data("/a").unwrap();
+    reader.add_get_data("/a/b").unwrap();
+    reader.add_get_data("/a/c").unwrap();
+    reader.add_get_children("/a").unwrap();
+    reader.add_get_children("/a/b").unwrap();
+    reader.add_get_children("/a/c").unwrap();
+    let mut results = reader.commit().await.unwrap();
+    assert_that!(reader.commit().await.unwrap()).is_empty();
+    assert_matches!(results.remove(0), zk::MultiReadResult::Data { data, stat } => {
+        assert_eq!(data, "/a.2".as_bytes());
+        assert_eq!(stat, a_stat);
+    });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Data { data, stat } => {
+        assert_eq!(data, "/a/b.0".as_bytes());
+        assert_eq!(stat, b_stat);
+    });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Error { err: zk::Error::NoNode });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Children { children } => {
+        assert_eq!(children, vec!["b".to_string()]);
+    });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Children { children } => {
+        assert_that!(children).is_empty();
+    });
+    assert_matches!(results.remove(0), zk::MultiReadResult::Error { err: zk::Error::NoNode });
+    assert_that!(results).is_empty();
 }
 
 #[tokio::test]

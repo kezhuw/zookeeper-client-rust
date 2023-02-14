@@ -117,16 +117,16 @@ impl DynamicRecord for OneshotWatchRequest<'_> {
     }
 }
 
-pub struct GetChildren2Response<'a> {
-    pub children: Vec<&'a str>,
+pub struct GetChildren2Response {
+    pub children: Vec<String>,
     pub stat: Stat,
 }
 
-impl<'a> DeserializableRecord<'a> for GetChildren2Response<'a> {
+impl DeserializableRecord<'_> for GetChildren2Response {
     type Error = DeserializeError;
 
-    fn deserialize(buf: &mut ReadingBuf<'a>) -> Result<GetChildren2Response<'a>, Self::Error> {
-        let children = Vec::<&'a str>::deserialize(buf)?;
+    fn deserialize(buf: &mut ReadingBuf<'_>) -> Result<GetChildren2Response, Self::Error> {
+        let children = Vec::<String>::deserialize(buf)?;
         let stat = Stat::deserialize(buf)?;
         let response = GetChildren2Response { children, stat };
         Ok(response)

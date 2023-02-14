@@ -12,8 +12,11 @@ use crate::error::Error;
 use crate::proto::{self, AddWatchMode, ConnectRequest, OpCode, RequestHeader};
 use crate::record::{self, Record, StaticRecord};
 
+#[derive(Clone, Debug)]
+pub struct MarshalledRequest(pub Vec<u8>);
+
 impl MarshalledRequest {
-    pub fn new_request(code: OpCode, body: &dyn Record) -> MarshalledRequest {
+    pub fn new(code: OpCode, body: &dyn Record) -> MarshalledRequest {
         let header = RequestHeader::with_code(code);
         let buf = proto::build_session_request(&header, body);
         MarshalledRequest(buf)
@@ -106,9 +109,6 @@ impl ConnectOperation {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MarshalledRequest(pub Vec<u8>);
-
 #[derive(Debug)]
 pub struct SessionOperation {
     pub request: MarshalledRequest,
@@ -117,7 +117,7 @@ pub struct SessionOperation {
 
 impl SessionOperation {
     pub fn new(code: OpCode, body: &dyn Record) -> Self {
-        let request = MarshalledRequest::new_request(code, body);
+        let request = MarshalledRequest::new(code, body);
         Self { request, responser: Default::default() }
     }
 
@@ -125,6 +125,10 @@ impl SessionOperation {
         let header = RequestHeader::with_code(code);
         let request = MarshalledRequest::new_record(&header);
         Self { request, responser: StateResponser::default() }
+    }
+
+    pub fn new_marshalled(request: MarshalledRequest) -> Self {
+        Self { request, responser: Default::default() }
     }
 
     pub fn with_responser(self) -> (Self, StateReceiver) {
@@ -183,10 +187,6 @@ impl StateResponser {
 
     pub fn none() -> Self {
         StateResponser(None)
-    }
-
-    pub fn is_none(&self) -> bool {
-        self.0.is_none()
     }
 
     pub fn send(mut self, result: Result<(Vec<u8>, WatchReceiver), Error>) -> bool {

@@ -1,4 +1,7 @@
+use bytes::BufMut;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+
+use crate::record::{InvalidData, ReadingBuf, SerializableRecord, StaticRecord, UnsafeBuf, UnsafeRead};
 
 #[repr(i32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, strum::Display)]
@@ -36,6 +39,29 @@ pub enum OpCode {
     CreateSession = -10,
     CloseSession = -11,
     Error = -1,
+}
+
+impl SerializableRecord for OpCode {
+    fn serialize(&self, buf: &mut dyn BufMut) {
+        buf.put_i32(Into::into(*self));
+    }
+}
+
+impl StaticRecord for OpCode {
+    fn record_len() -> usize {
+        4
+    }
+}
+
+impl UnsafeRead<'_> for OpCode {
+    type Error = InvalidData;
+
+    unsafe fn read(buf: &mut ReadingBuf) -> Result<Self, InvalidData> {
+        match OpCode::try_from(buf.get_unchecked_i32()) {
+            Err(err) => Err(InvalidData::UnexpectedOpCode(err.number)),
+            Ok(op) => Ok(op),
+        }
+    }
 }
 
 #[cfg(test)]

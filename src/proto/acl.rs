@@ -33,7 +33,7 @@ impl TryFrom<i32> for Permission {
     fn try_from(raw: i32) -> Result<Permission, Self::Error> {
         let all_bits = Permission::ALL.into_raw();
         if (raw & !all_bits) != 0 {
-            return Err(InvalidData(&""));
+            return Err(InvalidData::UnmarshalError(format!("invalid permission bits: {:#b}", raw)));
         }
         Ok(Permission::from_raw(raw))
     }

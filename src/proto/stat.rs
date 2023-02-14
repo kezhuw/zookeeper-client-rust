@@ -39,6 +39,35 @@ pub struct Stat {
     pub num_children: i32,
 }
 
+impl Stat {
+    pub(crate) fn new_invalid() -> Self {
+        Self {
+            czxid: -1,
+            mzxid: -1,
+            pzxid: -1,
+            ctime: 0,
+            mtime: 0,
+            version: -1,
+            cversion: -1,
+            aversion: -1,
+            ephemeral_owner: 0,
+            data_length: 0,
+            num_children: 0,
+        }
+    }
+
+    /// Tests whether this stat is invalid.
+    ///
+    /// This method is exported to circumvent bugs in ZooKeeper server.
+    /// See [ZOOKEEPER-4026][] and [ZOOKEEPER-4667][] for reference.
+    ///
+    /// [ZOOKEEPER-4026]: https://issues.apache.org/jira/browse/ZOOKEEPER-4026
+    /// [ZOOKEEPER-4667]: https://issues.apache.org/jira/browse/ZOOKEEPER-4667
+    pub fn is_invalid(&self) -> bool {
+        self.czxid == -1
+    }
+}
+
 impl SerializableRecord for Stat {
     fn serialize(&self, buf: &mut dyn BufMut) {
         buf.put_i64(self.czxid);

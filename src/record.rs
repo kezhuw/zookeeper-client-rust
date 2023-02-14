@@ -9,15 +9,30 @@ pub enum DeserializeError {
     #[error("insufficient buf")]
     InsufficientBuf,
 
-    #[error("invalid data {0}")]
-    Invalid(&'static &'static str),
+    #[error("unexpected op code: {0}")]
+    UnexpectedOpCode(i32),
+
+    #[error("unexpected error code: {0}")]
+    UnexpectedErrorCode(i32),
+
+    #[error("{0}")]
+    UnmarshalError(String),
 }
 
 #[derive(thiserror::Error, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InsufficientBuf;
 
 #[derive(thiserror::Error, Debug)]
-pub struct InvalidData(pub &'static &'static str);
+pub enum InvalidData {
+    #[error("unexpected op code: {0}")]
+    UnexpectedOpCode(i32),
+
+    #[error("unexpected error code: {0}")]
+    UnexpectedErrorCode(i32),
+
+    #[error("{0}")]
+    UnmarshalError(String),
+}
 
 pub trait UnmarshalError: Sized {
     fn with_context(self, context: &'static str) -> ZkError;
@@ -25,11 +40,14 @@ pub trait UnmarshalError: Sized {
 
 impl DeserializeError {
     pub fn with_entity(self, entity: &'static str) -> ZkError {
-        let reason = match self {
-            DeserializeError::InsufficientBuf => &"insufficient buf",
-            DeserializeError::Invalid(reason) => reason,
-        };
-        ZkError::UnmarshalError { entity, reason }
+        match self {
+            DeserializeError::InsufficientBuf => ZkError::UnmarshalError { entity, reason: &"insufficient buf" },
+            DeserializeError::UnexpectedOpCode(code) => {
+                ZkError::UnexpectedError(format!("unexpected op code {}", code))
+            },
+            DeserializeError::UnexpectedErrorCode(code) => ZkError::UnexpectedErrorCode(code),
+            DeserializeError::UnmarshalError(err) => ZkError::UnexpectedError(err),
+        }
     }
 }
 
@@ -71,7 +89,7 @@ impl NotInsufficientError for InvalidData {
     }
 
     fn to_deserialize_error(self) -> Self::DeserializeError {
-        DeserializeError::Invalid(self.0)
+        DeserializeError::from(self)
     }
 }
 
@@ -95,7 +113,9 @@ impl HasInsufficientError for DeserializeError {
     fn to_data_error(self) -> Option<Self::DataError> {
         match self {
             DeserializeError::InsufficientBuf => None,
-            DeserializeError::Invalid(reason) => Some(InvalidData(reason)),
+            DeserializeError::UnexpectedOpCode(op_code) => Some(InvalidData::UnexpectedOpCode(op_code)),
+            DeserializeError::UnexpectedErrorCode(ec) => Some(InvalidData::UnexpectedErrorCode(ec)),
+            DeserializeError::UnmarshalError(reason) => Some(InvalidData::UnmarshalError(reason)),
         }
     }
 }
@@ -103,12 +123,6 @@ impl HasInsufficientError for DeserializeError {
 impl std::fmt::Display for InsufficientBuf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(f, "insufficient buf")
-    }
-}
-
-impl std::fmt::Display for InvalidData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{}", self.0)
     }
 }
 
@@ -120,11 +134,19 @@ impl From<InsufficientBuf> for DeserializeError {
 
 impl From<InvalidData> for DeserializeError {
     fn from(err: InvalidData) -> DeserializeError {
-        DeserializeError::Invalid(err.0)
+        match err {
+            InvalidData::UnexpectedOpCode(op_code) => DeserializeError::UnexpectedOpCode(op_code),
+            InvalidData::UnexpectedErrorCode(ec) => DeserializeError::UnexpectedErrorCode(ec),
+            InvalidData::UnmarshalError(reason) => DeserializeError::UnmarshalError(reason),
+        }
     }
 }
 
-pub trait Record: SerializableRecord + DynamicRecord {}
+pub trait Record: SerializableRecord + DynamicRecord {
+    fn take_serialized(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
 
 impl<T> Record for T where T: SerializableRecord + DynamicRecord {}
 
@@ -172,7 +194,7 @@ where
 pub fn unmarshal_entity<'a, T>(entity: &'static &'static str, buf: &mut ReadingBuf<'a>) -> Result<T, ZkError>
 where
     T: DeserializableRecord<'a> + 'a, {
-    T::deserialize(buf).map_err(|e| e.with_context(*entity))
+    T::deserialize(buf).map_err(|e| e.with_context(entity))
 }
 
 impl<T> SerializableRecord for &T
@@ -249,8 +271,7 @@ impl StaticRecord for () {
 
 impl SerializableRecord for bool {
     fn serialize(&self, buf: &mut dyn BufMut) {
-        let u = if *self { 1 } else { 0 };
-        buf.put_u8(u);
+        buf.put_u8(u8::from(*self));
     }
 }
 
@@ -260,22 +281,15 @@ impl StaticRecord for bool {
     }
 }
 
-impl<'a> DeserializableRecord<'a> for bool {
-    type Error = DeserializeError;
+impl UnsafeRead<'_> for bool {
+    type Error = InvalidData;
 
-    fn deserialize(buf: &mut ReadingBuf<'a>) -> Result<Self, Self::Error> {
-        if buf.is_empty() {
-            return Err(DeserializeError::InsufficientBuf);
+    unsafe fn read(buf: &mut ReadingBuf) -> Result<Self, Self::Error> {
+        match unsafe { buf.get_unchecked_u8() } {
+            0 => Ok(false),
+            1 => Ok(true),
+            u => Err(InvalidData::UnmarshalError(format!("invalid value {} for bool", u))),
         }
-        let u = unsafe { buf.get_unchecked_u8() };
-        let b = if u == 0 {
-            false
-        } else if u == 1 {
-            true
-        } else {
-            return Err(DeserializeError::Invalid(&"invalid value for bool"));
-        };
-        Ok(b)
     }
 }
 
@@ -368,7 +382,16 @@ impl<'a> DeserializableRecord<'a> for &'a str {
         let n = n as usize;
         let bytes = unsafe { buf.get_unchecked(..n) };
         let s = match std::str::from_utf8(bytes) {
-            Err(_) => return Err(DeserializeError::Invalid(&"invalid bytes for utf8")),
+            Err(err) => {
+                let pos = err.valid_up_to();
+                let err = match err.error_len() {
+                    None => DeserializeError::UnmarshalError(format!("unexpected utf8 end after {:?}", &bytes[pos..])),
+                    Some(n) => {
+                        DeserializeError::UnmarshalError(format!("invalid utf8 bytes {:?}", &bytes[pos..pos + n]))
+                    },
+                };
+                return Err(err);
+            },
             Ok(s) => s,
         };
         unsafe { *buf = buf.get_unchecked(n..) };
@@ -479,6 +502,15 @@ where
             v.push(T::deserialize(buf)?);
         }
         Ok(v)
+    }
+}
+
+impl DeserializableRecord<'_> for Vec<u8> {
+    type Error = DeserializeError;
+
+    fn deserialize(buf: &mut ReadingBuf<'_>) -> Result<Vec<u8>, Self::Error> {
+        let bytes = <&[u8]>::deserialize(buf)?;
+        Ok(bytes.to_owned())
     }
 }
 
