@@ -285,7 +285,7 @@ impl UnsafeRead<'_> for bool {
     type Error = InvalidData;
 
     unsafe fn read(buf: &mut ReadingBuf) -> Result<Self, Self::Error> {
-        match unsafe { buf.get_unchecked_u8() } {
+        match buf.get_unchecked_u8() {
             0 => Ok(false),
             1 => Ok(true),
             u => Err(InvalidData::UnmarshalError(format!("invalid value {} for bool", u))),
