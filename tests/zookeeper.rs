@@ -108,6 +108,32 @@ async fn test_example() {
 }
 
 #[tokio::test]
+async fn test_multi_same_key() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+    client.create("/a", &random_data(), &create_options).await.unwrap();
+    let mut watcher = client.watch("/a", zk::AddWatchMode::Persistent).await.unwrap();
+
+    let mut writer = client.new_multi_writer();
+    writer.add_set_data("/a", &random_data(), None).unwrap();
+    writer.add_delete("/a", None).unwrap();
+    writer.commit().await.unwrap();
+
+    let event1 = watcher.changed().await;
+    let event2 = watcher.changed().await;
+    assert_eq!(event1.event_type, zk::EventType::NodeDataChanged);
+    assert_eq!(event1.path, "/a");
+    assert_eq!(event2.event_type, zk::EventType::NodeDeleted);
+    assert_eq!(event2.path, "/a");
+}
+
+#[tokio::test]
 async fn test_multi() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
