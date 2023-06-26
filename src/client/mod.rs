@@ -227,9 +227,11 @@ impl Client {
         self.state_watcher.peek_state()
     }
 
-    /// Creates a [StateWatcher] to track state updates.
+    /// Creates a [StateWatcher] to track future session state updates.
     pub fn state_watcher(&self) -> StateWatcher {
-        self.state_watcher.clone()
+        let mut watcher = self.state_watcher.clone();
+        watcher.state();
+        watcher
     }
 
     /// Changes root directory to given absolute path.

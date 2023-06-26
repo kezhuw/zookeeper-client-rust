@@ -937,6 +937,11 @@ async fn test_state_watcher() {
 
     let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
     let mut state_watcher = client.state_watcher();
+    select! {
+        biased;
+        _ = state_watcher.changed() => panic!("expect no state update"),
+        _ = future::ready(()) => {},
+    }
     assert_eq!(zk::SessionState::SyncConnected, state_watcher.state());
     drop(client);
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
