@@ -396,6 +396,7 @@ impl Session {
                     let operation = if let Some(operation) = r {
                         operation
                     } else {
+                        depot.push_session(SessionOperation::new_without_body(OpCode::CloseSession));
                         channel_closed = true;
                         continue;
                     };
