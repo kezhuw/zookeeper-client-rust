@@ -951,3 +951,35 @@ async fn test_state_watcher() {
         _ = tokio::time::sleep(Duration::from_millis(10)) => {},
     }
 }
+
+#[tokio::test]
+async fn test_client_drop() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::ClientBuilder::new(Duration::from_secs(10)).connect(&cluster).await.unwrap();
+
+    let mut state_watcher = client.state_watcher();
+    let (id, password) = client.into_session();
+    assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
+
+    zk::ClientBuilder::new(Duration::from_secs(10)).with_session(id, password).connect(&cluster).await.unwrap_err();
+}
+
+#[tokio::test]
+async fn test_client_detach() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::ClientBuilder::new(Duration::from_secs(10)).detach().connect(&cluster).await.unwrap();
+
+    let mut state_watcher = client.state_watcher();
+    let (id, password) = client.into_session();
+    assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
+
+    zk::ClientBuilder::new(Duration::from_secs(10)).with_session(id, password).connect(&cluster).await.unwrap();
+}

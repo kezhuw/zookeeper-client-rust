@@ -31,6 +31,8 @@ use crate::error::Error;
 use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
 use crate::record;
 
+pub const PASSWORD_LEN: usize = 16;
+
 trait RequestOperation {
     fn into_responser(self) -> StateResponser;
 }
@@ -50,6 +52,7 @@ impl RequestOperation for (WatcherId, StateResponser) {
 pub struct Session {
     timeout: Duration,
     readonly: bool,
+    detached: bool,
 
     last_zxid: i64,
     last_recv: Instant,
@@ -74,16 +77,21 @@ pub struct Session {
 
 impl Session {
     pub fn new(
+        session: Option<(SessionId, Vec<u8>)>,
         timeout: Duration,
         authes: &[AuthPacket],
         readonly: bool,
+        detached: bool,
     ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
+        let (session_id, session_password) =
+            session.unwrap_or_else(|| (SessionId(0), Vec::with_capacity(PASSWORD_LEN)));
         let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
         let (watch_manager, unwatch_receiver) = WatchManager::new();
         let mut session = Session {
             timeout,
             readonly,
+            detached,
 
             last_zxid: 0,
             last_recv: now,
@@ -93,10 +101,10 @@ impl Session {
             ping_timeout: Duration::ZERO,
             recv_timeout: Duration::ZERO,
 
-            session_id: SessionId(0),
+            session_id,
             session_timeout: timeout,
             session_state: SessionState::Disconnected,
-            session_password: Vec::with_capacity(16),
+            session_password,
             session_readonly: false,
 
             authes: authes.iter().map(|auth| MarshalledRequest::new(OpCode::Auth, auth)).collect(),
@@ -396,7 +404,9 @@ impl Session {
                     let operation = if let Some(operation) = r {
                         operation
                     } else {
-                        depot.push_session(SessionOperation::new_without_body(OpCode::CloseSession));
+                        if !self.detached {
+                            depot.push_session(SessionOperation::new_without_body(OpCode::CloseSession));
+                        }
                         channel_closed = true;
                         continue;
                     };
@@ -503,7 +513,7 @@ impl Session {
             Err(err) => err,
             Ok(sock) => return Ok(sock),
         };
-        while last_error != Error::NoHosts && last_error != Error::Timeout {
+        while last_error != Error::NoHosts && last_error != Error::Timeout && last_error != Error::SessionExpired {
             match self.start_once(hosts, deadline, buf, depot).await {
                 Err(err) => {
                     last_error = err;

@@ -8,7 +8,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
-use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver};
+use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver, PASSWORD_LEN};
 use crate::acl::{Acl, AuthUser};
 use crate::error::{ConnectError, Error};
 use crate::proto::{
@@ -215,6 +215,11 @@ impl Client {
     /// Session password.
     pub fn session_password(&self) -> &[u8] {
         self.session.1.as_slice()
+    }
+
+    /// Consumes this instance into session info.
+    pub fn into_session(self) -> (SessionId, Vec<u8>) {
+        self.session
     }
 
     /// Negotiated session timeout.
@@ -822,13 +827,21 @@ impl Client {
 pub struct ClientBuilder {
     timeout: Duration,
     authes: Vec<AuthPacket>,
+    session: Option<(SessionId, Vec<u8>)>,
     readonly: bool,
+    detached: bool,
 }
 
 impl ClientBuilder {
     /// Constructs a builder with given session timeout.
     pub fn new(session_timeout: Duration) -> ClientBuilder {
-        ClientBuilder { timeout: session_timeout, authes: Default::default(), readonly: false }
+        ClientBuilder {
+            timeout: session_timeout,
+            authes: Default::default(),
+            session: None,
+            readonly: false,
+            detached: false,
+        }
     }
 
     /// Specifies whether readonly server is allowed.
@@ -843,12 +856,35 @@ impl ClientBuilder {
         self
     }
 
+    /// Specifies session to reestablish.
+    pub fn with_session(&mut self, id: SessionId, password: Vec<u8>) -> &mut Self {
+        self.session = Some((id, password));
+        self
+    }
+
+    /// Detaches creating session so it will not be closed after all client instances dropped.
+    pub fn detach(&mut self) -> &mut Self {
+        self.detached = true;
+        self
+    }
+
     /// Connects to ZooKeeper cluster.
     pub async fn connect(&mut self, cluster: &str) -> std::result::Result<Client, ConnectError> {
         let (hosts, root) = util::parse_connect_string(cluster)?;
         let mut buf = Vec::with_capacity(4096);
         let mut connecting_depot = Depot::for_connecting();
-        let (mut session, state_receiver) = Session::new(self.timeout, &self.authes, self.readonly);
+        if let Some((id, password)) = &self.session {
+            if id.0 == 0 {
+                return Err(ConnectError::BadArguments(&"session id must not be 0"));
+            } else if password.is_empty() {
+                return Err(ConnectError::BadArguments(&formatcp!(
+                    "session password is empty, it should have length of {}",
+                    PASSWORD_LEN
+                )));
+            }
+        }
+        let (mut session, state_receiver) =
+            Session::new(self.session.take(), self.timeout, &self.authes, self.readonly, self.detached);
         let mut hosts_iter = hosts.iter().copied();
         let sock = match session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await {
             Ok(sock) => sock,
