@@ -33,6 +33,5 @@ rand = "0.8.4"
 pretty_assertions = "1.1.0"
 test-case = "1.2.3"
 testcontainers = { git = "https://github.com/kezhuw/testcontainers-rs.git", branch = "zookeeper-client" }
-futures = "0.3.21"
 speculoos = "0.9.0"
 assert_matches = "1.5.0"

@@ -1,7 +1,7 @@
+use std::future;
 use std::time::Duration;
 
 use assert_matches::assert_matches;
-use futures::future;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
