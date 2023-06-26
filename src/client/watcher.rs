@@ -24,7 +24,10 @@ impl StateWatcher {
     ///
     /// This method will block indefinitely after one of terminal states consumed.
     pub async fn changed(&mut self) -> SessionState {
-        self.receiver.changed().await.unwrap();
+        if self.receiver.changed().await.is_err() {
+            // Terminal state must be deliveried.
+            std::future::pending().await
+        }
         self.state()
     }
 

@@ -926,3 +926,23 @@ async fn test_session_event() {
     assert_eq!(event.event_type, zk::EventType::Session);
     assert!([zk::SessionState::Expired, zk::SessionState::Closed].contains(&event.session_state));
 }
+
+#[tokio::test]
+async fn test_state_watcher() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let mut state_watcher = client.state_watcher();
+    assert_eq!(zk::SessionState::SyncConnected, state_watcher.state());
+    drop(client);
+    assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
+    select! {
+        biased;
+        _ = state_watcher.changed() => panic!("expect no state update after terminal state"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+    }
+}
