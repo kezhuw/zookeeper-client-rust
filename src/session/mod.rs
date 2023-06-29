@@ -136,7 +136,7 @@ impl Session {
         let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
         self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
-            let mut hosts = servers.iter().map(|(host, port)| (host.as_str(), *port));
+            let mut hosts = servers.iter().cycle().map(|(host, port)| (host.as_str(), *port));
             let sock = match self.start(&mut hosts, &mut buf, &mut connecting_trans).await {
                 Err(err) => {
                     log::warn!("fail to connect to cluster {:?} due to {}", servers, err);
@@ -168,7 +168,7 @@ impl Session {
 
     fn resolve_start_error(&mut self, err: &Error) {
         let state = match err {
-            Error::SessionExpired | Error::SessionMoved => SessionState::Expired,
+            Error::SessionExpired | Error::SessionMoved | Error::Timeout => SessionState::Expired,
             Error::AuthFailed => SessionState::AuthFailed,
             _ => SessionState::Closed,
         };

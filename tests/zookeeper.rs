@@ -918,13 +918,13 @@ async fn test_session_event() {
     assert_eq!(event.session_state, zk::SessionState::Disconnected);
 
     let event = persistent_watcher.changed().await;
+    assert_eq!(event.event_type, zk::EventType::Session);
+    assert_eq!(event.session_state, zk::SessionState::Expired);
+
     assert_eq!(event, oneshot_watcher1.changed().await);
     assert_eq!(event, oneshot_watcher2.changed().await);
     assert_eq!(event, oneshot_watcher3.changed().await);
     assert_eq!(event, oneshot_watcher4.changed().await);
-
-    assert_eq!(event.event_type, zk::EventType::Session);
-    assert!([zk::SessionState::Expired, zk::SessionState::Closed].contains(&event.session_state));
 }
 
 #[tokio::test]
