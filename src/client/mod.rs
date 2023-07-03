@@ -795,9 +795,9 @@ impl Client {
     pub fn update_ensemble<'a, I: Iterator<Item = &'a str> + Clone>(
         &self,
         update: EnsembleUpdate<'a, I>,
-        expected_version: Option<i32>,
+        expected_zxid: Option<i64>,
     ) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
-        let request = ReconfigRequest { update, version: expected_version.unwrap_or(-1) };
+        let request = ReconfigRequest { update, version: expected_zxid.unwrap_or(-1) };
         let receiver = self.send_request(OpCode::Reconfig, &request);
         async move {
             let (mut body, _) = receiver.await?;

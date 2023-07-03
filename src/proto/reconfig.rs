@@ -47,7 +47,7 @@ pub enum EnsembleUpdate<'a, T: Iterator<Item = &'a str> + Clone> {
 
 pub struct ReconfigRequest<'a, T: Iterator<Item = &'a str> + Clone> {
     pub update: EnsembleUpdate<'a, T>,
-    pub version: i32,
+    pub version: i64,
 }
 
 impl<'a, T: Iterator<Item = &'a str> + Clone> SerializableRecord for ReconfigRequest<'a, T> {
@@ -79,6 +79,6 @@ impl<'a, T: Iterator<Item = &'a str> + Clone> DynamicRecord for ReconfigRequest<
                 8 + servers.serialized_len()
             },
         };
-        n + 4
+        n + 8
     }
 }
