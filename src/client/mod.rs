@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch};
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver, PASSWORD_LEN};
 use crate::acl::{Acl, AuthUser};
-use crate::error::{ConnectError, Error};
+use crate::error::Error;
 use crate::proto::{
     self,
     AuthPacket,
@@ -184,7 +184,7 @@ impl Client {
     const CONFIG_NODE: &'static str = "/zookeeper/config";
 
     /// Connects to ZooKeeper cluster with specified session timeout.
-    pub async fn connect(cluster: &str, timeout: Duration) -> std::result::Result<Client, ConnectError> {
+    pub async fn connect(cluster: &str, timeout: Duration) -> Result<Self> {
         ClientBuilder::new(timeout).connect(cluster).await
     }
 
@@ -869,15 +869,15 @@ impl ClientBuilder {
     }
 
     /// Connects to ZooKeeper cluster.
-    pub async fn connect(&mut self, cluster: &str) -> std::result::Result<Client, ConnectError> {
+    pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
         let (hosts, root) = util::parse_connect_string(cluster)?;
         let mut buf = Vec::with_capacity(4096);
         let mut connecting_depot = Depot::for_connecting();
         if let Some((id, password)) = &self.session {
             if id.0 == 0 {
-                return Err(ConnectError::BadArguments(&"session id must not be 0"));
+                return Err(Error::BadArguments(&"session id must not be 0"));
             } else if password.is_empty() {
-                return Err(ConnectError::BadArguments(&formatcp!(
+                return Err(Error::BadArguments(&formatcp!(
                     "session password is empty, it should have length of {}",
                     PASSWORD_LEN
                 )));
@@ -886,10 +886,7 @@ impl ClientBuilder {
         let (mut session, state_receiver) =
             Session::new(self.session.take(), self.timeout, &self.authes, self.readonly, self.detached);
         let mut hosts_iter = hosts.iter().copied();
-        let sock = match session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await {
-            Ok(sock) => sock,
-            Err(err) => return Err(ConnectError::from(err)),
-        };
+        let sock = session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let servers = hosts.into_iter().map(|addr| addr.to_value()).collect();
         let session_info = (session.session_id, session.session_password.clone());

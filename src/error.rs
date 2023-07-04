@@ -88,36 +88,3 @@ impl From<std::convert::Infallible> for Error {
         unreachable!();
     }
 }
-
-/// Errors for client connecting.
-#[derive(thiserror::Error, Debug)]
-pub enum ConnectError {
-    #[error("bad arguments: {0}")]
-    BadArguments(&'static &'static str),
-
-    #[error("auth failed")]
-    AuthFailed,
-
-    #[error("no available hosts")]
-    NoHosts,
-
-    #[error("timeout")]
-    Timeout,
-
-    #[error(transparent)]
-    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
-}
-
-assert_impl_all!(ConnectError: Send, Sync);
-
-impl From<Error> for ConnectError {
-    fn from(err: Error) -> ConnectError {
-        match err {
-            Error::BadArguments(reason) => ConnectError::BadArguments(reason),
-            Error::AuthFailed => ConnectError::AuthFailed,
-            Error::NoHosts => ConnectError::NoHosts,
-            Error::Timeout => ConnectError::Timeout,
-            _ => ConnectError::Other(Box::new(err)),
-        }
-    }
-}
