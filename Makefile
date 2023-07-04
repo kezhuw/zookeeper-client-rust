@@ -1,8 +1,11 @@
-check: fmt lint
+check: check_fmt lint
 
 verify: check build test
 
 fmt:
+	cargo +nightly fmt --all
+
+check_fmt:
 	cargo +nightly fmt --all -- --check
 
 lint:
