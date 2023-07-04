@@ -183,9 +183,14 @@ pub struct Client {
 impl Client {
     const CONFIG_NODE: &'static str = "/zookeeper/config";
 
-    /// Connects to ZooKeeper cluster with specified session timeout.
-    pub async fn connect(cluster: &str, timeout: Duration) -> Result<Self> {
-        ClientBuilder::new(timeout).connect(cluster).await
+    /// Connects to ZooKeeper cluster.
+    pub async fn connect(cluster: &str) -> Result<Self> {
+        Self::builder().connect(cluster).await
+    }
+
+    /// Creates a builder with configurable options in connecting to ZooKeeper cluster.
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::new()
     }
 
     pub(crate) fn new(
@@ -834,16 +839,23 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    /// Constructs a builder with given session timeout.
-    pub fn new(session_timeout: Duration) -> ClientBuilder {
-        ClientBuilder {
+    fn new() -> Self {
+        Self {
             authes: Default::default(),
             session: None,
             readonly: false,
             detached: false,
-            session_timeout,
+            session_timeout: Duration::ZERO,
             connection_timeout: Duration::ZERO,
         }
+    }
+
+    /// Specifies target session timeout to negotiate with ZooKeeper server.
+    ///
+    /// Defaults to 6s.
+    pub fn with_session_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.session_timeout = timeout;
+        self
     }
 
     /// Specifies idle timeout to conclude a connection as loss.

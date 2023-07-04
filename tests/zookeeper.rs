@@ -44,7 +44,7 @@ async fn example() {
     let child_data = "child_path_data".as_bytes().to_vec();
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
     let (_, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
 
     let (stat, _) = client.create(path, &data, &create_options).await.unwrap();
@@ -114,7 +114,7 @@ async fn test_multi() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let mut writer = client.new_multi_writer();
     assert_that!(writer.commit().await.unwrap()).is_empty();
@@ -221,7 +221,7 @@ async fn test_no_node() {
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
     assert_eq!(client.check_stat("/nonexistent").await.unwrap(), None);
@@ -244,7 +244,7 @@ async fn test_request_order() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
@@ -278,7 +278,7 @@ async fn test_data_node() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
@@ -302,7 +302,7 @@ async fn test_create_sequential() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let prefix = "/PREFIX-";
     let data = random_data();
@@ -325,7 +325,7 @@ async fn test_descendants_number() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -378,7 +378,7 @@ async fn test_ephemerals() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -444,7 +444,7 @@ async fn test_chroot() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
     let data = random_data();
@@ -485,7 +485,7 @@ async fn test_auth() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let scheme = "digest";
     let user = "bob";
@@ -496,11 +496,8 @@ async fn test_auth() {
     let authed_users = client.list_auth_users().await.unwrap();
     assert!(authed_users.contains(&authed_user));
 
-    let built_client = zk::ClientBuilder::new(Duration::from_secs(20))
-        .with_auth(scheme.to_string(), auth.to_vec())
-        .connect(&cluster)
-        .await
-        .unwrap();
+    let built_client =
+        zk::Client::builder().with_auth(scheme.to_string(), auth.to_vec()).connect(&cluster).await.unwrap();
 
     built_client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
     let authed_users = client.list_auth_users().await.unwrap();
@@ -514,7 +511,7 @@ async fn test_delete() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
@@ -537,7 +534,7 @@ async fn test_oneshot_watcher() {
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -716,10 +713,10 @@ async fn test_config_watch() {
     let cluster = format!("127.0.0.1:{}", zk_port);
 
     let connect = format!("{}/root", cluster);
-    let client1 = zk::Client::connect(&connect, Duration::from_secs(10)).await.unwrap();
+    let client1 = zk::Client::connect(&connect).await.unwrap();
     let (config_bytes, stat, watcher) = client1.get_and_watch_config().await.unwrap();
 
-    let client2 = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let client2 = zk::Client::connect(&cluster).await.unwrap();
     client2.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
     client2.set_data("/zookeeper/config", &config_bytes, Some(stat.version)).await.unwrap();
 
@@ -736,7 +733,7 @@ async fn test_persistent_watcher_passive_remove() {
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     let path = "/abc";
@@ -776,7 +773,7 @@ async fn test_persistent_watcher() {
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
     let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     let path = "/abc";
@@ -902,7 +899,7 @@ async fn test_session_event() {
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
 
     let (_, oneshot_watcher1) = client.check_and_watch_stat("/").await.unwrap();
     let (_, _, oneshot_watcher2) = client.get_and_watch_data("/").await.unwrap();
@@ -935,7 +932,7 @@ async fn test_state_watcher() {
 
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::Client::connect(&cluster, Duration::from_secs(10)).await.unwrap();
+    let client = zk::Client::connect(&cluster).await.unwrap();
     let mut state_watcher = client.state_watcher();
     select! {
         biased;
@@ -959,13 +956,13 @@ async fn test_client_drop() {
     let zk_port = zookeeper.get_host_port(2181);
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::ClientBuilder::new(Duration::from_secs(10)).connect(&cluster).await.unwrap();
+    let client = zk::Client::builder().connect(&cluster).await.unwrap();
 
     let mut state_watcher = client.state_watcher();
     let (id, password) = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    zk::ClientBuilder::new(Duration::from_secs(10)).with_session(id, password).connect(&cluster).await.unwrap_err();
+    zk::Client::builder().with_session(id, password).connect(&cluster).await.unwrap_err();
 }
 
 #[tokio::test]
@@ -975,11 +972,11 @@ async fn test_client_detach() {
     let zk_port = zookeeper.get_host_port(2181);
     let cluster = format!("127.0.0.1:{}", zk_port);
 
-    let client = zk::ClientBuilder::new(Duration::from_secs(10)).detach().connect(&cluster).await.unwrap();
+    let client = zk::Client::builder().detach().connect(&cluster).await.unwrap();
 
     let mut state_watcher = client.state_watcher();
     let (id, password) = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    zk::ClientBuilder::new(Duration::from_secs(10)).with_session(id, password).connect(&cluster).await.unwrap();
+    zk::Client::builder().with_session(id, password).connect(&cluster).await.unwrap();
 }
