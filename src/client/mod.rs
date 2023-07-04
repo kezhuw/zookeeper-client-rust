@@ -825,23 +825,33 @@ impl Client {
 /// Builder for [Client] with more options than [Client::connect].
 #[derive(Clone, Debug)]
 pub struct ClientBuilder {
-    timeout: Duration,
     authes: Vec<AuthPacket>,
     session: Option<(SessionId, Vec<u8>)>,
     readonly: bool,
     detached: bool,
+    session_timeout: Duration,
+    connection_timeout: Duration,
 }
 
 impl ClientBuilder {
     /// Constructs a builder with given session timeout.
     pub fn new(session_timeout: Duration) -> ClientBuilder {
         ClientBuilder {
-            timeout: session_timeout,
             authes: Default::default(),
             session: None,
             readonly: false,
             detached: false,
+            session_timeout,
+            connection_timeout: Duration::ZERO,
         }
+    }
+
+    /// Specifies idle timeout to conclude a connection as loss.
+    ///
+    /// Defaults to `2/5` of session timeout.
+    pub fn with_connection_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.connection_timeout = timeout;
+        self
     }
 
     /// Specifies whether readonly server is allowed.
@@ -883,8 +893,19 @@ impl ClientBuilder {
                 )));
             }
         }
-        let (mut session, state_receiver) =
-            Session::new(self.session.take(), self.timeout, &self.authes, self.readonly, self.detached);
+        if self.session_timeout < Duration::ZERO {
+            return Err(Error::BadArguments(&"session timeout must not be negative"));
+        } else if self.connection_timeout < Duration::ZERO {
+            return Err(Error::BadArguments(&"connection timeout must not be negative"));
+        }
+        let (mut session, state_receiver) = Session::new(
+            self.session.take(),
+            &self.authes,
+            self.readonly,
+            self.detached,
+            self.session_timeout,
+            self.connection_timeout,
+        );
         let mut hosts_iter = hosts.iter().copied();
         let sock = session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await?;
         let (sender, receiver) = mpsc::unbounded_channel();

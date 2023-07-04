@@ -12,7 +12,7 @@ use ignore_result::Ignore;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc;
-use tokio::time::{self, Instant};
+use tokio::time::{self, Instant, Sleep};
 
 pub use self::depot::Depot;
 use self::event::WatcherEvent;
@@ -32,6 +32,7 @@ use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCod
 use crate::record;
 
 pub const PASSWORD_LEN: usize = 16;
+pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
 
 trait RequestOperation {
     fn into_responser(self) -> StateResponser;
@@ -50,9 +51,10 @@ impl RequestOperation for (WatcherId, StateResponser) {
 }
 
 pub struct Session {
-    timeout: Duration,
     readonly: bool,
     detached: bool,
+
+    configured_connection_timeout: Duration,
 
     last_zxid: i64,
     last_recv: Instant,
@@ -60,7 +62,8 @@ pub struct Session {
     last_ping: Option<Instant>,
     tick_timeout: Duration,
     ping_timeout: Duration,
-    recv_timeout: Duration,
+    connection_timeout: Duration,
+    session_expired_timeout: Duration,
 
     pub session_id: SessionId,
     session_state: SessionState,
@@ -78,10 +81,11 @@ pub struct Session {
 impl Session {
     pub fn new(
         session: Option<(SessionId, Vec<u8>)>,
-        timeout: Duration,
         authes: &[AuthPacket],
         readonly: bool,
         detached: bool,
+        session_timeout: Duration,
+        connection_timeout: Duration,
     ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
         let (session_id, session_password) =
             session.unwrap_or_else(|| (SessionId(0), Vec::with_capacity(PASSWORD_LEN)));
@@ -89,9 +93,10 @@ impl Session {
         let now = Instant::now();
         let (watch_manager, unwatch_receiver) = WatchManager::new();
         let mut session = Session {
-            timeout,
             readonly,
             detached,
+
+            configured_connection_timeout: connection_timeout,
 
             last_zxid: 0,
             last_recv: now,
@@ -99,10 +104,11 @@ impl Session {
             last_ping: None,
             tick_timeout: Duration::ZERO,
             ping_timeout: Duration::ZERO,
-            recv_timeout: Duration::ZERO,
+            connection_timeout: Duration::ZERO,
+            session_expired_timeout: Duration::ZERO,
 
             session_id,
-            session_timeout: timeout,
+            session_timeout,
             session_state: SessionState::Disconnected,
             session_password,
             session_readonly: false,
@@ -112,7 +118,8 @@ impl Session {
             watch_manager,
             unwatch_receiver: Some(unwatch_receiver),
         };
-        session.reset_session_timeout(timeout);
+        let timeout = if session_timeout.is_zero() { DEFAULT_SESSION_TIMEOUT } else { session_timeout };
+        session.reset_timeout(timeout);
         (session, state_receiver)
     }
 
@@ -289,12 +296,42 @@ impl Session {
         Ok(())
     }
 
-    fn reset_session_timeout(&mut self, timeout: Duration) {
-        let tick = Duration::from_millis(1).max(timeout / 6);
+    fn calc_tick_timeout(&self, session_timeout: Duration) -> Duration {
+        let connection_timeout = self.configured_connection_timeout;
+        let tick_timeout = if connection_timeout.is_zero() || connection_timeout > session_timeout * 3 / 5 {
+            session_timeout / 20
+        } else {
+            connection_timeout / 8
+        };
+        tick_timeout.max(Duration::from_millis(1))
+    }
+
+    /// Resets connection and session related timeout values.
+    ///
+    /// Set ping timeout to `3/8` of connection timeout to fully cover one roundtrip. See also
+    /// [PredefinedXid::Ping].
+    ///
+    /// Set connection timeout to `2/5` of session timeout for at least two tries after connection
+    /// loss if there is no configured connection timeout.
+    ///
+    /// Set client side session expired timeout to `7/5` of negotiated session timeout so client
+    /// can expire session on its behalf.
+    ///
+    /// Numerators are chose deliberately so that resulting timeout values are sensible to mental
+    /// model and friendly to eyeballs(`tick` is likely to be a natural number of milliseconds) in
+    /// best effort.
+    ///
+    /// See also [ZOOKEEPER-1751][] and [ZOOKEEPER-4508][].
+    ///
+    /// [ZOOKEEPER-1751]: https://issues.apache.org/jira/browse/ZOOKEEPER-1751
+    /// [ZOOKEEPER-4508]: https://issues.apache.org/jira/browse/ZOOKEEPER-4508
+    fn reset_timeout(&mut self, session_timeout: Duration) {
+        let tick = self.calc_tick_timeout(session_timeout);
         self.tick_timeout = tick;
-        self.ping_timeout = 2 * tick;
-        self.recv_timeout = 4 * tick;
-        self.session_timeout = 6 * tick;
+        self.ping_timeout = Duration::from_secs(10).min(3 * tick);
+        self.connection_timeout = 8 * tick;
+        self.session_timeout = session_timeout.max(self.connection_timeout);
+        self.session_expired_timeout = self.session_timeout * 7 / 5;
     }
 
     fn complete_connect(&mut self) {
@@ -310,7 +347,7 @@ impl Session {
             return Err(Error::ConnectionLoss);
         }
         self.session_id = SessionId(response.session_id);
-        self.reset_session_timeout(Duration::from_millis(response.session_timeout as u64));
+        self.reset_timeout(Duration::from_millis(response.session_timeout as u64));
         self.session_password.clear();
         self.session_password.extend_from_slice(response.password);
         self.session_readonly = response.readonly;
@@ -369,8 +406,8 @@ impl Session {
                     self.last_send = Instant::now();
                 },
                 now = tick.tick() => {
-                    if now >= self.last_recv + self.recv_timeout {
-                        return Err(Error::SessionExpired);
+                    if now >= self.last_recv + self.connection_timeout {
+                        return Err(Error::ConnectionLoss);
                     }
                 },
             }
@@ -418,8 +455,8 @@ impl Session {
                     self.watch_manager.remove_watcher(watcher_id, responser, depot);
                 },
                 now = tick.tick() => {
-                    if now >= self.last_recv + self.recv_timeout {
-                        return Err(Error::SessionExpired);
+                    if now >= self.last_recv + self.connection_timeout {
+                        return Err(Error::ConnectionLoss);
                     }
                     if self.last_ping.is_none() && now >= self.last_send + self.ping_timeout {
                         self.send_ping(depot, now);
@@ -434,19 +471,25 @@ impl Session {
     async fn new_socket(
         &mut self,
         hosts: &mut impl Iterator<Item = (&str, u16)>,
-        deadline: Instant,
+        deadline: &mut Sleep,
     ) -> Result<TcpStream, Error> {
-        let sleep = time::sleep_until(deadline);
         loop {
             let addr = match hosts.next() {
                 None => return Err(Error::NoHosts),
                 Some(addr) => addr,
             };
             select! {
-                _ = sleep => return Err(Error::Timeout),
+                _ = unsafe { Pin::new_unchecked(deadline) } => return Err(Error::Timeout),
+                _ = time::sleep(self.connection_timeout) => {
+                    log::debug!("ZooKeeper fails to connect to {}:{} in {}ms", addr.0, addr.1, self.connection_timeout.as_millis());
+                    return Err(Error::ConnectionLoss)
+                },
                 r = TcpStream::connect(addr) => {
                     return match r {
-                        Err(_) => Err(Error::ConnectionLoss),
+                        Err(err) => {
+                            log::debug!("ZooKeeper fails to connect to {}:{} due to {}", addr.0, addr.1, err);
+                            Err(Error::ConnectionLoss)
+                        },
                         Ok(sock) => Ok(sock),
                     };
                 },
@@ -465,7 +508,7 @@ impl Session {
         let request = ConnectRequest {
             protocol_version: 0,
             last_zxid_seen: 0,
-            timeout: self.timeout.as_millis() as i32,
+            timeout: self.session_timeout.as_millis() as i32,
             session_id: self.session_id.0,
             password: self.session_password.as_slice(),
             readonly: self.readonly,
@@ -484,7 +527,7 @@ impl Session {
     async fn start_once(
         &mut self,
         hosts: &mut impl Iterator<Item = (&str, u16)>,
-        deadline: Instant,
+        deadline: &mut Sleep,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<TcpStream, Error> {
@@ -508,13 +551,14 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<TcpStream, Error> {
-        let deadline = Instant::now() + self.session_timeout;
-        let mut last_error = match self.start_once(hosts, deadline, buf, depot).await {
+        let session_timeout = if self.session_id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
+        let mut deadline = time::sleep_until(self.last_recv + session_timeout);
+        let mut last_error = match self.start_once(hosts, &mut deadline, buf, depot).await {
             Err(err) => err,
             Ok(sock) => return Ok(sock),
         };
         while last_error != Error::NoHosts && last_error != Error::Timeout && last_error != Error::SessionExpired {
-            match self.start_once(hosts, deadline, buf, depot).await {
+            match self.start_once(hosts, &mut deadline, buf, depot).await {
                 Err(err) => {
                     last_error = err;
                     continue;
