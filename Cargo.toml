@@ -35,3 +35,4 @@ test-case = "1.2.3"
 testcontainers = { git = "https://github.com/kezhuw/testcontainers-rs.git", branch = "zookeeper-client" }
 speculoos = "0.9.0"
 assert_matches = "1.5.0"
+tempfile = "3.6.0"

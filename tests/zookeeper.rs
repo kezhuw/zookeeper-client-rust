@@ -1,13 +1,15 @@
-use std::future;
 use std::time::Duration;
+use std::{fs, future};
 
 use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
 use speculoos::prelude::*;
+#[allow(unused_imports)]
+use tempfile::{tempdir, TempDir};
 use testcontainers::clients::Cli as DockerCli;
-use testcontainers::core::{Healthcheck, WaitFor};
+use testcontainers::core::{Healthcheck, RunnableImage, WaitFor};
 use testcontainers::images::generic::GenericImage;
 use tokio::select;
 use zookeeper_client as zk;
@@ -20,14 +22,14 @@ fn random_data() -> Vec<u8> {
 fn zookeeper_image() -> GenericImage {
     let healthcheck = Healthcheck::default()
         .with_cmd(["./bin/zkServer.sh", "status"].iter())
-        .with_interval(Duration::from_secs(6))
-        .with_retries(30);
+        .with_interval(Duration::from_secs(2))
+        .with_retries(60);
     GenericImage::new("zookeeper", "3.7.0")
-        .with_healthcheck(healthcheck)
         .with_env_var(
             "SERVER_JVMFLAGS",
             "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU= -Dzookeeper.enableEagerACLCheck=true",
         )
+        .with_healthcheck(healthcheck)
         .with_wait_for(WaitFor::Healthcheck)
 }
 
@@ -979,4 +981,84 @@ async fn test_client_detach() {
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
     zk::Client::builder().with_session(id, password).connect(&cluster).await.unwrap();
+}
+
+#[allow(dead_code)]
+fn zookeeper_quorum_image(server_id: u8, dir: &TempDir, servers: &[&str]) -> RunnableImage<GenericImage> {
+    let options = r"dataDir=/data
+dataLogDir=/datalog
+tickTime=2000
+initLimit=5
+syncLimit=2
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=0
+maxClientCnxns=60
+standaloneEnabled=false
+reconfigEnabled=true
+admin.enableServer=true";
+    let cfg_path = dir.path().join(format!("zoo{server_id}.cfg"));
+    let myid_path = dir.path().join(format!("zoo{server_id}.myid"));
+    fs::write(&cfg_path, format!("{options}\n{}\n", servers.join("\n"))).unwrap();
+    fs::write(&myid_path, format!("{server_id}\n")).unwrap();
+    RunnableImage::from(zookeeper_image())
+        .with_network("host")
+        .with_volume((cfg_path.as_path().to_str().unwrap(), "/conf/zoo.cfg"))
+        .with_volume((myid_path.as_path().to_str().unwrap(), "/data/myid"))
+}
+
+/// Ideally, we can use user-defiend bridge network or `--link` to connect containers. But
+/// testcontainers does not support any of them yet. So fallback to "host" network.
+///
+/// See:
+/// * https://docs.docker.com/network/drivers/bridge/
+/// * https://docs.docker.com/network/links/
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_update_ensemble() {
+    let dir = tempdir().unwrap();
+    let docker = DockerCli::default();
+    let _zoo1 =
+        docker.run(zookeeper_quorum_image(1, &dir, &vec!["server.1=localhost:2001:3001:participant;localhost:4001"]));
+    let _zoo2 = docker.run(zookeeper_quorum_image(2, &dir, &vec![
+        "server.1=localhost:2001:3001:participant;localhost:4001",
+        "server.2=localhost:2002:3002:observer;localhost:4002",
+    ]));
+    let _zoo3 = docker.run(zookeeper_quorum_image(3, &dir, &vec![
+        "server.1=localhost:2001:3001:participant;localhost:4001",
+        "server.3=localhost:2003:3003:observer;localhost:4003",
+    ]));
+
+    let zoo1_client = zk::Client::connect("localhost:4001").await.unwrap();
+    let zoo2_client = zk::Client::connect("localhost:4002").await.unwrap();
+    let zoo3_client = zk::Client::connect("localhost:4003").await.unwrap();
+
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+    zoo1_client.create("/xx", b"xx", &create_options).await.unwrap();
+
+    // Assert all three servers reside in same cluster.
+    zoo2_client.sync("/").await.unwrap();
+    let (data2, _) = zoo2_client.get_data("/xx").await.unwrap();
+    assert_eq!(data2, b"xx");
+
+    zoo3_client.sync("/").await.unwrap();
+    let (data3, _) = zoo3_client.get_data("/xx").await.unwrap();
+    assert_eq!(data3, b"xx");
+
+    let (config_bytes, config_stat) = zoo1_client.get_config().await.unwrap();
+    assert_that!(String::from_utf8_lossy(&config_bytes)).contains("server.1");
+    assert_that!(String::from_utf8_lossy(&config_bytes)).does_not_contain("server.2");
+    assert_that!(String::from_utf8_lossy(&config_bytes)).does_not_contain("server.3");
+    let new_ensemble = zk::EnsembleUpdate::New {
+        ensemble: vec![
+            "server.1=localhost:2001:3001:participant;localhost:4001",
+            "server.2=localhost:2002:3002:participant;localhost:4002",
+            "server.3=localhost:2003:3003:participant;localhost:4003",
+        ]
+        .into_iter(),
+    };
+    zoo1_client.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
+    let (new_config_bytes, _) = zoo1_client.update_ensemble(new_ensemble, Some(config_stat.mzxid)).await.unwrap();
+    assert_that!(String::from_utf8_lossy(&new_config_bytes)).contains("server.1");
+    assert_that!(String::from_utf8_lossy(&new_config_bytes)).contains("server.2");
+    assert_that!(String::from_utf8_lossy(&new_config_bytes)).contains("server.3");
 }
