@@ -18,8 +18,6 @@ ZooKeeper client writes in async rust.
 
 ## Examples
 ```rust
-use std::time::Duration;
-
 use zookeeper_client as zk;
 
 let path = "/abc";
@@ -29,7 +27,7 @@ let child_data = "child_path_data".as_bytes().to_vec();
 let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
 let cluster = "localhost:2181";
-let client = zk::Client::connect(cluster, Duration::from_secs(20)).await.unwrap();
+let client = zk::Client::connect(cluster).await.unwrap();
 let (_, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
 
 let (stat, _) = client.create(path, &data, &create_options).await.unwrap();
