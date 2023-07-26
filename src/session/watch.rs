@@ -1,4 +1,3 @@
-use guard::guard;
 use hashbrown::HashMap;
 use hashlink::LinkedHashSet;
 use ignore_result::Ignore;
@@ -366,15 +365,15 @@ impl WatchManager {
     }
 
     fn try_remove_watcher(&mut self, watcher_id: WatcherId, depot: &Depot) -> Option<(&str, WatchMode)> {
-        guard!(let Some(path) = self.watching_paths.remove(&watcher_id) else {
+        let Some(path) = self.watching_paths.remove(&watcher_id) else {
             return None;
-        });
-        guard!(let Some(watch) = self.watches.get_mut(path) else {
+        };
+        let Some(watch) = self.watches.get_mut(path) else {
             return None;
-        });
-        guard!(let Some(watcher) = watch.remove_watcher(watcher_id) else {
+        };
+        let Some(watcher) = watch.remove_watcher(watcher_id) else {
             return None;
-        });
+        };
         let mut mode = watcher.kind.into_remove_mode();
         if watch.is_empty() {
             self.remove_watches(path);
