@@ -690,8 +690,10 @@ impl Client {
     /// * Holds returned watcher without polling events may result in memory burst.
     /// * At the time of written, ZooKeeper [ZOOKEEPER-4466][] does not support oneshot and
     /// persistent watch on same path.
+    /// * Persistent watch could loss events during reconnection due to [ZOOKEEPER-4698][].
     ///
     /// [ZOOKEEPER-4466]: https://issues.apache.org/jira/browse/ZOOKEEPER-4466
+    /// [ZOOKEEPER-4698]: https://issues.apache.org/jira/browse/ZOOKEEPER-4698
     pub fn watch(&self, path: &str, mode: AddWatchMode) -> impl Future<Output = Result<PersistentWatcher>> + Send + '_ {
         Self::wait(self.watch_internally(path, mode))
     }
