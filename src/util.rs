@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use crate::chroot::Chroot;
 use crate::error::Error;
 
@@ -148,7 +146,7 @@ pub fn strip_root_path<'a>(server_path: &'a str, root: &str) -> Result<&'a str, 
         }
         return Ok(client_path);
     }
-    Err(Error::BadArguments(&"server path does not contain root path"))
+    Err(Error::UnexpectedError(format!("server path {} is not descendant of root {}", server_path, root)))
 }
 
 pub fn drain_root_path(server_path: &mut String, root: &str) -> Result<(), Error> {
@@ -159,23 +157,7 @@ pub fn drain_root_path(server_path: &mut String, root: &str) -> Result<(), Error
         }
         return Ok(());
     }
-    Err(Error::BadArguments(&"server path does not contain root path"))
-}
-
-pub fn drain_root_len(server_path: &mut String, root_len: usize) {
-    match server_path.len().cmp(&root_len) {
-        Ordering::Less => panic!("server path {} is shorter than {}", server_path, root_len),
-        Ordering::Equal => {
-            server_path.clear();
-            server_path.push('/');
-        },
-        Ordering::Greater => {
-            if unsafe { *server_path.as_bytes().get_unchecked(root_len) } != b'/' {
-                panic!("server path {} is not descendant of root len {}", server_path, root_len)
-            }
-            server_path.drain(..root_len);
-        },
-    }
+    Err(Error::UnexpectedError(format!("server path {} is not descendant of root {}", server_path, root)))
 }
 
 #[allow(dead_code)]
@@ -287,7 +269,7 @@ mod tests {
 
         assert_eq!(
             strip_root_path("/abc/efg", "/abcd").unwrap_err(),
-            Error::BadArguments(&"server path does not contain root path")
+            Error::UnexpectedError("server path /abc/efg is not descendant of root /abcd".to_string())
         );
     }
 
@@ -300,7 +282,7 @@ mod tests {
 
         assert_eq!(
             into_client_path("/abc/efg".to_string(), "/abcd").unwrap_err(),
-            Error::BadArguments(&"server path does not contain root path")
+            Error::UnexpectedError("server path /abc/efg is not descendant of root /abcd".to_string())
         );
     }
 }

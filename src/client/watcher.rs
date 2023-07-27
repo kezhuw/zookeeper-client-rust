@@ -1,5 +1,6 @@
 use tokio::sync::watch;
 
+use crate::chroot::OwnedChroot;
 use crate::error::Error;
 use crate::session::{OneshotReceiver, PersistentReceiver, SessionState, WatchReceiver, WatchedEvent};
 
@@ -41,19 +42,19 @@ impl StateWatcher {
 /// Watcher for stat, data and child event.
 #[derive(Debug)]
 pub struct OneshotWatcher {
-    root_len: usize,
+    chroot: OwnedChroot,
     receiver: OneshotReceiver,
 }
 
 impl OneshotWatcher {
-    fn new(root_len: usize, receiver: OneshotReceiver) -> Self {
-        OneshotWatcher { root_len, receiver }
+    fn new(chroot: OwnedChroot, receiver: OneshotReceiver) -> Self {
+        OneshotWatcher { chroot, receiver }
     }
 
     /// Waits for node event or session broken.
     pub async fn changed(self) -> WatchedEvent {
         let mut event = self.receiver.recv().await;
-        event.drain_root_len(self.root_len);
+        event.drain_root_path(self.chroot.root());
         event
     }
 
@@ -66,13 +67,13 @@ impl OneshotWatcher {
 /// Watcher for persistent and recursive watch.
 #[derive(Debug)]
 pub struct PersistentWatcher {
-    root_len: usize,
+    chroot: OwnedChroot,
     receiver: PersistentReceiver,
 }
 
 impl PersistentWatcher {
-    fn new(root_len: usize, receiver: PersistentReceiver) -> Self {
-        PersistentWatcher { root_len, receiver }
+    fn new(chroot: OwnedChroot, receiver: PersistentReceiver) -> Self {
+        PersistentWatcher { chroot, receiver }
     }
 
     /// Waits for next event which could be node event or session activities.
@@ -81,7 +82,7 @@ impl PersistentWatcher {
     /// Panic after terminal session event received.
     pub async fn changed(&mut self) -> WatchedEvent {
         let mut event = self.receiver.recv().await;
-        event.drain_root_len(self.root_len);
+        event.drain_root_path(self.chroot.root());
         event
     }
 
@@ -98,23 +99,23 @@ impl PersistentWatcher {
 }
 
 impl WatchReceiver {
-    pub fn into_oneshot(self, root: &str) -> OneshotWatcher {
+    pub fn into_oneshot(self, chroot: &OwnedChroot) -> OneshotWatcher {
         match self {
             WatchReceiver::None => unreachable!("expect oneshot watcher, got none watcher"),
-            WatchReceiver::Oneshot(receiver) => OneshotWatcher::new(root.len(), receiver),
+            WatchReceiver::Oneshot(receiver) => OneshotWatcher::new(chroot.clone(), receiver),
             WatchReceiver::Persistent(_) => {
                 unreachable!("expect oneshot watcher, got persistent watcher")
             },
         }
     }
 
-    pub fn into_persistent(self, root: &str) -> PersistentWatcher {
+    pub fn into_persistent(self, chroot: &OwnedChroot) -> PersistentWatcher {
         match self {
             WatchReceiver::None => unreachable!("expect oneshot watcher, got none watcher"),
             WatchReceiver::Oneshot(_) => {
                 unreachable!("expect oneshot watcher, got oneshot watcher")
             },
-            WatchReceiver::Persistent(receiver) => PersistentWatcher::new(root.len(), receiver),
+            WatchReceiver::Persistent(receiver) => PersistentWatcher::new(chroot.clone(), receiver),
         }
     }
 }

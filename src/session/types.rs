@@ -82,9 +82,9 @@ pub struct WatchedEvent {
 }
 
 impl WatchedEvent {
-    pub(crate) fn drain_root_len(&mut self, root_len: usize) {
-        if self.event_type != EventType::Session && root_len != 0 {
-            util::drain_root_len(&mut self.path, root_len);
+    pub(crate) fn drain_root_path(&mut self, root: &str) {
+        if self.event_type != EventType::Session && !root.is_empty() {
+            util::drain_root_path(&mut self.path, root).unwrap();
         }
     }
 }

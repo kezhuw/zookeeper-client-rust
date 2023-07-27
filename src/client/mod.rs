@@ -423,7 +423,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + '_ {
         let result = self.get_data_internally(self.chroot.as_ref(), path, true);
-        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(self.chroot.root())))
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&self.chroot)))
     }
 
     fn check_stat_internally(
@@ -458,7 +458,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Option<Stat>, OneshotWatcher)>> + Send + '_ {
         let result = self.check_stat_internally(path, true);
-        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(self.chroot.root())))
+        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(&self.chroot)))
     }
 
     /// Sets data for node with given path and returns updated stat.
@@ -531,7 +531,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Vec<String>, OneshotWatcher)>> + Send + '_ {
         let result = self.list_children_internally(path, true);
-        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(self.chroot.root())))
+        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(&self.chroot)))
     }
 
     fn get_children_internally(
@@ -574,7 +574,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Vec<String>, Stat, OneshotWatcher)>> + Send + '_ {
         let result = self.get_children_internally(path, true);
-        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(self.chroot.root())))
+        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(&self.chroot)))
     }
 
     /// Counts descendants number for node with given path.
@@ -699,7 +699,7 @@ impl Client {
         let receiver = self.send_request(OpCode::AddWatch, &request);
         Ok(async move {
             let (_, watcher) = receiver.await?;
-            Ok(watcher.into_persistent(self.chroot.root()))
+            Ok(watcher.into_persistent(&self.chroot))
         })
     }
 
@@ -779,7 +779,7 @@ impl Client {
     /// Gets stat and data for ZooKeeper config node, that is node with path "/zookeeper/config".
     pub fn get_and_watch_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send {
         let result = self.get_data_internally(Chroot::default(), Self::CONFIG_NODE, true);
-        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot("")))
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&OwnedChroot::default())))
     }
 
     /// Updates ZooKeeper ensemble.
