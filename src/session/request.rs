@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::proto::{self, AddWatchMode, ConnectRequest, OpCode, RequestHeader};
 use crate::record::{self, Record, StaticRecord};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MarshalledRequest(pub Vec<u8>);
 
 impl MarshalledRequest {
@@ -81,6 +81,10 @@ impl MarshalledRequest {
             _ => None,
         };
         (op_code, watcher_info)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

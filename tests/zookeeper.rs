@@ -216,6 +216,36 @@ async fn test_multi() {
 }
 
 #[tokio::test]
+async fn test_multi_async_order() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+    client.create("/a", "a0".as_bytes(), &create_options).await.unwrap();
+
+    let mut writer = client.new_multi_writer();
+    writer.add_set_data("/a", "a1".as_bytes(), None).unwrap();
+    let write = writer.commit();
+
+    let mut reader = client.new_multi_reader();
+    reader.add_get_data("/a").unwrap();
+    let mut results = reader.commit().await.unwrap();
+    let zk::MultiReadResult::Data { data, stat } = results.remove(0) else { panic!("expect get data result") };
+
+    let mut write_results = write.await.unwrap();
+    let zk::MultiWriteResult::SetData { stat: set_stat } = write_results.remove(0) else {
+        panic!("expect set data result")
+    };
+
+    assert_that!(data).is_equal_to("a1".as_bytes().to_owned());
+    assert_that!(stat).is_equal_to(set_stat);
+}
+
+#[tokio::test]
 async fn test_no_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());

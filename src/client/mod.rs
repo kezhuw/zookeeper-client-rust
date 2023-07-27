@@ -5,6 +5,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use const_format::formatcp;
+use either::{Either, Left, Right};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
@@ -279,12 +280,22 @@ impl Client {
         receiver
     }
 
-    async fn wait<T, F>(result: Result<F>) -> Result<T>
+    async fn wait<T, E, F>(result: std::result::Result<F, E>) -> std::result::Result<T, E>
     where
-        F: Future<Output = Result<T>>, {
+        F: Future<Output = std::result::Result<T, E>>, {
         match result {
             Err(err) => Err(err),
             Ok(future) => future.await,
+        }
+    }
+
+    async fn resolve<T, E, F>(result: std::result::Result<Either<F, T>, E>) -> std::result::Result<T, E>
+    where
+        F: Future<Output = std::result::Result<T, E>>, {
+        match result {
+            Err(err) => Err(err),
+            Ok(Right(r)) => Ok(r),
+            Ok(Left(future)) => future.await,
         }
     }
 
@@ -936,8 +947,11 @@ trait MultiBuffer {
     fn op_code() -> OpCode;
 
     fn build_request(&mut self) -> MarshalledRequest {
-        let header = MultiHeader { op: OpCode::Error, done: true, err: -1 };
         let buffer = self.buffer();
+        if buffer.is_empty() {
+            return Default::default();
+        }
+        let header = MultiHeader { op: OpCode::Error, done: true, err: -1 };
         buffer.append_record(&header);
         buffer.finish();
         MarshalledRequest(std::mem::take(buffer))
@@ -1014,23 +1028,32 @@ impl<'a> MultiReader<'a> {
     ///
     /// # Notable behaviors
     /// Individual errors(eg. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
-    pub async fn commit(&mut self) -> Result<Vec<MultiReadResult>> {
-        if self.buf.is_empty() {
-            return Ok(Default::default());
-        }
+    pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + '_ {
         let request = self.build_request();
-        let receiver = self.client.send_marshalled_request(request);
-        let (body, _) = receiver.await?;
-        let response = record::unmarshal::<Vec<MultiReadResponse>>(&mut body.as_slice())?;
-        let mut results = Vec::with_capacity(response.len());
-        for result in response {
-            match result {
-                MultiReadResponse::Data { data, stat } => results.push(MultiReadResult::Data { data, stat }),
-                MultiReadResponse::Children { children } => results.push(MultiReadResult::Children { children }),
-                MultiReadResponse::Error(err) => results.push(MultiReadResult::Error { err }),
-            }
+        Client::resolve(self.commit_internally(request))
+    }
+
+    fn commit_internally(
+        &self,
+        request: MarshalledRequest,
+    ) -> Result<Either<impl Future<Output = Result<Vec<MultiReadResult>>> + Send + '_, Vec<MultiReadResult>>> {
+        if request.is_empty() {
+            return Ok(Right(Vec::default()));
         }
-        Ok(results)
+        let receiver = self.client.send_marshalled_request(request);
+        Ok(Left(async move {
+            let (body, _) = receiver.await?;
+            let response = record::unmarshal::<Vec<MultiReadResponse>>(&mut body.as_slice())?;
+            let mut results = Vec::with_capacity(response.len());
+            for result in response {
+                match result {
+                    MultiReadResponse::Data { data, stat } => results.push(MultiReadResult::Data { data, stat }),
+                    MultiReadResponse::Children { children } => results.push(MultiReadResult::Children { children }),
+                    MultiReadResponse::Error(err) => results.push(MultiReadResult::Error { err }),
+                }
+            }
+            Ok(results)
+        }))
     }
 
     /// Clears collected operations.
@@ -1184,30 +1207,49 @@ impl<'a> MultiWriter<'a> {
     ///
     /// # Notable errors
     /// * [Error::BadVersion] if check version failed.
-    pub async fn commit(&mut self) -> std::result::Result<Vec<MultiWriteResult>, MultiWriteError> {
-        if self.buf.is_empty() {
-            return Ok(Default::default());
-        }
+    pub fn commit(
+        &mut self,
+    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + '_ {
         let request = self.build_request();
-        let receiver = self.client.send_marshalled_request(request);
-        let (body, _) = receiver.await?;
-        let response = record::unmarshal::<Vec<MultiWriteResponse>>(&mut body.as_slice())?;
-        let failed = response.first().map(|r| matches!(r, MultiWriteResponse::Error(_))).unwrap_or(false);
-        let mut results = if failed { Vec::new() } else { Vec::with_capacity(response.len()) };
-        for (index, result) in response.into_iter().enumerate() {
-            match result {
-                MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
-                MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
-                MultiWriteResponse::Create { path, stat } => {
-                    util::strip_root_path(path, self.client.chroot.root())?;
-                    results.push(MultiWriteResult::Create { path: path.to_string(), stat });
-                },
-                MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),
-                MultiWriteResponse::Error(Error::UnexpectedErrorCode(0)) => {},
-                MultiWriteResponse::Error(err) => return Err(MultiWriteError::OperationFailed { index, source: err }),
-            }
+        Client::resolve(self.commit_internally(request))
+    }
+
+    fn commit_internally(
+        &self,
+        request: MarshalledRequest,
+    ) -> std::result::Result<
+        Either<
+            impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + '_,
+            Vec<MultiWriteResult>,
+        >,
+        MultiWriteError,
+    > {
+        if request.is_empty() {
+            return Ok(Right(Vec::default()));
         }
-        Ok(results)
+        let receiver = self.client.send_marshalled_request(request);
+        Ok(Left(async move {
+            let (body, _) = receiver.await?;
+            let response = record::unmarshal::<Vec<MultiWriteResponse>>(&mut body.as_slice())?;
+            let failed = response.first().map(|r| matches!(r, MultiWriteResponse::Error(_))).unwrap_or(false);
+            let mut results = if failed { Vec::new() } else { Vec::with_capacity(response.len()) };
+            for (index, result) in response.into_iter().enumerate() {
+                match result {
+                    MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
+                    MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
+                    MultiWriteResponse::Create { path, stat } => {
+                        util::strip_root_path(path, self.client.chroot.root())?;
+                        results.push(MultiWriteResult::Create { path: path.to_string(), stat });
+                    },
+                    MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),
+                    MultiWriteResponse::Error(Error::UnexpectedErrorCode(0)) => {},
+                    MultiWriteResponse::Error(err) => {
+                        return Err(MultiWriteError::OperationFailed { index, source: err })
+                    },
+                }
+            }
+            Ok(results)
+        }))
     }
 
     /// Clears collected operations.
