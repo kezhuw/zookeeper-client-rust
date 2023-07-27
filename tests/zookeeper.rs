@@ -1084,9 +1084,9 @@ async fn test_update_ensemble() {
     assert_eq!(data3, b"xx");
 
     let (config_bytes, config_stat) = zoo1_client.get_config().await.unwrap();
-    assert_that!(String::from_utf8_lossy(&config_bytes)).contains("server.1");
-    assert_that!(String::from_utf8_lossy(&config_bytes)).does_not_contain("server.2");
-    assert_that!(String::from_utf8_lossy(&config_bytes)).does_not_contain("server.3");
+    assert_that!(String::from_utf8_lossy(&config_bytes).into_owned()).contains("server.1");
+    assert_that!(String::from_utf8_lossy(&config_bytes).into_owned()).does_not_contain("server.2");
+    assert_that!(String::from_utf8_lossy(&config_bytes).into_owned()).does_not_contain("server.3");
     let new_ensemble = zk::EnsembleUpdate::New {
         ensemble: vec![
             "server.1=localhost:2001:3001:participant;localhost:4001",
@@ -1097,7 +1097,7 @@ async fn test_update_ensemble() {
     };
     zoo1_client.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
     let (new_config_bytes, _) = zoo1_client.update_ensemble(new_ensemble, Some(config_stat.mzxid)).await.unwrap();
-    assert_that!(String::from_utf8_lossy(&new_config_bytes)).contains("server.1");
-    assert_that!(String::from_utf8_lossy(&new_config_bytes)).contains("server.2");
-    assert_that!(String::from_utf8_lossy(&new_config_bytes)).contains("server.3");
+    assert_that!(String::from_utf8_lossy(&new_config_bytes).into_owned()).contains("server.1");
+    assert_that!(String::from_utf8_lossy(&new_config_bytes).into_owned()).contains("server.2");
+    assert_that!(String::from_utf8_lossy(&new_config_bytes).into_owned()).contains("server.3");
 }
