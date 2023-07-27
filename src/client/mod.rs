@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, watch};
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver, PASSWORD_LEN};
 use crate::acl::{Acl, AuthUser};
+use crate::chroot::{Chroot, ChrootPath, OwnedChroot};
 use crate::error::Error;
 use crate::proto::{
     self,
@@ -30,7 +31,6 @@ use crate::proto::{
     ReconfigRequest,
     RequestBuffer,
     RequestHeader,
-    RootedPath,
     SetAclRequest,
     SetDataRequest,
     SyncRequest,
@@ -173,7 +173,7 @@ impl std::fmt::Display for CreateSequence {
 ///   call but not future evaluation.
 #[derive(Clone, Debug)]
 pub struct Client {
-    root: String,
+    chroot: OwnedChroot,
     session: (SessionId, Vec<u8>),
     session_timeout: Duration,
     requester: mpsc::UnboundedSender<SessionOperation>,
@@ -194,22 +194,22 @@ impl Client {
     }
 
     pub(crate) fn new(
-        root: String,
+        chroot: OwnedChroot,
         session: (SessionId, Vec<u8>),
         timeout: Duration,
         requester: mpsc::UnboundedSender<SessionOperation>,
         state_receiver: watch::Receiver<SessionState>,
     ) -> Client {
         let state_watcher = StateWatcher::new(state_receiver);
-        Client { root, session, session_timeout: timeout, requester, state_watcher }
+        Client { chroot, session, session_timeout: timeout, requester, state_watcher }
     }
 
-    fn validate_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool)> {
-        return util::validate_path(self.root.as_str(), path, false);
+    fn validate_path<'a>(&'a self, path: &'a str) -> Result<ChrootPath<'a>> {
+        ChrootPath::new(self.chroot.as_ref(), path, false)
     }
 
-    fn validate_sequential_path<'a>(&self, path: &'a str) -> Result<(&'a str, bool)> {
-        util::validate_path(&self.root, path, true)
+    fn validate_sequential_path<'a>(&'a self, path: &'a str) -> Result<ChrootPath<'a>> {
+        ChrootPath::new(self.chroot.as_ref(), path, true)
     }
 
     /// ZooKeeper session id.
@@ -251,16 +251,12 @@ impl Client {
     ///
     /// # Notable behaviors
     /// * Existing watchers are not affected.
-    pub fn chroot(mut self, root: &str) -> std::result::Result<Client, Client> {
-        let is_zookeeper_root = match util::validate_path("", root, false) {
-            Err(_) => return Err(self),
-            Ok((_, is_zookeeper_root)) => is_zookeeper_root,
-        };
-        self.root.clear();
-        if !is_zookeeper_root {
-            self.root.push_str(root);
+    pub fn chroot(mut self, path: &str) -> std::result::Result<Client, Client> {
+        if self.chroot.chroot(path) {
+            Ok(self)
+        } else {
+            Err(self)
         }
-        Ok(self)
     }
 
     fn send_request(&self, code: OpCode, body: &impl Record) -> StateReceiver {
@@ -338,7 +334,7 @@ impl Client {
         options.validate()?;
         let create_mode = options.mode;
         let sequential = create_mode.is_sequential();
-        let (leaf, _) = if sequential { self.validate_sequential_path(path)? } else { self.validate_path(path)? };
+        let chroot_path = if sequential { self.validate_sequential_path(path)? } else { self.validate_path(path)? };
         let ttl = options.ttl.map(|ttl| ttl.as_millis() as i64).unwrap_or(0);
         let op_code = if ttl != 0 {
             OpCode::CreateTtl
@@ -348,13 +344,13 @@ impl Client {
             OpCode::Create2
         };
         let flags = create_mode.as_flags(ttl != 0);
-        let request = CreateRequest { path: RootedPath::new(&self.root, leaf), data, acls: options.acls, flags, ttl };
+        let request = CreateRequest { path: chroot_path, data, acls: options.acls, flags, ttl };
         let receiver = self.send_request(op_code, &request);
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
             let server_path = record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
-            let client_path = util::strip_root_path(server_path, &self.root)?;
+            let client_path = util::strip_root_path(server_path, self.chroot.root())?;
             let sequence = if sequential { Self::parse_sequence(client_path, path)? } else { CreateSequence(-1) };
             let stat = record::unmarshal::<Stat>(&mut buf)?;
             Ok((stat, sequence))
@@ -372,12 +368,11 @@ impl Client {
     }
 
     fn delete_internally(&self, path: &str, expected_version: Option<i32>) -> Result<impl Future<Output = Result<()>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        if leaf.is_empty() {
+        let chroot_path = self.validate_path(path)?;
+        if chroot_path.is_root() {
             return Err(Error::BadArguments(&"can not delete root node"));
         }
-        let request =
-            DeleteRequest { path: RootedPath::new(&self.root, leaf), version: expected_version.unwrap_or(-1) };
+        let request = DeleteRequest { path: chroot_path, version: expected_version.unwrap_or(-1) };
         let receiver = self.send_request(OpCode::Delete, &request);
         Ok(async move {
             receiver.await?;
@@ -387,12 +382,12 @@ impl Client {
 
     fn get_data_internally(
         &self,
-        root: &str,
+        chroot: Chroot,
         path: &str,
         watch: bool,
     ) -> Result<impl Future<Output = Result<(Vec<u8>, Stat, WatchReceiver)>> + Send> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = GetRequest { path: RootedPath::new(root, leaf), watch };
+        let chroot_path = ChrootPath::new(chroot, path, false)?;
+        let request = GetRequest { path: chroot_path, watch };
         let receiver = self.send_request(OpCode::GetData, &request);
         Ok(async move {
             let (mut body, watcher) = receiver.await?;
@@ -410,7 +405,7 @@ impl Client {
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
     pub fn get_data(&self, path: &str) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
-        let result = self.get_data_internally(&self.root, path, false);
+        let result = self.get_data_internally(self.chroot.as_ref(), path, false);
         Self::map_wait(result, |(data, stat, _)| (data, stat))
     }
 
@@ -427,8 +422,8 @@ impl Client {
         &self,
         path: &str,
     ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + '_ {
-        let result = self.get_data_internally(&self.root, path, true);
-        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&self.root)))
+        let result = self.get_data_internally(self.chroot.as_ref(), path, true);
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(self.chroot.root())))
     }
 
     fn check_stat_internally(
@@ -436,8 +431,8 @@ impl Client {
         path: &str,
         watch: bool,
     ) -> Result<impl Future<Output = Result<(Option<Stat>, WatchReceiver)>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = ExistsRequest { path: RootedPath::new(&self.root, leaf), watch };
+        let chroot_path = self.validate_path(path)?;
+        let request = ExistsRequest { path: chroot_path, watch };
         let receiver = self.send_request(OpCode::Exists, &request);
         Ok(async move {
             let (body, watcher) = receiver.await?;
@@ -463,7 +458,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Option<Stat>, OneshotWatcher)>> + Send + '_ {
         let result = self.check_stat_internally(path, true);
-        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(&self.root)))
+        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(self.chroot.root())))
     }
 
     /// Sets data for node with given path and returns updated stat.
@@ -486,9 +481,8 @@ impl Client {
         data: &[u8],
         expected_version: Option<i32>,
     ) -> Result<impl Future<Output = Result<Stat>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request =
-            SetDataRequest { path: RootedPath::new(&self.root, leaf), data, version: expected_version.unwrap_or(-1) };
+        let chroot_path = self.validate_path(path)?;
+        let request = SetDataRequest { path: chroot_path, data, version: expected_version.unwrap_or(-1) };
         let receiver = self.send_request(OpCode::SetData, &request);
         Ok(async move {
             let (body, _) = receiver.await?;
@@ -503,8 +497,8 @@ impl Client {
         path: &str,
         watch: bool,
     ) -> Result<impl Future<Output = Result<(Vec<String>, WatchReceiver)>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = GetChildrenRequest { path: RootedPath::new(&self.root, leaf), watch };
+        let chroot_path = self.validate_path(path)?;
+        let request = GetChildrenRequest { path: chroot_path, watch };
         let receiver = self.send_request(OpCode::GetChildren, &request);
         Ok(async move {
             let (body, watcher) = receiver.await?;
@@ -537,7 +531,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Vec<String>, OneshotWatcher)>> + Send + '_ {
         let result = self.list_children_internally(path, true);
-        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(&self.root)))
+        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(self.chroot.root())))
     }
 
     fn get_children_internally(
@@ -545,8 +539,8 @@ impl Client {
         path: &str,
         watch: bool,
     ) -> Result<impl Future<Output = Result<(Vec<String>, Stat, WatchReceiver)>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = GetChildrenRequest { path: RootedPath::new(&self.root, leaf), watch };
+        let chroot_path = self.validate_path(path)?;
+        let request = GetChildrenRequest { path: chroot_path, watch };
         let receiver = self.send_request(OpCode::GetChildren2, &request);
         Ok(async move {
             let (body, watcher) = receiver.await?;
@@ -580,7 +574,7 @@ impl Client {
         path: &str,
     ) -> impl Future<Output = Result<(Vec<String>, Stat, OneshotWatcher)>> + Send + '_ {
         let result = self.get_children_internally(path, true);
-        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(&self.root)))
+        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(self.chroot.root())))
     }
 
     /// Counts descendants number for node with given path.
@@ -592,9 +586,8 @@ impl Client {
     }
 
     fn count_descendants_number_internally(&self, path: &str) -> Result<impl Future<Output = Result<usize>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = RootedPath::new(&self.root, leaf);
-        let receiver = self.send_request(OpCode::GetAllChildrenNumber, &request);
+        let chroot_path = self.validate_path(path)?;
+        let receiver = self.send_request(OpCode::GetAllChildrenNumber, &chroot_path);
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
@@ -614,15 +607,14 @@ impl Client {
     }
 
     fn list_ephemerals_internally(&self, path: &str) -> Result<impl Future<Output = Result<Vec<String>>> + Send + '_> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = RootedPath::new(&self.root, leaf);
-        let receiver = self.send_request(OpCode::GetEphemerals, &request);
+        let path = self.validate_path(path)?;
+        let receiver = self.send_request(OpCode::GetEphemerals, &path);
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
             let mut ephemerals = record::unmarshal_entity::<Vec<String>>(&"ephemerals", &mut buf)?;
             for ephemeral_path in ephemerals.iter_mut() {
-                util::drain_root_path(ephemeral_path, &self.root)?;
+                util::drain_root_path(ephemeral_path, self.chroot.root())?;
             }
             Ok(ephemerals)
         })
@@ -637,9 +629,8 @@ impl Client {
     }
 
     fn get_acl_internally(&self, path: &str) -> Result<impl Future<Output = Result<(Vec<Acl>, Stat)>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = RootedPath::new(&self.root, leaf);
-        let receiver = self.send_request(OpCode::GetACL, &request);
+        let chroot_path = self.validate_path(path)?;
+        let receiver = self.send_request(OpCode::GetACL, &chroot_path);
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
@@ -668,9 +659,8 @@ impl Client {
         acl: &[Acl],
         expected_acl_version: Option<i32>,
     ) -> Result<impl Future<Output = Result<Stat>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request =
-            SetAclRequest { path: RootedPath::new(&self.root, leaf), acl, version: expected_acl_version.unwrap_or(-1) };
+        let chroot_path = self.validate_path(path)?;
+        let request = SetAclRequest { path: chroot_path, acl, version: expected_acl_version.unwrap_or(-1) };
         let receiver = self.send_request(OpCode::SetACL, &request);
         Ok(async move {
             let (body, _) = receiver.await?;
@@ -703,13 +693,13 @@ impl Client {
         path: &str,
         mode: AddWatchMode,
     ) -> Result<impl Future<Output = Result<PersistentWatcher>> + Send + '_> {
-        let (leaf, _) = self.validate_path(path)?;
+        let chroot_path = self.validate_path(path)?;
         let proto_mode = proto::AddWatchMode::from(mode);
-        let request = PersistentWatchRequest { path: RootedPath::new(&self.root, leaf), mode: proto_mode.into() };
+        let request = PersistentWatchRequest { path: chroot_path, mode: proto_mode.into() };
         let receiver = self.send_request(OpCode::AddWatch, &request);
         Ok(async move {
             let (_, watcher) = receiver.await?;
-            Ok(watcher.into_persistent(&self.root))
+            Ok(watcher.into_persistent(self.chroot.root()))
         })
     }
 
@@ -728,8 +718,8 @@ impl Client {
     }
 
     fn sync_internally(&self, path: &str) -> Result<impl Future<Output = Result<()>>> {
-        let (leaf, _) = self.validate_path(path)?;
-        let request = SyncRequest { path: RootedPath::new(&self.root, leaf) };
+        let chroot_path = self.validate_path(path)?;
+        let request = SyncRequest { path: chroot_path };
         let receiver = self.send_request(OpCode::Sync, &request);
         Ok(async move {
             let (body, _) = receiver.await?;
@@ -782,13 +772,13 @@ impl Client {
 
     /// Gets data for ZooKeeper config node, that is node with path "/zookeeper/config".
     pub fn get_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
-        let result = self.get_data_internally("", Self::CONFIG_NODE, false);
+        let result = self.get_data_internally(Chroot::default(), Self::CONFIG_NODE, false);
         Self::map_wait(result, |(data, stat, _)| (data, stat))
     }
 
     /// Gets stat and data for ZooKeeper config node, that is node with path "/zookeeper/config".
     pub fn get_and_watch_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send {
-        let result = self.get_data_internally("", Self::CONFIG_NODE, true);
+        let result = self.get_data_internally(Chroot::default(), Self::CONFIG_NODE, true);
         Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot("")))
     }
 
@@ -894,7 +884,7 @@ impl ClientBuilder {
 
     /// Connects to ZooKeeper cluster.
     pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
-        let (hosts, root) = util::parse_connect_string(cluster)?;
+        let (hosts, chroot) = util::parse_connect_string(cluster)?;
         let mut buf = Vec::with_capacity(4096);
         let mut connecting_depot = Depot::for_connecting();
         if let Some((id, password)) = &self.session {
@@ -929,7 +919,7 @@ impl ClientBuilder {
         tokio::spawn(async move {
             session.serve(servers, sock, buf, connecting_depot, receiver).await;
         });
-        let client = Client::new(root.to_string(), session_info, session_timeout, sender, state_receiver);
+        let client = Client::new(chroot.to_owned(), session_info, session_timeout, sender, state_receiver);
         Ok(client)
     }
 }
@@ -998,8 +988,8 @@ impl<'a> MultiReader<'a> {
     ///
     /// See [Client::get_data] for more details.
     pub fn add_get_data(&mut self, path: &str) -> Result<()> {
-        let (leaf, _) = self.client.validate_path(path)?;
-        let request = GetRequest { path: RootedPath::new(&self.client.root, leaf), watch: false };
+        let chroot_path = self.client.validate_path(path)?;
+        let request = GetRequest { path: chroot_path, watch: false };
         self.add_operation(OpCode::GetData, &request);
         Ok(())
     }
@@ -1008,8 +998,8 @@ impl<'a> MultiReader<'a> {
     ///
     /// See [Client::get_children] for more details.
     pub fn add_get_children(&mut self, path: &str) -> Result<()> {
-        let (leaf, _) = self.client.validate_path(path)?;
-        let request = GetChildrenRequest { path: RootedPath::new(&self.client.root, leaf), watch: false };
+        let chroot_path = self.client.validate_path(path)?;
+        let request = GetChildrenRequest { path: chroot_path, watch: false };
         self.add_operation(OpCode::GetChildren, &request);
         Ok(())
     }
@@ -1122,8 +1112,8 @@ impl<'a> MultiWriter<'a> {
     /// # Notable behaviors
     /// Effects of changes to data of given path in preceding operations affect this operation.
     pub fn add_check_version(&mut self, path: &str, version: i32) -> Result<()> {
-        let (leaf, _) = self.client.validate_path(path)?;
-        let request = CheckVersionRequest { path: RootedPath::new(&self.client.root, leaf), version };
+        let chroot_path = self.client.validate_path(path)?;
+        let request = CheckVersionRequest { path: chroot_path, version };
         self.add_operation(OpCode::Check, &request);
         Ok(())
     }
@@ -1143,7 +1133,7 @@ impl<'a> MultiWriter<'a> {
         let ttl = options.ttl.map(|ttl| ttl.as_millis() as i64).unwrap_or(0);
         let create_mode = options.mode;
         let sequential = create_mode.is_sequential();
-        let (leaf, _) =
+        let chroot_path =
             if sequential { self.client.validate_sequential_path(path)? } else { self.client.validate_path(path)? };
         let op_code = if ttl != 0 {
             OpCode::CreateTtl
@@ -1153,8 +1143,7 @@ impl<'a> MultiWriter<'a> {
             OpCode::Create2
         };
         let flags = create_mode.as_flags(ttl != 0);
-        let request =
-            CreateRequest { path: RootedPath::new(&self.client.root, leaf), data, acls: options.acls, flags, ttl };
+        let request = CreateRequest { path: chroot_path, data, acls: options.acls, flags, ttl };
         self.add_operation(op_code, &request);
         Ok(())
     }
@@ -1163,12 +1152,8 @@ impl<'a> MultiWriter<'a> {
     ///
     /// See [Client::set_data] for more details.
     pub fn add_set_data(&mut self, path: &str, data: &[u8], expected_version: Option<i32>) -> Result<()> {
-        let (leaf, _) = self.client.validate_path(path)?;
-        let request = SetDataRequest {
-            path: RootedPath::new(&self.client.root, leaf),
-            data,
-            version: expected_version.unwrap_or(-1),
-        };
+        let chroot_path = self.client.validate_path(path)?;
+        let request = SetDataRequest { path: chroot_path, data, version: expected_version.unwrap_or(-1) };
         self.add_operation(OpCode::SetData, &request);
         Ok(())
     }
@@ -1177,12 +1162,11 @@ impl<'a> MultiWriter<'a> {
     ///
     /// See [Client::delete] for more details.
     pub fn add_delete(&mut self, path: &str, expected_version: Option<i32>) -> Result<()> {
-        let (leaf, _) = self.client.validate_path(path)?;
-        if leaf.is_empty() {
+        let chroot_path = self.client.validate_path(path)?;
+        if chroot_path.is_root() {
             return Err(Error::BadArguments(&"can not delete root node"));
         }
-        let request =
-            DeleteRequest { path: RootedPath::new(&self.client.root, leaf), version: expected_version.unwrap_or(-1) };
+        let request = DeleteRequest { path: chroot_path, version: expected_version.unwrap_or(-1) };
         self.add_operation(OpCode::Delete, &request);
         Ok(())
     }
@@ -1209,7 +1193,7 @@ impl<'a> MultiWriter<'a> {
                 MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
                 MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
                 MultiWriteResponse::Create { path, stat } => {
-                    util::strip_root_path(path, &self.client.root)?;
+                    util::strip_root_path(path, self.client.chroot.root())?;
                     results.push(MultiWriteResult::Create { path: path.to_string(), stat });
                 },
                 MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),

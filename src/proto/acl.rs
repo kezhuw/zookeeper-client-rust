@@ -1,8 +1,8 @@
 use bytes::BufMut;
 
-use super::path::RootedPath;
 use super::stat::Stat;
 use crate::acl::{Acl, AuthId, Permission};
+use crate::chroot::ChrootPath;
 use crate::record::{
     self,
     DeserializableRecord,
@@ -53,7 +53,7 @@ impl DeserializableRecord<'_> for Acl {
 }
 
 pub struct SetAclRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub acl: &'a [Acl],
     pub version: i32,
 }

@@ -1,10 +1,10 @@
 use bytes::BufMut;
 
-use super::path::RootedPath;
+use crate::chroot::ChrootPath;
 use crate::record::{DynamicRecord, SerializableRecord};
 
 pub struct CheckVersionRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub version: i32,
 }
 

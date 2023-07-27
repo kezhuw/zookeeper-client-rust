@@ -1,8 +1,8 @@
 use bytes::BufMut;
 
-use super::path::RootedPath;
 use super::stat::Stat;
 use crate::acl::Acl;
+use crate::chroot::ChrootPath;
 use crate::record::{
     DeserializableRecord,
     DeserializeError,
@@ -13,7 +13,7 @@ use crate::record::{
 };
 
 pub struct SyncRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
 }
 
 impl SerializableRecord for SyncRequest<'_> {
@@ -29,7 +29,7 @@ impl DynamicRecord for SyncRequest<'_> {
 }
 
 pub struct CreateRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub data: &'a [u8],
     pub acls: &'a [Acl],
     pub flags: i32,
@@ -96,7 +96,7 @@ impl DynamicRecord for SetWatchesRequest<'_> {
 }
 
 pub struct OneshotWatchRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub watch: bool,
 }
 
@@ -134,7 +134,7 @@ impl DeserializableRecord<'_> for GetChildren2Response {
 }
 
 pub struct SetDataRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub data: &'a [u8],
     pub version: i32,
 }
@@ -154,7 +154,7 @@ impl DynamicRecord for SetDataRequest<'_> {
 }
 
 pub struct DeleteRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub version: i32,
 }
 
@@ -172,7 +172,7 @@ impl DynamicRecord for DeleteRequest<'_> {
 }
 
 pub struct PersistentWatchRequest<'a> {
-    pub path: RootedPath<'a>,
+    pub path: ChrootPath<'a>,
     pub mode: i32,
 }
 

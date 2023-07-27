@@ -1,4 +1,5 @@
 mod acl;
+mod chroot;
 mod client;
 mod error;
 mod proto;

@@ -37,7 +37,6 @@ pub use self::data::{
 pub use self::error_code::ErrorCode;
 pub use self::multi::{MultiHeader, MultiReadResponse, MultiWriteResponse};
 pub use self::op_code::OpCode;
-pub use self::path::RootedPath;
 pub use self::reconfig::{EnsembleUpdate, ReconfigRequest};
 pub use self::reply_header::ReplyHeader;
 pub use self::request_header::RequestHeader;

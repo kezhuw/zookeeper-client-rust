@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use crate::chroot::Chroot;
 use crate::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,30 +82,28 @@ fn parse_address(s: &str) -> Result<(&str, u16), InvalidAddress> {
     Ok((host, port))
 }
 
-pub fn parse_connect_string(s: &str) -> Result<(Vec<HostPortRef>, &str), Error> {
+/// Parses connection string to host port pairs and chroot.
+pub fn parse_connect_string(s: &str) -> Result<(Vec<HostPortRef>, Chroot<'_>), Error> {
     if s.is_empty() {
         return Err(Error::BadArguments(&"empty connect string"));
     }
-    let (cluster, root) = if let Some(i) = s.find('/') {
+    let (cluster, chroot) = if let Some(i) = s.find('/') {
         if i + 1 == s.len() {
-            (&s[..i], Default::default())
+            (&s[..i], Chroot::default())
         } else {
-            (&s[..i], &s[i..])
+            (&s[..i], Chroot::new(&s[i..])?)
         }
     } else {
-        (s, Default::default())
+        (s, Chroot::default())
     };
-    if !root.is_empty() {
-        validate_path("", root, false)?;
-    }
     let mut servers = Vec::with_capacity(10);
     for server in cluster.split(',') {
         servers.push(parse_address(server)?);
     }
-    Ok((servers, root))
+    Ok((servers, chroot))
 }
 
-pub fn validate_path<'a>(root: &str, path: &'a str, allow_trailing_slash: bool) -> Result<(&'a str, bool), Error> {
+pub fn validate_path<'a>(chroot: Chroot<'a>, path: &'a str, allow_trailing_slash: bool) -> Result<&'a str, Error> {
     if path.is_empty() {
         return Err(Error::BadArguments(&"path cannot be empty"));
     }
@@ -112,8 +111,8 @@ pub fn validate_path<'a>(root: &str, path: &'a str, allow_trailing_slash: bool) 
         return Err(Error::BadArguments(&"path must start with '/'"));
     }
     if path.len() == 1 {
-        let leaf = if root.is_empty() { path } else { Default::default() };
-        return Ok((leaf, true));
+        let path = if chroot.is_none() { path } else { "" };
+        return Ok(path);
     }
     let mut last_chars = ['/', '/', '/'];
     for c in path.chars().skip(1) {
@@ -139,7 +138,7 @@ pub fn validate_path<'a>(root: &str, path: &'a str, allow_trailing_slash: bool) 
     if last_chars[2] == '/' && !allow_trailing_slash {
         return Err(Error::BadArguments(&"path must not end with '/'"));
     }
-    Ok((path, false))
+    Ok(path)
 }
 
 pub fn strip_root_path<'a>(server_path: &'a str, root: &str) -> Result<&'a str, Error> {
@@ -190,6 +189,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use test_case::test_case;
 
+    use crate::chroot::Chroot;
     use crate::error::Error;
 
     #[test]
@@ -217,43 +217,46 @@ mod tests {
 
     #[test_case("", Err(Error::BadArguments(&"path cannot be empty")); "empty path")]
     #[test_case("a", Err(Error::BadArguments(&"path must start with '/'")); "path not start with slash")]
-    #[test_case("/abc", Ok(("/abc", false)); "one level path")]
-    #[test_case("/abc/efg", Ok(("/abc/efg", false)); "two level path")]
+    #[test_case("/abc", Ok("/abc"); "one level path")]
+    #[test_case("/abc/efg", Ok("/abc/efg"); "two level path")]
     #[test_case("/abc//efg", Err(Error::BadArguments(&"empty node is not allowed in path")); "empty node")]
     #[test_case("/abc/./efg", Err(Error::BadArguments(&"relative path is not allowed")); "relative node dot in path")]
     #[test_case("/abc/../efg", Err(Error::BadArguments(&"relative path is not allowed")); "relative node double-dot in path")]
-    #[test_case("/abc/.a./efg", Ok(("/abc/.a./efg", false)); "single-dot in path")]
-    #[test_case("/abc/..a/efg", Ok(("/abc/..a/efg", false)); "double-dot in path")]
-    #[test_case("/abc/路径/efg", Ok(("/abc/路径/efg", false)); "path with chinese characters")]
-    fn test_path(path: &str, result: Result<(&str, bool), Error>) {
+    #[test_case("/abc/.a./efg", Ok("/abc/.a./efg"); "single-dot in path")]
+    #[test_case("/abc/..a/efg", Ok("/abc/..a/efg"); "double-dot in path")]
+    #[test_case("/abc/路径/efg", Ok("/abc/路径/efg"); "path with chinese characters")]
+    fn test_path(path: &str, result: Result<&str, Error>) {
         use super::super::validate_path;
 
-        pretty_assertions::assert_eq!(validate_path("", path, false), result);
-        pretty_assertions::assert_eq!(validate_path("", path, true), result);
-        pretty_assertions::assert_eq!(validate_path("/abc", path, false), result);
-        pretty_assertions::assert_eq!(validate_path("/abc", path, true), result);
+        pretty_assertions::assert_eq!(validate_path(Chroot::default(), path, false), result);
+        pretty_assertions::assert_eq!(validate_path(Chroot::default(), path, true), result);
+        pretty_assertions::assert_eq!(validate_path(Chroot::new("/abc").unwrap(), path, false), result);
+        pretty_assertions::assert_eq!(validate_path(Chroot::new("/abc").unwrap(), path, true), result);
     }
 
     #[test]
     fn test_root_path() {
         use super::validate_path;
 
-        assert_eq!(validate_path("", "/", false).unwrap(), ("/", true));
-        assert_eq!(validate_path("", "/", true).unwrap(), ("/", true));
-        assert_eq!(validate_path("/abc", "/", false).unwrap(), ("", true));
-        assert_eq!(validate_path("/abc", "/", true).unwrap(), ("", true));
+        assert_eq!(validate_path(Chroot::default(), "/", false).unwrap(), "/");
+        assert_eq!(validate_path(Chroot::default(), "/", true).unwrap(), "/");
+        assert_eq!(validate_path(Chroot::new("/abc").unwrap(), "/", false).unwrap(), "");
+        assert_eq!(validate_path(Chroot::new("/abc").unwrap(), "/", true).unwrap(), "");
     }
 
     #[test]
     fn test_path_trailing_slash() {
         use super::validate_path;
-        assert_eq!(validate_path("", "/abc/", false).unwrap_err(), Error::BadArguments(&"path must not end with '/'"));
-        assert_eq!(validate_path("", "/abc/", true).unwrap(), ("/abc/", false));
         assert_eq!(
-            validate_path("/abc", "/abc/", false).unwrap_err(),
+            validate_path(Chroot::default(), "/abc/", false).unwrap_err(),
             Error::BadArguments(&"path must not end with '/'")
         );
-        assert_eq!(validate_path("/abc", "/abc/", true).unwrap(), ("/abc/", false));
+        assert_eq!(validate_path(Chroot::default(), "/abc/", true).unwrap(), "/abc/");
+        assert_eq!(
+            validate_path(Chroot::new("/abc").unwrap(), "/abc/", false).unwrap_err(),
+            Error::BadArguments(&"path must not end with '/'")
+        );
+        assert_eq!(validate_path(Chroot::new("/abc").unwrap(), "/abc/", true).unwrap(), "/abc/");
     }
 
     #[test]
@@ -264,11 +267,14 @@ mod tests {
         assert_eq!(parse_connect_string("host1:abc").unwrap_err(), Error::BadArguments(&"invalid address"));
         assert_eq!(parse_connect_string("host1/abc/").unwrap_err(), Error::BadArguments(&"path must not end with '/'"));
 
-        assert_eq!(parse_connect_string("host1").unwrap(), (vec![("host1", 2181)], ""));
-        assert_eq!(parse_connect_string("host1,host2:2222/").unwrap(), (vec![("host1", 2181), ("host2", 2222)], ""));
+        assert_eq!(parse_connect_string("host1").unwrap(), (vec![("host1", 2181)], Chroot::default()));
+        assert_eq!(
+            parse_connect_string("host1,host2:2222/").unwrap(),
+            (vec![("host1", 2181), ("host2", 2222)], Chroot::default())
+        );
         assert_eq!(
             parse_connect_string("host1,host2:2222/abc").unwrap(),
-            (vec![("host1", 2181), ("host2", 2222)], "/abc")
+            (vec![("host1", 2181), ("host2", 2222)], Chroot::new("/abc").unwrap())
         );
     }
 
