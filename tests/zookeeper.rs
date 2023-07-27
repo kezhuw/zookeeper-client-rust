@@ -448,6 +448,10 @@ async fn test_chroot() {
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster).await.unwrap();
 
+    assert_eq!(client.path(), "/");
+    let client = client.chroot("abc").unwrap_err();
+    assert_eq!(client.path(), "/");
+
     let path = "/abc";
     let data = random_data();
     let child_path = "/abc/efg";
@@ -458,12 +462,17 @@ async fn test_chroot() {
     let (stat, _) = client.create(path, &data, &create_options).await.unwrap();
 
     let path_client = client.clone().chroot(path).unwrap();
+    assert_eq!(path_client.path(), path);
     assert_eq!((data, stat), path_client.get_data("/").await.unwrap());
 
     let relative_child_path = child_path.strip_prefix(path).unwrap();
     let (child_stat, _) = path_client.create(relative_child_path, &child_data, &create_options).await.unwrap();
     assert_eq!((child_data.clone(), child_stat), path_client.get_data(relative_child_path).await.unwrap());
     assert_eq!((child_data.clone(), child_stat), client.get_data(child_path).await.unwrap());
+
+    let child_client = client.clone().chroot(child_path.to_string()).unwrap();
+    assert_eq!(child_client.path(), child_path);
+    assert_eq!((child_data.clone(), child_stat), child_client.get_data("/").await.unwrap());
 
     let relative_grandchild_path = grandchild_path.strip_prefix(path).unwrap();
     let (_, grandchild_watcher) = client.check_and_watch_stat(grandchild_path).await.unwrap();

@@ -1,5 +1,6 @@
 mod watcher;
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::time::Duration;
 
@@ -212,6 +213,11 @@ impl Client {
         ChrootPath::new(self.chroot.as_ref(), path, true)
     }
 
+    /// Path of chroot.
+    pub fn path(&self) -> &str {
+        self.chroot.path()
+    }
+
     /// ZooKeeper session id.
     pub fn session_id(&self) -> SessionId {
         self.session.0
@@ -251,7 +257,7 @@ impl Client {
     ///
     /// # Notable behaviors
     /// * Existing watchers are not affected.
-    pub fn chroot(mut self, path: &str) -> std::result::Result<Client, Client> {
+    pub fn chroot<'a>(mut self, path: impl Into<Cow<'a, str>>) -> std::result::Result<Client, Client> {
         if self.chroot.chroot(path) {
             Ok(self)
         } else {
