@@ -2,10 +2,10 @@ use std::time::Duration;
 use std::{fs, future};
 
 use assert_matches::assert_matches;
+use assertor::*;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
-use speculoos::prelude::*;
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
 use testcontainers::clients::Cli as DockerCli;

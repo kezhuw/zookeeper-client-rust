@@ -98,7 +98,7 @@ impl<'a> ChrootPath<'a> {
 
 #[cfg(test)]
 mod tests {
-    use speculoos::prelude::*;
+    use assertor::*;
     use test_case::test_case;
 
     use super::*;
