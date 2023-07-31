@@ -717,12 +717,12 @@ async fn test_auth_mode() {
     assert_eq!(client.get_data("/acl_test").await.unwrap().0, "my_data".as_bytes().to_vec());
     let no_auth_client = zk::Client::connect(&cluster).await.unwrap();
     assert!(no_auth_client.get_data("/acl_test").await.is_err());
+    assert!(no_auth_client.set_data("/acl_test", b"set_my_data", None).await.is_err());
 
     client.create("/acl_test_2", b"my_data", &zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_read())).await.unwrap();
     assert_eq!(client.get_data("/acl_test_2").await.unwrap().0, "my_data".as_bytes().to_vec());
     assert!(client.set_data("/acl_test_2", b"set_my_data", None).await.is_err());
 }
-
 
 #[tokio::test]
 async fn test_delete() {
