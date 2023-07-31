@@ -715,6 +715,8 @@ async fn test_auth_mode() {
     client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
     client.create("/acl_test", b"my_data", &zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::creator_all())).await.unwrap();
     assert_eq!(client.get_data("/acl_test").await.unwrap().0, "my_data".as_bytes().to_vec());
+    let no_auth_client = zk::Client::connect(&cluster).await.unwrap();
+    assert!(no_auth_client.get_data("/acl_test").await.is_err());
 
     client.create("/acl_test_2", b"my_data", &zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_read())).await.unwrap();
     assert_eq!(client.get_data("/acl_test_2").await.unwrap().0, "my_data".as_bytes().to_vec());
