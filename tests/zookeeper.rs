@@ -700,6 +700,29 @@ async fn test_auth() {
 }
 
 #[tokio::test]
+async fn test_auth_mode() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let scheme = "digest";
+    let user = "bob";
+    let auth = b"bob:xyz";
+
+    client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
+    client.create("/acl_test", b"my_data", &zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::creator_all())).await.unwrap();
+    assert_eq!(client.get_data("/acl_test").await.unwrap().0, "my_data".as_bytes().to_vec());
+
+    client.create("/acl_test_2", b"my_data", &zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_read())).await.unwrap();
+    assert_eq!(client.get_data("/acl_test_2").await.unwrap().0, "my_data".as_bytes().to_vec());
+    assert!(client.set_data("/acl_test_2", b"set_my_data", None).await.is_err());
+}
+
+
+#[tokio::test]
 async fn test_delete() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
