@@ -1028,7 +1028,7 @@ impl<'a> MultiReader<'a> {
     ///
     /// # Notable behaviors
     /// Individual errors(eg. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
-    pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + '_ {
+    pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'a {
         let request = self.build_request();
         Client::resolve(self.commit_internally(request))
     }
@@ -1036,7 +1036,7 @@ impl<'a> MultiReader<'a> {
     fn commit_internally(
         &self,
         request: MarshalledRequest,
-    ) -> Result<Either<impl Future<Output = Result<Vec<MultiReadResult>>> + Send + '_, Vec<MultiReadResult>>> {
+    ) -> Result<Either<impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'a, Vec<MultiReadResult>>> {
         if request.is_empty() {
             return Ok(Right(Vec::default()));
         }
@@ -1209,7 +1209,7 @@ impl<'a> MultiWriter<'a> {
     /// * [Error::BadVersion] if check version failed.
     pub fn commit(
         &mut self,
-    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + '_ {
+    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a {
         let request = self.build_request();
         Client::resolve(self.commit_internally(request))
     }
@@ -1219,7 +1219,7 @@ impl<'a> MultiWriter<'a> {
         request: MarshalledRequest,
     ) -> std::result::Result<
         Either<
-            impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + '_,
+            impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a,
             Vec<MultiWriteResult>,
         >,
         MultiWriteError,
@@ -1228,6 +1228,7 @@ impl<'a> MultiWriter<'a> {
             return Ok(Right(Vec::default()));
         }
         let receiver = self.client.send_marshalled_request(request);
+        let client = self.client;
         Ok(Left(async move {
             let (body, _) = receiver.await?;
             let response = record::unmarshal::<Vec<MultiWriteResponse>>(&mut body.as_slice())?;
@@ -1238,7 +1239,7 @@ impl<'a> MultiWriter<'a> {
                     MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
                     MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
                     MultiWriteResponse::Create { path, stat } => {
-                        util::strip_root_path(path, self.client.chroot.root())?;
+                        util::strip_root_path(path, client.chroot.root())?;
                         results.push(MultiWriteResult::Create { path: path.to_string(), stat });
                     },
                     MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),
