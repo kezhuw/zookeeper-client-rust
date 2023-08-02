@@ -226,7 +226,7 @@ mod tests {
     #[test_case("/abc/..a/efg", Ok(("/abc/..a/efg", false)); "double-dot in path")]
     #[test_case("/abc/路径/efg", Ok(("/abc/路径/efg", false)); "path with chinese characters")]
     fn test_path(path: &str, result: Result<(&str, bool), Error>) {
-        use super::super::validate_path;
+        use super::validate_path;
 
         pretty_assertions::assert_eq!(validate_path("", path, false), result);
         pretty_assertions::assert_eq!(validate_path("", path, true), result);
