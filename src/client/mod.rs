@@ -825,14 +825,22 @@ impl Client {
         }
     }
 
-    /// Creates a multi reader.
+    /// Creates a [MultiReader].
     pub fn new_multi_reader(&self) -> MultiReader<'_> {
         MultiReader::new(self)
     }
 
-    /// Creates a multi writer.
+    /// Creates a [MultiWriter].
     pub fn new_multi_writer(&self) -> MultiWriter<'_> {
         MultiWriter::new(self)
+    }
+
+    /// Creates a [CheckWriter], which is similar to [MultiWriter] but additional path check when
+    /// [CheckWriter::commit].
+    pub fn new_check_writer(&self, path: &str, version: Option<i32>) -> Result<CheckWriter<'_>> {
+        let mut writer = self.new_multi_writer();
+        writer.add_check_version(path, version.unwrap_or(-1))?;
+        Ok(CheckWriter { writer })
     }
 }
 
@@ -1093,6 +1101,24 @@ pub enum MultiWriteResult {
     },
 }
 
+impl MultiWriteResult {
+    fn kind(&self) -> &'static str {
+        match self {
+            MultiWriteResult::Check => "MultiWriteResult::Check",
+            MultiWriteResult::Create { .. } => "MultiWriteResult::Create",
+            MultiWriteResult::Delete => "MultiWriteResult::Delete",
+            MultiWriteResult::SetData { .. } => "MultiWriteResult::SetData",
+        }
+    }
+
+    fn into_check(self) -> Result<()> {
+        match self {
+            MultiWriteResult::Check => Ok(()),
+            _ => Err(Error::UnexpectedError(format!("expect MultiWriteResult::Check, got {}", self.kind()))),
+        }
+    }
+}
+
 /// Error for [MultiWriter::commit].
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum MultiWriteError {
@@ -1111,6 +1137,79 @@ impl From<MultiWriteError> for Error {
         match err {
             MultiWriteError::RequestFailed { source } => source,
             MultiWriteError::OperationFailed { source, .. } => source,
+        }
+    }
+}
+
+/// Error for [CheckWriter::commit].
+#[derive(Error, Clone, Debug, PartialEq, Eq)]
+pub enum CheckWriteError {
+    #[error("request failed: {source}")]
+    RequestFailed {
+        #[from]
+        source: Error,
+    },
+
+    #[error("path check failed: {source}")]
+    CheckFailed { source: Error },
+
+    #[error("operation at index {index} failed: {source}")]
+    OperationFailed { index: usize, source: Error },
+}
+
+impl From<MultiWriteError> for CheckWriteError {
+    fn from(err: MultiWriteError) -> Self {
+        match err {
+            MultiWriteError::RequestFailed { source } => CheckWriteError::RequestFailed { source },
+            MultiWriteError::OperationFailed { index: 0, source } => CheckWriteError::CheckFailed { source },
+            MultiWriteError::OperationFailed { index, source } => {
+                CheckWriteError::OperationFailed { index: index - 1, source }
+            },
+        }
+    }
+}
+
+/// Similar to [MultiWriter] expect for [CheckWriter::commit].
+pub struct CheckWriter<'a> {
+    writer: MultiWriter<'a>,
+}
+
+impl<'a> CheckWriter<'a> {
+    /// Same as [MultiWriter::add_check_version].
+    pub fn add_check_version(&mut self, path: &str, version: i32) -> Result<()> {
+        self.writer.add_check_version(path, version)
+    }
+
+    /// Same as [MultiWriter::add_create].
+    pub fn add_create(&mut self, path: &str, data: &[u8], options: &CreateOptions<'_>) -> Result<()> {
+        self.writer.add_create(path, data, options)
+    }
+
+    /// Same as [MultiWriter::add_set_data].
+    pub fn add_set_data(&mut self, path: &str, data: &[u8], expected_version: Option<i32>) -> Result<()> {
+        self.writer.add_set_data(path, data, expected_version)
+    }
+
+    /// Same as [MultiWriter::add_delete].
+    pub fn add_delete(&mut self, path: &str, expected_version: Option<i32>) -> Result<()> {
+        self.writer.add_delete(path, expected_version)
+    }
+
+    /// Similar to [MultiWriter::commit] except independent path check error.
+    pub fn commit(
+        mut self,
+    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, CheckWriteError>> + Send + 'a {
+        let commit = self.writer.commit();
+        async move {
+            let mut results = commit.await?;
+            if results.is_empty() {
+                Err(CheckWriteError::RequestFailed {
+                    source: Error::UnexpectedError("expect path check, got none".to_string()),
+                })
+            } else {
+                results.remove(0).into_check()?;
+                Ok(results)
+            }
         }
     }
 }

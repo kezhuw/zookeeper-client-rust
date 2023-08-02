@@ -246,6 +246,41 @@ async fn test_multi_async_order() {
 }
 
 #[tokio::test]
+async fn test_check_writer() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster).await.unwrap();
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+
+    let mut check_writer = client.new_check_writer("/check", None).unwrap();
+    check_writer.add_create("/a", Default::default(), &create_options).unwrap();
+    assert_that!(check_writer.commit().await.unwrap_err())
+        .is_equal_to(zk::CheckWriteError::CheckFailed { source: zk::Error::NoNode });
+
+    let (stat, _sequence) = client.create("/check", Default::default(), &create_options).await.unwrap();
+
+    let mut check_writer = client.new_check_writer("/check", Some(stat.version + 1)).unwrap();
+    check_writer.add_create("/a", Default::default(), &create_options).unwrap();
+    assert_that!(check_writer.commit().await.unwrap_err())
+        .is_equal_to(zk::CheckWriteError::CheckFailed { source: zk::Error::BadVersion });
+
+    let mut check_writer = client.new_check_writer("/check", Some(stat.version)).unwrap();
+    check_writer.add_create("/a", b"a", &create_options).unwrap();
+    let mut results = check_writer.commit().await.unwrap();
+    let created_stat = match results.remove(0) {
+        zk::MultiWriteResult::Create { stat, .. } => stat,
+        result => panic!("expect create result, got {:?}", result),
+    };
+
+    let (data, stat) = client.get_data("/a").await.unwrap();
+    assert_that!(created_stat).is_equal_to(stat);
+    assert_that!(data).is_equal_to(b"a".to_vec());
+}
+
+#[tokio::test]
 async fn test_no_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
