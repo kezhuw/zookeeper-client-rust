@@ -24,7 +24,7 @@ fn zookeeper_image() -> GenericImage {
         .with_cmd(["./bin/zkServer.sh", "status"].iter())
         .with_interval(Duration::from_secs(2))
         .with_retries(60);
-    GenericImage::new("zookeeper", "3.7.0")
+    GenericImage::new("zookeeper", "3.8.2")
         .with_env_var(
             "SERVER_JVMFLAGS",
             "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU= -Dzookeeper.enableEagerACLCheck=true",
@@ -130,7 +130,7 @@ async fn test_multi() {
     let mut results = writer.commit().await.unwrap();
     assert_matches!(results.remove(0), zk::MultiWriteResult::Create { path, stat } => {
         assert_eq!(path, "/a");
-        assert_that!(stat.czxid).is_equal_to(-1);
+        assert_that!(stat.is_invalid()).is_false();
     });
     assert_that!(results).is_empty();
     assert_that!(writer.commit().await.unwrap()).is_empty();
@@ -174,7 +174,7 @@ async fn test_multi() {
     assert_matches!(results.remove(0), zk::MultiWriteResult::Check);
     assert_matches!(results.remove(0), zk::MultiWriteResult::Create { path, stat } => {
         assert_eq!(path, "/a/b");
-        assert_that!(stat.czxid).is_equal_to(-1);
+        assert_that!(stat.is_invalid()).is_false();
     });
     assert_that!(results).is_empty();
 
