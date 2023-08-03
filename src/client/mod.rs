@@ -69,6 +69,10 @@ impl CreateMode {
         self == CreateMode::PersistentSequential || self == CreateMode::EphemeralSequential
     }
 
+    fn is_persistent(self) -> bool {
+        self == Self::Persistent || self == Self::PersistentSequential
+    }
+
     fn is_ephemeral(self) -> bool {
         self == Self::Ephemeral || self == Self::EphemeralSequential
     }
@@ -142,7 +146,7 @@ impl<'a> CreateOptions<'a> {
 
     fn validate(&'a self) -> Result<()> {
         if let Some(ref ttl) = self.ttl {
-            if self.mode != CreateMode::Persistent && self.mode != CreateMode::PersistentSequential {
+            if !self.mode.is_persistent() {
                 return Err(Error::BadArguments(&"ttl can only be specified with persistent node"));
             } else if ttl.is_zero() {
                 return Err(Error::BadArguments(&"ttl is zero"));
@@ -2018,6 +2022,30 @@ mod tests {
     use assertor::*;
 
     use super::*;
+
+    #[test]
+    fn test_create_options_validate() {
+        assert_that!(CreateMode::Persistent.with_acls(Acls::new(Default::default())).validate().unwrap_err())
+            .is_equal_to(Error::InvalidAcl);
+
+        let acls = Acls::anyone_all();
+
+        assert_that!(CreateMode::Ephemeral.with_acls(acls).with_ttl(Duration::from_secs(1)).validate().unwrap_err())
+            .is_equal_to(Error::BadArguments(&"ttl can only be specified with persistent node"));
+
+        assert_that!(CreateMode::Persistent.with_acls(acls).with_ttl(Duration::ZERO).validate().unwrap_err())
+            .is_equal_to(Error::BadArguments(&"ttl is zero"));
+
+        assert_that!(CreateMode::Persistent
+            .with_acls(acls)
+            .with_ttl(Duration::from_millis(0x01FFFFFFFFFF))
+            .validate()
+            .unwrap_err())
+        .is_equal_to(Error::BadArguments(&"ttl cannot larger than 1099511627775"));
+
+        assert_that!(CreateMode::Persistent.with_acls(acls).with_ttl(Duration::from_secs(5)).validate())
+            .is_equal_to(Ok(()));
+    }
 
     #[test]
     fn test_lock_options_with_ancestor_options() {
