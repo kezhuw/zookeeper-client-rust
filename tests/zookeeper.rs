@@ -1,12 +1,12 @@
 use std::future;
 use std::time::Duration;
 
-use test_case::test_case;
 use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::{self, Rng};
 use speculoos::prelude::*;
+use test_case::test_case;
 use testcontainers::clients::Cli as DockerCli;
 use testcontainers::core::{Healthcheck, WaitFor};
 use testcontainers::images::generic::GenericImage;
