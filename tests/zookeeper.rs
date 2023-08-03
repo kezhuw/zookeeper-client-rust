@@ -1,7 +1,6 @@
 use std::time::Duration;
 use std::{fs, future};
 
-use test_case::test_case;
 use assert_matches::assert_matches;
 use assertor::*;
 use pretty_assertions::assert_eq;
@@ -9,11 +8,14 @@ use rand::distributions::Standard;
 use rand::{self, Rng};
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
+use test_case::test_case;
 use testcontainers::clients::Cli as DockerCli;
 use testcontainers::core::{Healthcheck, RunnableImage, WaitFor};
 use testcontainers::images::generic::GenericImage;
 use tokio::select;
 use zookeeper_client as zk;
+
+static PERSISTENT_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all());
 
 fn random_data() -> Vec<u8> {
     let rng = rand::thread_rng();
@@ -45,12 +47,11 @@ async fn example() {
     let data = "path_data".as_bytes().to_vec();
     let child_path = "/abc/efg";
     let child_data = "child_path_data".as_bytes().to_vec();
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     let client = zk::Client::connect(&cluster).await.unwrap();
     let (_, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
 
-    let (stat, _) = client.create(path, &data, &create_options).await.unwrap();
+    let (stat, _) = client.create(path, &data, PERSISTENT_OPEN).await.unwrap();
     assert_eq!((data.clone(), stat), client.get_data(path).await.unwrap());
 
     let event = stat_watcher.changed().await;
@@ -75,7 +76,7 @@ async fn example() {
 
     let (_, _, child_watcher) = client.get_and_watch_children(path).await.unwrap();
 
-    let (child_stat, _) = client.create(child_path, &child_data, &create_options).await.unwrap();
+    let (child_stat, _) = client.create(child_path, &child_data, PERSISTENT_OPEN).await.unwrap();
 
     let child_event = child_watcher.changed().await;
     assert_eq!(child_event.event_type, zk::EventType::NodeChildrenChanged);
@@ -115,7 +116,6 @@ async fn connect(cluster: &str, chroot: &str) -> zk::Client {
     if chroot.len() <= 1 {
         return client;
     }
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
     let mut i = 1;
     while i <= chroot.len() {
         let j = match chroot[i..].find('/') {
@@ -123,7 +123,7 @@ async fn connect(cluster: &str, chroot: &str) -> zk::Client {
             None => chroot.len(),
         };
         let path = &chroot[..j];
-        client.create(path, Default::default(), &create_options).await.unwrap();
+        client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
         i = j + 1;
     }
     client.chroot(chroot).unwrap()
@@ -148,8 +148,7 @@ async fn test_multi(chroot: &str) {
     writer.abort();
     assert_that!(writer.commit().await.unwrap()).is_empty();
 
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
-    writer.add_create("/a", "/a.0".as_bytes(), &create_options).unwrap();
+    writer.add_create("/a", "/a.0".as_bytes(), PERSISTENT_OPEN).unwrap();
     let mut results = writer.commit().await.unwrap();
     assert_matches!(results.remove(0), zk::MultiWriteResult::Create { path, stat } => {
         assert_eq!(path, "/a");
@@ -163,7 +162,7 @@ async fn test_multi(chroot: &str) {
 
     writer.add_check_version("/a", a_stat.version + 1).unwrap();
     writer.add_set_data("/a", &random_data(), None).unwrap();
-    writer.add_create("/a", &random_data(), &create_options).unwrap();
+    writer.add_create("/a", &random_data(), PERSISTENT_OPEN).unwrap();
     assert_eq!(writer.commit().await.unwrap_err(), zk::MultiWriteError::OperationFailed {
         index: 0,
         source: zk::Error::BadVersion
@@ -171,7 +170,7 @@ async fn test_multi(chroot: &str) {
 
     writer.add_set_data("/a", &random_data(), None).unwrap();
     writer.add_check_version("/a", a_stat.version + 1).unwrap();
-    writer.add_create("/a", &random_data(), &create_options).unwrap();
+    writer.add_create("/a", &random_data(), PERSISTENT_OPEN).unwrap();
     assert_eq!(writer.commit().await.unwrap_err(), zk::MultiWriteError::OperationFailed {
         index: 2,
         source: zk::Error::NodeExists
@@ -181,7 +180,7 @@ async fn test_multi(chroot: &str) {
     writer.add_check_version("/a", a_stat.version + 1).unwrap();
     writer.add_set_data("/a", "/a.2".as_bytes(), None).unwrap();
     writer.add_check_version("/a", a_stat.version + 2).unwrap();
-    writer.add_create("/a/b", "/a/b.0".as_bytes(), &create_options).unwrap();
+    writer.add_create("/a/b", "/a/b.0".as_bytes(), PERSISTENT_OPEN).unwrap();
     let mut results = writer.commit().await.unwrap();
     assert_matches!(results.remove(0), zk::MultiWriteResult::SetData { stat } => {
         assert_that!(stat.czxid).is_equal_to(a_stat.czxid);
@@ -247,8 +246,7 @@ async fn test_multi_async_order() {
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster).await.unwrap();
 
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
-    client.create("/a", "a0".as_bytes(), &create_options).await.unwrap();
+    client.create("/a", "a0".as_bytes(), PERSISTENT_OPEN).await.unwrap();
 
     let mut writer = client.new_multi_writer();
     writer.add_set_data("/a", "a1".as_bytes(), None).unwrap();
@@ -276,22 +274,21 @@ async fn test_check_writer() {
 
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster).await.unwrap();
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     let mut check_writer = client.new_check_writer("/check", None).unwrap();
-    check_writer.add_create("/a", Default::default(), &create_options).unwrap();
+    check_writer.add_create("/a", Default::default(), PERSISTENT_OPEN).unwrap();
     assert_that!(check_writer.commit().await.unwrap_err())
         .is_equal_to(zk::CheckWriteError::CheckFailed { source: zk::Error::NoNode });
 
-    let (stat, _sequence) = client.create("/check", Default::default(), &create_options).await.unwrap();
+    let (stat, _sequence) = client.create("/check", Default::default(), PERSISTENT_OPEN).await.unwrap();
 
     let mut check_writer = client.new_check_writer("/check", Some(stat.version + 1)).unwrap();
-    check_writer.add_create("/a", Default::default(), &create_options).unwrap();
+    check_writer.add_create("/a", Default::default(), PERSISTENT_OPEN).unwrap();
     assert_that!(check_writer.commit().await.unwrap_err())
         .is_equal_to(zk::CheckWriteError::CheckFailed { source: zk::Error::BadVersion });
 
     let mut check_writer = client.new_check_writer("/check", Some(stat.version)).unwrap();
-    check_writer.add_create("/a", b"a", &create_options).unwrap();
+    check_writer.add_create("/a", b"a", PERSISTENT_OPEN).unwrap();
     let mut results = check_writer.commit().await.unwrap();
     let created_stat = match results.remove(0) {
         zk::MultiWriteResult::Create { stat, .. } => stat,
@@ -313,7 +310,6 @@ async fn test_no_node() {
 
     let client = zk::Client::connect(&cluster).await.unwrap();
 
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
     assert_eq!(client.check_stat("/nonexistent").await.unwrap(), None);
     assert_eq!(client.get_data("/nonexistent").await.unwrap_err(), zk::Error::NoNode);
     assert_eq!(client.get_and_watch_data("/nonexistent").await.unwrap_err(), zk::Error::NoNode);
@@ -322,7 +318,7 @@ async fn test_no_node() {
     assert_eq!(client.list_children("/nonexistent").await.unwrap_err(), zk::Error::NoNode);
     assert_eq!(client.list_and_watch_children("/nonexistent").await.unwrap_err(), zk::Error::NoNode);
     assert_eq!(
-        client.create("/nonexistent/child", Default::default(), &create_options).await.unwrap_err(),
+        client.create("/nonexistent/child", Default::default(), PERSISTENT_OPEN).await.unwrap_err(),
         zk::Error::NoNode
     );
 }
@@ -336,15 +332,13 @@ async fn test_request_order() {
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::connect(&cluster).await.unwrap();
 
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
-
     let path = "/abc";
     let child_path = "/abc/efg";
 
-    let create = client.create(path, Default::default(), &create_options);
+    let create = client.create(path, Default::default(), PERSISTENT_OPEN);
     let get_data = client.get_and_watch_children(path);
     let get_child_data = client.get_data(child_path);
-    let (child_stat, _) = client.create(child_path, Default::default(), &create_options).await.unwrap();
+    let (child_stat, _) = client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let (stat, _) = create.await.unwrap();
 
     assert_that!(child_stat.czxid).is_greater_than(stat.czxid);
@@ -371,9 +365,8 @@ async fn test_data_node() {
     let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
     let data = random_data();
-    let (stat, sequence) = client.create(path, &data, &create_options).await.unwrap();
+    let (stat, sequence) = client.create(path, &data, PERSISTENT_OPEN).await.unwrap();
     assert_eq!(sequence.0, -1);
 
     assert_eq!(stat, client.check_stat(path).await.unwrap().unwrap());
@@ -396,7 +389,7 @@ async fn test_create_sequential() {
 
     let prefix = "/PREFIX-";
     let data = random_data();
-    let create_options = zk::CreateOptions::new(zk::CreateMode::PersistentSequential, zk::Acl::anyone_all());
+    let create_options = zk::CreateMode::PersistentSequential.with_acls(zk::Acls::anyone_all());
     let (stat1, sequence1) = client.create(prefix, &data, &create_options).await.unwrap();
     let (stat2, sequence2) = client.create(prefix, &data, &create_options).await.unwrap();
 
@@ -420,7 +413,6 @@ async fn test_descendants_number() {
     let path = "/abc";
     let child_path = "/abc/efg";
     let grandchild_path = "/abc/efg/123";
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     assert_eq!(client.count_descendants_number(path).await.unwrap_err(), zk::Error::NoNode);
     assert_eq!(client.count_descendants_number(child_path).await.unwrap_err(), zk::Error::NoNode);
@@ -428,19 +420,19 @@ async fn test_descendants_number() {
 
     let root_childrens = client.count_descendants_number("/").await.unwrap();
 
-    client.create(path, Default::default(), &create_options).await.unwrap();
+    client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     assert_eq!(client.count_descendants_number("/").await.unwrap(), 1 + root_childrens);
     assert_eq!(client.count_descendants_number(path).await.unwrap(), 0);
     assert_eq!(client.count_descendants_number(child_path).await.unwrap_err(), zk::Error::NoNode);
     assert_eq!(client.count_descendants_number(grandchild_path).await.unwrap_err(), zk::Error::NoNode);
 
-    client.create(child_path, Default::default(), &create_options).await.unwrap();
+    client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     assert_eq!(client.count_descendants_number("/").await.unwrap(), 2 + root_childrens);
     assert_eq!(client.count_descendants_number(path).await.unwrap(), 1);
     assert_eq!(client.count_descendants_number(child_path).await.unwrap(), 0);
     assert_eq!(client.count_descendants_number(grandchild_path).await.unwrap_err(), zk::Error::NoNode);
 
-    client.create(grandchild_path, Default::default(), &create_options).await.unwrap();
+    client.create(grandchild_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     assert_eq!(client.count_descendants_number("/").await.unwrap(), 3 + root_childrens);
     assert_eq!(client.count_descendants_number(path).await.unwrap(), 2);
     assert_eq!(client.count_descendants_number(child_path).await.unwrap(), 1);
@@ -477,10 +469,10 @@ async fn test_ephemerals() {
     // No Error::NoNode for not exist path.
     assert_eq!(Vec::<String>::new(), client.list_ephemerals(path).await.unwrap());
 
-    let acl = zk::Acl::anyone_all();
-    let persistent_options = zk::CreateOptions::new(zk::CreateMode::Persistent, acl);
-    let ephemeral_options = zk::CreateOptions::new(zk::CreateMode::Ephemeral, acl);
-    let ephemeral_sequential_options = zk::CreateOptions::new(zk::CreateMode::EphemeralSequential, acl);
+    let acl = zk::Acls::anyone_all();
+    let persistent_options = zk::CreateMode::Persistent.with_acls(acl);
+    let ephemeral_options = zk::CreateMode::Ephemeral.with_acls(acl);
+    let ephemeral_sequential_options = zk::CreateMode::EphemeralSequential.with_acls(acl);
 
     let mut root_ephemerals = Vec::new();
 
@@ -545,16 +537,15 @@ async fn test_chroot() {
     let child_path = "/abc/efg";
     let child_data = random_data();
     let grandchild_path = "/abc/efg/123";
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
-    let (stat, _) = client.create(path, &data, &create_options).await.unwrap();
+    let (stat, _) = client.create(path, &data, PERSISTENT_OPEN).await.unwrap();
 
     let path_client = client.clone().chroot(path).unwrap();
     assert_eq!(path_client.path(), path);
     assert_eq!((data, stat), path_client.get_data("/").await.unwrap());
 
     let relative_child_path = child_path.strip_prefix(path).unwrap();
-    let (child_stat, _) = path_client.create(relative_child_path, &child_data, &create_options).await.unwrap();
+    let (child_stat, _) = path_client.create(relative_child_path, &child_data, PERSISTENT_OPEN).await.unwrap();
     assert_eq!((child_data.clone(), child_stat), path_client.get_data(relative_child_path).await.unwrap());
     assert_eq!((child_data.clone(), child_stat), client.get_data(child_path).await.unwrap());
 
@@ -566,7 +557,7 @@ async fn test_chroot() {
     let (_, grandchild_watcher) = client.check_and_watch_stat(grandchild_path).await.unwrap();
     let (_, relative_grandchild_watcher) = path_client.check_and_watch_stat(relative_grandchild_path).await.unwrap();
 
-    client.create(grandchild_path, Default::default(), &create_options).await.unwrap();
+    client.create(grandchild_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
 
     let grandchild_event = grandchild_watcher.changed().await;
     let relative_grandchild_event = relative_grandchild_watcher.changed().await;
@@ -613,11 +604,10 @@ async fn test_delete() {
     let client = zk::Client::connect(&cluster).await.unwrap();
 
     let path = "/abc";
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
-    let (stat, _) = client.create(path, Default::default(), &create_options).await.unwrap();
+    let (stat, _) = client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
 
     let child_path = "/abc/efg";
-    let (child_stat, _) = client.create(child_path, Default::default(), &create_options).await.unwrap();
+    let (child_stat, _) = client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
 
     assert_eq!(client.delete(path, Some(stat.version)).await.unwrap_err(), zk::Error::NotEmpty);
     assert_eq!(client.delete(child_path, Some(child_stat.version + 1)).await.unwrap_err(), zk::Error::BadVersion);
@@ -648,8 +638,7 @@ async fn test_oneshot_watcher() {
     let (stat, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
     let (_, child_stat_watcher) = client.check_and_watch_stat(child_path).await.unwrap();
     assert_eq!(stat, None);
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
-    let (stat, _) = client.create(path, Default::default(), &create_options).await.unwrap();
+    let (stat, _) = client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
 
     let event = stat_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
@@ -692,7 +681,7 @@ async fn test_oneshot_watcher() {
     remove_watcher4.remove().await.unwrap();
 
     // Child creation.
-    client.create(child_path, Default::default(), &create_options).await.unwrap();
+    client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
 
     let child_event = list_children_watcher.changed().await;
     assert_eq!(child_event.event_type, zk::EventType::NodeChildrenChanged);
@@ -833,15 +822,14 @@ async fn test_persistent_watcher_passive_remove() {
     let cluster = format!("127.0.0.1:{}", zk_port);
 
     let client = zk::Client::connect(&cluster).await.unwrap();
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     let path = "/abc";
     let child_path = "/abc/efg";
     let grandchild_path = "/abc/efg/123";
 
-    client.create(path, Default::default(), &create_options).await.unwrap();
-    client.create(child_path, Default::default(), &create_options).await.unwrap();
-    client.create(grandchild_path, Default::default(), &create_options).await.unwrap();
+    client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
+    client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
+    client.create(grandchild_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let (_, root_child_watcher) = client.list_and_watch_children("/").await.unwrap();
 
     // Two watchers on same path, drop persistent watcher has no effect.
@@ -873,7 +861,6 @@ async fn test_persistent_watcher() {
     let cluster = format!("127.0.0.1:{}", zk_port);
 
     let client = zk::Client::connect(&cluster).await.unwrap();
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -916,7 +903,7 @@ async fn test_persistent_watcher() {
     }
 
     // Node creation.
-    client.create(path, Default::default(), &create_options).await.unwrap();
+    client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let event = root_recursive_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, path);
@@ -924,7 +911,7 @@ async fn test_persistent_watcher() {
     assert_eq!(event, path_persistent_watcher.changed().await);
 
     // Child node creation.
-    client.create(child_path, Default::default(), &create_options).await.unwrap();
+    client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let event = root_recursive_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, child_path);
@@ -939,7 +926,7 @@ async fn test_persistent_watcher() {
     path_persistent_watcher2.remove().await.unwrap();
 
     // Grandchild node creation.
-    client.create(grandchild_path, Default::default(), &create_options).await.unwrap();
+    client.create(grandchild_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let event = root_recursive_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, grandchild_path);
@@ -964,7 +951,7 @@ async fn test_persistent_watcher() {
     assert_eq!(child_event.path, path);
 
     // Unrelated node creation.
-    client.create(unrelated_path, Default::default(), &create_options).await.unwrap();
+    client.create(unrelated_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let event = root_recursive_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, unrelated_path);
@@ -982,7 +969,7 @@ async fn test_persistent_watcher() {
     assert_eq!(event, path_persistent_watcher.changed().await);
 
     // Node recreation.
-    client.create(path, Default::default(), &create_options).await.unwrap();
+    client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
     let event = root_recursive_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::NodeCreated);
     assert_eq!(event.path, path);
@@ -1129,8 +1116,7 @@ async fn test_update_ensemble() {
     let zoo2_client = zk::Client::connect("localhost:4002").await.unwrap();
     let zoo3_client = zk::Client::connect("localhost:4003").await.unwrap();
 
-    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
-    zoo1_client.create("/xx", b"xx", &create_options).await.unwrap();
+    zoo1_client.create("/xx", b"xx", PERSISTENT_OPEN).await.unwrap();
 
     // Assert all three servers reside in same cluster.
     zoo2_client.sync("/").await.unwrap();

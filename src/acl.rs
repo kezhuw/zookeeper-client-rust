@@ -81,14 +81,14 @@ impl std::fmt::Display for Permission {
 }
 
 /// Acl expresses node permission for node accessors.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Acl {
     permission: Permission,
     auth_id: AuthId,
 }
 
 /// AuthId represents authenticated identity and expresses authentication requirement in [Acl].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthId {
     scheme: CompactString,
     id: CompactString,
@@ -100,7 +100,8 @@ impl AuthId {
         AuthId { scheme: CompactString::new(scheme), id: CompactString::new(id) }
     }
 
-    const fn new_const(scheme: &'static str, id: &'static str) -> AuthId {
+    /// Const alternative to [AuthId::new].
+    pub const fn new_const(scheme: &'static str, id: &'static str) -> AuthId {
         AuthId { scheme: CompactString::new_inline(scheme), id: CompactString::new_inline(id) }
     }
 
@@ -159,28 +160,12 @@ impl Acl {
         Acl { permission, auth_id }
     }
 
-    const fn new_const(permission: Permission, scheme: &'static str, id: &'static str) -> Acl {
+    /// Const alternative to [Acl::new].
+    pub const fn new_const(permission: Permission, scheme: &'static str, id: &'static str) -> Acl {
         Acl {
             permission,
             auth_id: AuthId { scheme: CompactString::new_inline(scheme), id: CompactString::new_inline(id) },
         }
-    }
-
-    /// Returns acl that expresses anyone can have full permissions over nodes created by this
-    /// session.
-    pub fn anyone_all() -> &'static [Acl] {
-        &ANYONE_ALL
-    }
-
-    /// Returns acl that expresses anyone can read nodes created by this session.
-    pub fn anyone_read() -> &'static [Acl] {
-        &ANYONE_READ
-    }
-
-    /// Returns acl that expresses anyone who has same auth as creator can have full permisssions
-    /// over nodes created by this session.
-    pub fn creator_all() -> &'static [Acl] {
-        &CREATOR_ALL
     }
 
     /// Returns the permission this auth id has.
@@ -204,11 +189,68 @@ impl Acl {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AclsInner<'a> {
+    AnyoneAll,
+    AnyoneRead,
+    CreatorAll,
+    Acls { acls: &'a [Acl] },
+}
+
+/// List of [Acl]s to carry different permissions for different auth identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Acls<'a> {
+    inner: AclsInner<'a>,
+}
+
+impl<'a> Acls<'a> {
+    /// Wraps list of [Acl] as [Acls]. See also [Acls::from].
+    pub fn new(acls: &'a [Acl]) -> Self {
+        Self { inner: AclsInner::Acls { acls } }
+    }
+
+    /// Returns acls that expresse anyone can have full permissions over nodes created by this
+    /// session.
+    pub const fn anyone_all() -> Acls<'static> {
+        Acls { inner: AclsInner::AnyoneAll }
+    }
+
+    /// Returns acls that expresse anyone can read nodes created by this session.
+    pub const fn anyone_read() -> Acls<'static> {
+        Acls { inner: AclsInner::AnyoneRead }
+    }
+
+    /// Returns acls that expresse anyone who has same auth as creator can have full permisssions
+    /// over nodes created by this session.
+    pub const fn creator_all() -> Acls<'static> {
+        Acls { inner: AclsInner::CreatorAll }
+    }
+}
+
+impl<'a> std::ops::Deref for Acls<'a> {
+    type Target = [Acl];
+
+    fn deref(&self) -> &'a [Acl] {
+        match self.inner {
+            AclsInner::AnyoneAll => &ANYONE_ALL,
+            AclsInner::AnyoneRead => &ANYONE_READ,
+            AclsInner::CreatorAll => &CREATOR_ALL,
+            AclsInner::Acls { acls } => acls,
+        }
+    }
+}
+
+impl<'a> From<&'a [Acl]> for Acls<'a> {
+    fn from(acls: &'a [Acl]) -> Self {
+        Self::new(acls)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::Permission;
+    use super::*;
 
     #[test]
     fn permission_test() {
@@ -229,5 +271,13 @@ mod tests {
 
         let perms = Permission::READ | Permission::WRITE | Permission::CREATE | Permission::DELETE;
         assert_eq!(perms.to_string(), "READ|WRITE|CREATE|DELETE");
+    }
+
+    #[test]
+    fn test_acls() {
+        assert_eq!(&Acls::anyone_all() as &[Acl], &ANYONE_ALL);
+        assert_eq!(&Acls::anyone_read() as &[Acl], &ANYONE_READ);
+        assert_eq!(&Acls::creator_all() as &[Acl], &CREATOR_ALL);
+        assert_eq!(&Acls::new(&CREATOR_ALL) as &[Acl], &CREATOR_ALL);
     }
 }

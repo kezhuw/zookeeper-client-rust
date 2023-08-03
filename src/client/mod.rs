@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, watch};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver, PASSWORD_LEN};
-use crate::acl::{Acl, AuthUser};
+use crate::acl::{Acl, Acls, AuthUser};
 use crate::chroot::{Chroot, ChrootPath, OwnedChroot};
 use crate::error::Error;
 use crate::proto::{
@@ -57,6 +57,11 @@ pub enum CreateMode {
 }
 
 impl CreateMode {
+    /// Constructs [CreateOptions] with this mode and given acls.
+    pub const fn with_acls(self, acls: Acls<'_>) -> CreateOptions<'_> {
+        CreateOptions { mode: self, acls, ttl: None }
+    }
+
     fn is_sequential(self) -> bool {
         self == CreateMode::PersistentSequential || self == CreateMode::EphemeralSequential
     }
@@ -108,10 +113,11 @@ impl From<AddWatchMode> for proto::AddWatchMode {
     }
 }
 
-/// Options for node creation.
+/// Options for node creation, constructed from [CreateMode::with_acls].
+#[derive(Clone, Debug)]
 pub struct CreateOptions<'a> {
     mode: CreateMode,
-    acls: &'a [Acl],
+    acls: Acls<'a>,
     ttl: Option<Duration>,
 }
 
@@ -121,13 +127,8 @@ pub struct CreateOptions<'a> {
 const TTL_MAX_MILLIS: u128 = 0x00FFFFFFFFFF;
 
 impl<'a> CreateOptions<'a> {
-    /// Constructs options with specified create mode and acls.
-    pub fn new(mode: CreateMode, acls: &'a [Acl]) -> CreateOptions<'a> {
-        CreateOptions { mode, acls, ttl: None }
-    }
-
     /// Specifies ttl for persistent node.
-    pub fn with_ttl(&'a mut self, ttl: Duration) -> &'a mut Self {
+    pub const fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }

@@ -1,7 +1,7 @@
 use bytes::BufMut;
 
 use super::stat::Stat;
-use crate::acl::Acl;
+use crate::acl::Acls;
 use crate::chroot::ChrootPath;
 use crate::record::{
     DeserializableRecord,
@@ -31,7 +31,7 @@ impl DynamicRecord for SyncRequest<'_> {
 pub struct CreateRequest<'a> {
     pub path: ChrootPath<'a>,
     pub data: &'a [u8],
-    pub acls: &'a [Acl],
+    pub acls: Acls<'a>,
     pub flags: i32,
     pub ttl: i64,
 }

@@ -7,6 +7,6 @@ mod record;
 mod session;
 mod util;
 
-pub use self::acl::{Acl, AuthId, AuthUser, Permission};
+pub use self::acl::{Acl, Acls, AuthId, AuthUser, Permission};
 pub use self::error::Error;
 pub use crate::client::*;

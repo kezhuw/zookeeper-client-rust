@@ -24,7 +24,7 @@ let path = "/abc";
 let data = "path_data".as_bytes().to_vec();
 let child_path = "/abc/efg";
 let child_data = "child_path_data".as_bytes().to_vec();
-let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+let create_options = zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all());
 
 let cluster = "localhost:2181";
 let client = zk::Client::connect(cluster).await.unwrap();
