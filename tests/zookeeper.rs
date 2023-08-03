@@ -379,6 +379,7 @@ async fn test_lock_curator_filter() {
     let _lock = client.lock(lock_prefix, b"", options).await.unwrap();
 }
 
+#[allow(unused_must_use)] // semi-asynchronous future
 async fn test_lock_with_path(
     cluster: &str,
     chroot: &str,
@@ -390,19 +391,39 @@ async fn test_lock_with_path(
 
     let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
 
-    let lock2 = client1.lock(lock1_prefix, b"", options.clone()).await.unwrap();
+    let lock1 = client1.lock(lock1_prefix, b"", options.clone()).await.unwrap();
     let contender2 = tokio::spawn(async move {
         let lock2 = client2.lock(lock2_prefix, b"", options).await.unwrap();
-        assert_that!(lock2.create("/a", b"a2", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NodeExists);
-        lock2.client().get_data("/a").await.unwrap()
+        let (data, stat) = lock2.client().get_data("/lock-path").await.unwrap();
+        lock2.set_data("/lock-path", lock2.lock_path().as_bytes(), None).await.unwrap();
+        lock2.delete("/tmp1", None).await.unwrap();
+        (data, stat)
     });
 
     // Let lock2 get chance to chime in.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let (stat, _) = lock2.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
-    drop(lock2);
-    assert_that!(contender2.await.unwrap()).is_equal_to((b"a1".to_vec(), stat));
+    let lock1_path = lock1.lock_path().to_string();
+
+    let (stat, _) = lock1.create("/lock-path", lock1_path.as_bytes(), PERSISTENT_OPEN).await.unwrap();
+
+    // Semi-asynchronous data request, no need to await.
+    lock1.create("/tmp1", b"", PERSISTENT_OPEN);
+    client1.delete(&lock1_path, None).await.unwrap();
+    assert_that!(lock1.create("/tmp2", b"", PERSISTENT_OPEN).await.unwrap_err())
+        .is_equal_to(zk::Error::RuntimeInconsistent);
+
+    drop(lock1);
+    assert_that!(contender2.await.unwrap()).is_equal_to((lock1_path.as_bytes().to_vec(), stat));
+    assert_that!(client1.check_stat("/tmp1").await.unwrap()).is_equal_to(None);
+
+    let (data, _stat) = client1.get_data("/lock-path").await.unwrap();
+    let lock2_path = String::from_utf8(data).unwrap();
+
+    // Let background delete get chance to chime in.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_that!(client1.check_stat(&lock1_path).await.unwrap()).is_equal_to(None);
+    assert_that!(client1.check_stat(&lock2_path).await.unwrap()).is_equal_to(None);
 }
 
 #[tokio::test]
