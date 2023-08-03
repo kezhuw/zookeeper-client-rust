@@ -52,6 +52,15 @@ impl OneshotWatcher {
     }
 
     /// Waits for node event or session broken.
+    ///
+    /// # API
+    /// No [SessionState::Disconnected] event as server will deliver latest data events in auto
+    /// watch reset on reconnection.
+    ///
+    /// # Notable issues
+    /// [ZOOKEEPER-43][]: Server side of the auto reset watches patch
+    ///
+    /// [ZOOKEEPER-43]: https://issues.apache.org/jira/browse/ZOOKEEPER-43
     pub async fn changed(self) -> WatchedEvent {
         let mut event = self.receiver.recv().await;
         event.drain_root_path(self.chroot.root());
@@ -80,6 +89,14 @@ impl PersistentWatcher {
     ///
     /// # Panics
     /// Panic after terminal session event received.
+    ///
+    /// # BUG
+    /// Events during reconnection could be lost due to [ZOOKEEPER-4698], as events during
+    /// connection loss are not delivered in auto watch reset. So, callers should rebuild their
+    /// knowledge to avoid data inconsistency after [SessionState::Disconnected] and following
+    /// [SessionState::SyncConnected]. See also [OneshotWatcher::changed].
+    ///
+    /// [ZOOKEEPER-4698]: https://issues.apache.org/jira/browse/ZOOKEEPER-4698
     pub async fn changed(&mut self) -> WatchedEvent {
         let mut event = self.receiver.recv().await;
         event.drain_root_path(self.chroot.root());
