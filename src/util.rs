@@ -101,6 +101,17 @@ pub fn parse_connect_string(s: &str) -> Result<(Vec<HostPortRef>, Chroot<'_>), E
     Ok((servers, chroot))
 }
 
+/// Splits path to `(parent, tree, name)` where `tree` has trailing slash but `parent` does not
+/// have.
+pub fn split_path(path: &str) -> (&str, &str, &str) {
+    let last_slash = path.rfind('/').unwrap();
+    if last_slash == 0 {
+        ("/", "/", &path[1..])
+    } else {
+        (&path[0..last_slash], &path[0..last_slash + 1], &path[last_slash + 1..])
+    }
+}
+
 pub fn validate_path<'a>(chroot: Chroot<'a>, path: &'a str, allow_trailing_slash: bool) -> Result<&'a str, Error> {
     if path.is_empty() {
         return Err(Error::BadArguments(&"path cannot be empty"));
@@ -195,6 +206,15 @@ mod tests {
         assert_eq!(parse_address("[fasl]:1234").unwrap(), ("fasl", 1234));
         assert_eq!(parse_address("[fasl]").unwrap(), ("fasl", 2181));
         assert_eq!(parse_address("[::1]:2181").unwrap(), ("::1", 2181));
+    }
+
+    #[test]
+    fn test_split_path() {
+        use super::split_path;
+
+        assert_eq!(split_path("/"), ("/", "/", ""));
+        assert_eq!(split_path("/a"), ("/", "/", "a"));
+        assert_eq!(split_path("/a/b"), ("/a", "/a/", "b"));
     }
 
     #[test_case("", Err(Error::BadArguments(&"path cannot be empty")); "empty path")]

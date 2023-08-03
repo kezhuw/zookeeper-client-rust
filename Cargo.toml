@@ -28,6 +28,7 @@ static_assertions = "1.1.0"
 hashbrown = "0.12.0"
 hashlink = "0.8.0"
 either = "1.9.0"
+uuid = { version = "1.4.1", features = ["v4"] }
 
 [dev-dependencies]
 rand = "0.8.4"

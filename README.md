@@ -17,6 +17,8 @@ ZooKeeper client writes in async rust.
 * Cloneable `Client` and `Client::chroot` enables session sharing cross multiple different rooted clients.
 
 ## Examples
+
+### Basics
 ```rust
 use zookeeper_client as zk;
 
@@ -58,6 +60,21 @@ drop(path_client);
 let session_event = event_watcher.changed().await;
 assert_eq!(session_event.event_type, zk::EventType::Session);
 assert_eq!(session_event.session_state, zk::SessionState::Closed);
+```
+
+### Recipes
+```rust
+use zookeeper_client as zk;
+
+let cluster = "localhost:2181";
+let client = zk::Client::connect(cluster).await.unwrap();
+
+let prefix = zk::LockPrefix::new_curator("/app/locks", "latch-").unwrap();
+let options = zk::LockOptions::new(zk::Acls::anyone_all())
+    .with_ancestor_options(zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all()))
+    .unwrap();
+let latch = client.lock(prefix, b"", options).await.unwrap();
+latch.create("/app/data", b"data", &zk::CreateMode::Ephemeral.with_acls(zk::Acls::anyone_all())).await.unwrap();
 ```
 
 For more examples, see [zookeeper.rs](tests/zookeeper.rs).

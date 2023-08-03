@@ -16,6 +16,7 @@ use tokio::select;
 use zookeeper_client as zk;
 
 static PERSISTENT_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all());
+static CONTAINER_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all());
 
 fn random_data() -> Vec<u8> {
     let rng = rand::thread_rng();
@@ -123,7 +124,10 @@ async fn connect(cluster: &str, chroot: &str) -> zk::Client {
             None => chroot.len(),
         };
         let path = &chroot[..j];
-        client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
+        match client.create(path, Default::default(), PERSISTENT_OPEN).await {
+            Ok(_) | Err(zk::Error::NodeExists) => {},
+            Err(err) => panic!("{err}"),
+        }
         i = j + 1;
     }
     client.chroot(chroot).unwrap()
@@ -298,6 +302,107 @@ async fn test_check_writer() {
     let (data, stat) = client.get_data("/a").await.unwrap();
     assert_that!(created_stat).is_equal_to(stat);
     assert_that!(data).is_equal_to(b"a".to_vec());
+}
+
+#[test_case("/x"; "chroot_x")]
+#[test_case("/x/y"; "chroot_x_y")]
+#[tokio::test]
+async fn test_lock_shared(chroot: &str) {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    test_lock_with_path(
+        &cluster,
+        chroot,
+        zk::LockPrefix::new_shared("/locks/shared/n-").unwrap(),
+        zk::LockPrefix::new_shared("/locks/shared/n-").unwrap(),
+    )
+    .await;
+}
+
+#[test_case("/x"; "chroot_x")]
+#[test_case("/x/y"; "chroot_x_y")]
+#[tokio::test]
+async fn test_lock_custom(chroot: &str) {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let lock1_prefix = zk::LockPrefix::new_custom("/locks/custom/n-abc-".to_string(), "n-").unwrap();
+    let lock2_prefix = zk::LockPrefix::new_custom("/locks/custom/n-def-".to_string(), "n-").unwrap();
+    test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
+}
+
+#[test_case("/x"; "chroot_x")]
+#[test_case("/x/y"; "chroot_x_y")]
+#[tokio::test]
+async fn test_lock_curator(chroot: &str) {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let lock1_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
+    let lock2_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
+    test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
+}
+
+#[tokio::test]
+async fn test_lock_no_node() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+    let prefix = zk::LockPrefix::new_curator("/a/locks", "latch-").unwrap();
+    assert_eq!(client.lock(prefix, b"", zk::Acls::anyone_all()).await.unwrap_err(), zk::Error::NoNode);
+}
+
+#[tokio::test]
+async fn test_lock_curator_filter() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+    let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
+
+    let latch_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
+    let _latch = client.lock(latch_prefix, b"", options.clone()).await.unwrap();
+
+    let lock_prefix = zk::LockPrefix::new_curator("/locks/curator", "lock-").unwrap();
+    let _lock = client.lock(lock_prefix, b"", options).await.unwrap();
+}
+
+async fn test_lock_with_path(
+    cluster: &str,
+    chroot: &str,
+    lock1_prefix: zk::LockPrefix<'static>,
+    lock2_prefix: zk::LockPrefix<'static>,
+) {
+    let client1 = connect(cluster, chroot).await;
+    let client2 = connect(cluster, chroot).await;
+
+    let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
+
+    let lock2 = client1.lock(lock1_prefix, b"", options.clone()).await.unwrap();
+    let contender2 = tokio::spawn(async move {
+        let lock2 = client2.lock(lock2_prefix, b"", options).await.unwrap();
+        assert_that!(lock2.create("/a", b"a2", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NodeExists);
+        lock2.client().get_data("/a").await.unwrap()
+    });
+
+    // Let lock2 get chance to chime in.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (stat, _) = lock2.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
+    drop(lock2);
+    assert_that!(contender2.await.unwrap()).is_equal_to((b"a1".to_vec(), stat));
 }
 
 #[tokio::test]

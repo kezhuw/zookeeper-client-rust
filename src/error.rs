@@ -79,6 +79,38 @@ pub enum Error {
 
     #[error("client has been closed")]
     ClientClosed,
+
+    #[error("runtime condition mismatch")]
+    RuntimeInconsistent,
+}
+
+impl Error {
+    pub(crate) fn has_no_data_change(&self) -> bool {
+        match self {
+            Self::NoNode
+            | Self::NoAuth
+            | Self::BadVersion
+            | Self::NoChildrenForEphemerals
+            | Self::NodeExists
+            | Self::NotEmpty
+            | Self::InvalidAcl
+            | Self::AuthFailed
+            | Self::SessionMoved
+            | Self::NotReadOnly
+            | Self::NoWatcher
+            | Self::QuotaExceeded
+            | Self::Throttled
+            | Self::MarshallingError
+            | Self::Unimplemented
+            | Self::ReconfigDisabled
+            | Self::UnexpectedErrorCode(_) => true,
+            // We are expired anyway, any ephemeral nodes will be deleted by ZooKeeper soon.
+            Self::SessionExpired => true,
+            // We are closed anyway, the session will expire soon.
+            Self::ClientClosed => true,
+            _ => false,
+        }
+    }
 }
 
 assert_impl_all!(Error: Send, Sync);

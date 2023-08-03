@@ -1,11 +1,14 @@
 mod watcher;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::future::Future;
+use std::mem::ManuallyDrop;
 use std::time::Duration;
 
 use const_format::formatcp;
 use either::{Either, Left, Right};
+use ignore_result::Ignore;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
@@ -64,6 +67,10 @@ impl CreateMode {
 
     fn is_sequential(self) -> bool {
         self == CreateMode::PersistentSequential || self == CreateMode::EphemeralSequential
+    }
+
+    fn is_ephemeral(self) -> bool {
+        self == Self::Ephemeral || self == Self::EphemeralSequential
     }
 
     fn is_container(self) -> bool {
@@ -313,8 +320,20 @@ impl Client {
         }
     }
 
-    fn parse_sequence(client_path: &str, path: &str) -> Result<CreateSequence> {
-        if let Some(sequence_path) = client_path.strip_prefix(path) {
+    async fn retry_on_connection_loss<T, F>(operation: impl Fn() -> F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>, {
+        loop {
+            let future = operation();
+            return match future.await {
+                Err(Error::ConnectionLoss) => continue,
+                result => result,
+            };
+        }
+    }
+
+    fn parse_sequence(client_path: &str, prefix: &str) -> Result<CreateSequence> {
+        if let Some(sequence_path) = client_path.strip_prefix(prefix) {
             match sequence_path.parse::<i32>() {
                 Err(_) => Err(Error::UnexpectedError(format!("sequential node get no i32 path {}", client_path))),
                 Ok(i) => Ok(CreateSequence(i)),
@@ -322,7 +341,7 @@ impl Client {
         } else {
             Err(Error::UnexpectedError(format!(
                 "sequential path {} does not contain prefix path {}",
-                client_path, path
+                client_path, prefix
             )))
         }
     }
@@ -396,6 +415,53 @@ impl Client {
             receiver.await?;
             Ok(())
         })
+    }
+
+    // TODO: move these to session side so to eliminate owned Client and String.
+    fn delete_background(self, path: String) {
+        tokio::spawn(async move {
+            self.delete_foreground(&path).await;
+        });
+    }
+
+    async fn delete_foreground(&self, path: &str) {
+        Client::retry_on_connection_loss(|| self.delete(path, None)).await.ignore();
+    }
+
+    fn delete_ephemeral_background(self, prefix: String, unique: bool) {
+        tokio::spawn(async move {
+            let (parent, tree, name) = util::split_path(&prefix);
+            let mut children = Self::retry_on_connection_loss(|| self.list_children(parent)).await?;
+            if unique {
+                if let Some(i) = children.iter().position(|s| s.starts_with(name)) {
+                    self.delete_foreground(&children[i]).await;
+                };
+                return Ok::<(), Error>(());
+            }
+            children.retain(|s| s.starts_with(name));
+            for child in children.iter_mut() {
+                child.insert_str(0, tree);
+            }
+            let results = Self::retry_on_connection_loss(|| {
+                let mut reader = self.new_multi_reader();
+                for child in children.iter() {
+                    reader.add_get_data(child).unwrap();
+                }
+                reader.commit()
+            })
+            .await?;
+            for (i, result) in results.into_iter().enumerate() {
+                let MultiReadResult::Data { stat, .. } = result else {
+                    // It could be Error::NoNode.
+                    continue;
+                };
+                if stat.ephemeral_owner == self.session_id().0 {
+                    self.delete_foreground(&children[i]).await;
+                    break;
+                }
+            }
+            Ok(())
+        });
     }
 
     fn get_data_internally(
@@ -843,6 +909,570 @@ impl Client {
         writer.add_check_version(path, version.unwrap_or(-1))?;
         Ok(CheckWriter { writer })
     }
+
+    async fn create_ancestor_backword(&self, path: &str, options: &CreateOptions<'_>) -> Result<()> {
+        let mut j = path.len();
+        loop {
+            match Self::retry_on_connection_loss(|| self.create(&path[..j], Default::default(), options)).await {
+                Ok(_) | Err(Error::NodeExists) => {
+                    if j >= path.len() {
+                        return Ok(());
+                    } else if let Some(i) = path[j + 1..].find('/') {
+                        j = j + 1 + i;
+                    } else {
+                        j = path.len();
+                    }
+                },
+                Err(Error::NoNode) => {
+                    if j <= 1 {
+                        return Err(Error::NoNode);
+                    } else {
+                        let i = path[..j].rfind('/').unwrap();
+                        j = if i == 0 { 1 } else { i };
+                    }
+                },
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn create_lock(
+        &self,
+        prefix: LockPrefix<'_>,
+        data: &[u8],
+        options: LockOptions<'_>,
+    ) -> Result<(String, usize)> {
+        let kind = prefix.kind();
+        let prefix = prefix.into();
+        self.validate_sequential_path(&prefix)?;
+        let (parent, _, _) = util::split_path(&prefix);
+        let guard = LockingGuard { zk: self, prefix: &prefix, unique: kind.is_unique() };
+        loop {
+            let mut result = self.create(&prefix, data, &CreateMode::EphemeralSequential.with_acls(options.acls)).await;
+            if result == Err(Error::NoNode) {
+                if let Some(options) = &options.parent {
+                    match self.create_ancestor_backword(parent, options).await {
+                        Ok(_) => continue,
+                        Err(Error::NoNode) => result = Err(Error::NoNode),
+                        Err(err) => return Err(err),
+                    }
+                }
+            }
+            let sequence = match result {
+                Err(Error::ConnectionLoss) => {
+                    if let Some(sequence) = self.find_lock(&prefix, kind).await? {
+                        sequence
+                    } else {
+                        continue;
+                    }
+                },
+                Err(err) => {
+                    if err.has_no_data_change() {
+                        std::mem::forget(guard);
+                        return Err(err);
+                    } else {
+                        return Err(err);
+                    }
+                },
+                Ok((_stat, sequence)) => sequence,
+            };
+            std::mem::forget(guard);
+            let prefix_len = prefix.len();
+            let mut path = prefix;
+            write!(&mut path, "{}", sequence).unwrap();
+            let sequence_len = path.len() - prefix_len;
+            return Ok((path, sequence_len));
+        }
+    }
+
+    async fn find_lock(&self, prefix: &str, kind: LockPrefixKind<'_>) -> Result<Option<CreateSequence>> {
+        let (parent, tree, name) = util::split_path(prefix);
+        let mut children = Self::retry_on_connection_loss(|| self.list_children(parent)).await?;
+        if kind.is_unique() {
+            let Some(i) = children.iter().position(|s| s.starts_with(name)) else {
+                return Ok(None);
+            };
+            let sequence = Self::parse_sequence(&children[i], name)?;
+            return Ok(Some(sequence));
+        }
+        children.retain(|s| s.starts_with(name));
+        if children.is_empty() {
+            return Ok(None);
+        }
+        for child in children.iter_mut() {
+            child.insert_str(0, tree);
+        }
+        let results = Self::retry_on_connection_loss(|| {
+            let mut reader = self.new_multi_reader();
+            for child in children.iter() {
+                reader.add_get_data(child).unwrap();
+            }
+            reader.commit()
+        })
+        .await?;
+        for (i, result) in results.into_iter().enumerate() {
+            let MultiReadResult::Data { stat, .. } = result else {
+                // It could be Error::NoNode.
+                continue;
+            };
+            if stat.ephemeral_owner == self.session_id().0 {
+                let sequence = Self::parse_sequence(&children[i], name)?;
+                return Ok(Some(sequence));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn wait_lock(&self, lock: &str, kind: LockPrefixKind<'_>, sequence_len: usize) -> Result<()> {
+        let (parent, tree, this) = util::split_path(lock);
+        loop {
+            let mut children = Self::retry_on_connection_loss(|| self.list_children(parent)).await?;
+            children.retain(|s| {
+                s.len() >= sequence_len && kind.filter(s) && s[s.len() - sequence_len..].parse::<i32>().is_ok()
+            });
+            children.sort_unstable_by(|a, b| a[a.len() - sequence_len..].cmp(&b[b.len() - sequence_len..]));
+            match children.binary_search_by(|a| a[a.len() - sequence_len..].cmp(&this[this.len() - sequence_len..])) {
+                Ok(0) => return Ok(()),
+                Ok(i) => {
+                    let mut child = children.swap_remove(i - 1);
+                    child.insert_str(0, tree);
+                    let watcher = match Self::retry_on_connection_loss(|| self.get_and_watch_data(&child)).await {
+                        Err(Error::NoNode) => continue,
+                        Err(err) => return Err(err),
+                        Ok((_data, _stat, watcher)) => watcher,
+                    };
+                    watcher.changed().await;
+                },
+                Err(_) => return Err(Error::RuntimeInconsistent),
+            }
+        }
+    }
+
+    /// Contends lock/leader/latch using given locking path pattern.
+    ///
+    /// # Notable errors
+    /// * [Error::RuntimeInconsistent] if lock path is deleted during contention.
+    /// * [Error::SessionExpired] if session expired before lock acquired.
+    /// * [Error::NoNode] if ancestor nodes do not exist and no options to create them.
+    /// * [Error::NoChildrenForEphemerals] if parent node is ephemeral.
+    /// * [Error::InvalidAcl] if acl is invalid or empty.
+    ///
+    /// # Cancellation safety
+    /// This method is cancellation safe, so you can free to cancel result future without fear to
+    /// dangle lock. For example, a timed lock is easy to construct with `select!` and `sleep`.
+    ///
+    /// # Asynchronous ordering
+    /// Comparing to other data operations, e.g. [Client::create], this operation is pure
+    /// asynchronous, so there is no data order guaranttee.
+    ///
+    /// # Error handling on [Error::ConnectionLoss]
+    /// * If connection loss during lock path creation, this method will find out the created lock
+    /// path if creation success by matching prefix for [LockPrefix::new_curator] or ephemeral
+    /// owner for others.
+    /// * Retry all other operations on connection loss.
+    ///
+    /// # Notable issues
+    /// * [ZOOKEEPER-22][]: Automatic request retries on connection failover.
+    ///
+    /// # Notable docs
+    /// * [ZooKeeper Recipes and Solutions](https://zookeeper.apache.org/doc/r3.8.2/recipes.html)
+    ///
+    /// [ZOOKEEPER-22]: https://issues.apache.org/jira/browse/ZOOKEEPER-22
+    pub async fn lock(
+        &self,
+        prefix: LockPrefix<'_>,
+        data: &[u8],
+        options: impl Into<LockOptions<'_>>,
+    ) -> Result<LockClient<'_>> {
+        let options = options.into();
+        if options.acls.is_empty() {
+            return Err(Error::InvalidAcl);
+        }
+        let prefix_kind = prefix.kind();
+        let (lock, sequence_len) = self.create_lock(prefix, data, options).await?;
+        let client = LockClient { client: self, lock: Cow::from(lock) };
+        match self.wait_lock(&client.lock, prefix_kind, sequence_len).await {
+            Err(err @ (Error::RuntimeInconsistent | Error::SessionExpired)) => {
+                std::mem::forget(client);
+                Err(err)
+            },
+            Err(err) => Err(err),
+            Ok(_) => Ok(client),
+        }
+    }
+}
+
+/// Options to cover [Acls] for lock path and [CreateOptions] for ancestor nodes if they don't
+/// exist.
+#[derive(Clone, Debug)]
+pub struct LockOptions<'a> {
+    acls: Acls<'a>,
+    parent: Option<CreateOptions<'a>>,
+}
+
+impl<'a> LockOptions<'a> {
+    pub fn new(acls: Acls<'a>) -> Self {
+        Self { acls, parent: None }
+    }
+
+    /// Creates ancestor nodes if not exist using given options.
+    ///
+    /// # Notable errors
+    /// * [Error::BadArguments] if [CreateMode] is ephemeral or sequential.
+    /// * [Error::InvalidAcl] if acl is invalid or empty.
+    pub fn with_ancestor_options(mut self, options: CreateOptions<'a>) -> Result<Self> {
+        options.validate()?;
+        if options.mode.is_ephemeral() {
+            return Err(Error::BadArguments(&"lock directory must not be ephemeral"));
+        } else if options.mode.is_sequential() {
+            return Err(Error::BadArguments(&"lock directory must not be sequential"));
+        }
+        self.parent = Some(options);
+        Ok(self)
+    }
+}
+
+impl<'a> From<Acls<'a>> for LockOptions<'a> {
+    fn from(acls: Acls<'a>) -> Self {
+        LockOptions::new(acls)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LockPrefixKind<'a> {
+    Curator { lock_name: &'a str },
+    Custom { lock_name: &'a str },
+    Shared { prefix: &'a str },
+}
+
+impl<'a> LockPrefixKind<'a> {
+    fn filter(&self, name: &str) -> bool {
+        match self {
+            Self::Curator { lock_name } => name.contains(lock_name),
+            Self::Custom { lock_name } => name.contains(lock_name),
+            Self::Shared { prefix } => name.starts_with(prefix),
+        }
+    }
+
+    fn is_unique(&self) -> bool {
+        matches!(self, Self::Curator { .. })
+    }
+}
+
+enum LockPrefixInner<'a> {
+    Curator { dir: &'a str, name: &'a str },
+    Custom { prefix: String, name: &'a str },
+    Shared { prefix: &'a str },
+}
+
+// It is intentional for this to not `Clone` as it is non sense for [LockPrefix::new_custom], and I
+// don't want to complicate this anymore, e.g. `LockPatternPrefix` and `LockCustomPrefix`. The side
+// effect is that it is not easy to share `LockPrefix`. But, let the caller/tester to bore about that.
+//
+/// Prefix pattern for lock path creation.
+///
+/// This struct carries path prefix for ephemeral lock path, name filter for candidate contenders
+/// and hint to find created lock path in case of [Error::ConnectionLoss].
+pub struct LockPrefix<'a> {
+    inner: LockPrefixInner<'a>,
+}
+
+impl<'a> LockPrefix<'a> {
+    /// Apache Curator compatible unique prefix pattern, the final lock path will be
+    /// `{dir}/_c_{uuid}-{name}{ephemeral_sequence}`.
+    ///
+    /// # Notable lock names
+    /// * `latch-` for `LeaderLatch`.
+    /// * `lock-` for `LeaderSelector` and `InterProcessMutex`.
+    pub fn new_curator(dir: &'a str, name: &'a str) -> Result<Self> {
+        crate::util::validate_path(Chroot::default(), dir, false)?;
+        if name.find('/').is_some() {
+            return Err(Error::BadArguments(&"lock name must not contain /"));
+        }
+        Ok(Self { inner: LockPrefixInner::Curator { dir, name } })
+    }
+
+    /// Shared path prefix, the final lock path will be `{prefix}{ephemeral_sequence}`.
+    ///
+    /// # CAUTION
+    /// All contenders share same prefix, so concurrent contenders must not share same session
+    /// client. Otherwise, the lock could be ruined in case of [Error::ConnectionLoss] as there is
+    /// no way to differentiate contenders using same session.
+    ///
+    /// # Notable usages
+    /// * Uses "{dir}/n-" as `prefix` for ZooKeeper java client's [LeaderElectionSupport].
+    ///
+    /// [LeaderElectionSupport]: https://github.com/apache/zookeeper/blob/release-3.9.0/zookeeper-recipes/zookeeper-recipes-election/src/main/java/org/apache/zookeeper/recipes/leader/LeaderElectionSupport.java#L165
+    pub fn new_shared(prefix: &'a str) -> Result<Self> {
+        crate::util::validate_path(Chroot::default(), prefix, true)?;
+        Ok(Self { inner: LockPrefixInner::Shared { prefix } })
+    }
+
+    /// Custom path prefix, the final lock path will be `{prefix}{ephemeral_sequence}`.
+    ///
+    /// # CAUTION
+    /// Don't reuse same prefix among clients with same session. See [LockPrefix::new_shared] for
+    /// details.
+    ///
+    /// # API
+    /// It is intentional for `prefix` parameter to be `String` but not `impl Into<String>` nor
+    /// `impl Into<Cow<'a, str>>`, so to attract attention for best wish.
+    ///
+    /// # Notable usages
+    /// * Uses "{dir}/x-{session_id}-" as `prefix` and "x-" or "" as `name` for ZooKeeper java
+    /// client's [WriteLock].
+    ///
+    /// [WriteLock]: https://github.com/apache/zookeeper/blob/release-3.9.0/zookeeper-recipes/zookeeper-recipes-lock/src/main/java/org/apache/zookeeper/recipes/lock/WriteLock.java#L212
+    pub fn new_custom(prefix: String, name: &'a str) -> Result<Self> {
+        crate::util::validate_path(Chroot::default(), &prefix, true)?;
+        if !name.is_empty() {
+            let (_dir, _tree, this) = util::split_path(&prefix);
+            if !this.contains(name) {
+                return Err(Error::BadArguments(&"lock path prefix must contain lock name"));
+            }
+        }
+        Ok(Self { inner: LockPrefixInner::Custom { prefix, name } })
+    }
+
+    fn kind(&self) -> LockPrefixKind<'a> {
+        match &self.inner {
+            LockPrefixInner::Curator { name, .. } => LockPrefixKind::Curator { lock_name: name },
+            LockPrefixInner::Shared { prefix } => {
+                let (_parent, _tree, name) = util::split_path(prefix);
+                LockPrefixKind::Shared { prefix: name }
+            },
+            LockPrefixInner::Custom { name, .. } => LockPrefixKind::Custom { lock_name: name },
+        }
+    }
+
+    fn into(self) -> String {
+        match self.inner {
+            LockPrefixInner::Curator { dir, name } => format!("{}/_c_{}-{}", dir, uuid::Uuid::new_v4(), name),
+            LockPrefixInner::Shared { prefix } => prefix.to_string(),
+            LockPrefixInner::Custom { prefix, .. } => prefix,
+        }
+    }
+}
+
+struct LockingGuard<'a> {
+    zk: &'a Client,
+    prefix: &'a str,
+    unique: bool,
+}
+
+impl Drop for LockingGuard<'_> {
+    fn drop(&mut self) {
+        self.zk.clone().delete_ephemeral_background(self.prefix.to_string(), self.unique);
+    }
+}
+
+/// Guard client writes by owned ZooKeeper lock path which will be deleted in background when dropped.
+#[derive(Debug)]
+pub struct LockClient<'a> {
+    client: &'a Client,
+    lock: Cow<'a, str>,
+}
+
+impl<'a> LockClient<'a> {
+    async fn wait<T, F>(result: Result<F>) -> Result<T>
+    where
+        F: Future<Output = Result<T>>, {
+        match result {
+            Err(err) => Err(err),
+            Ok(future) => future.await,
+        }
+    }
+
+    async fn resolve_one_write(
+        future: impl Future<Output = std::result::Result<Vec<MultiWriteResult>, CheckWriteError>>,
+    ) -> Result<MultiWriteResult> {
+        let mut results = future.await?;
+        Ok(results.remove(0))
+    }
+
+    /// Underlying client.
+    pub fn client(&self) -> &'a Client {
+        self.client
+    }
+
+    /// Lock path.
+    ///
+    /// Caller can watch this path to detect external lock path deletion. See also
+    /// [ZOOKEEPER-91](https://issues.apache.org/jira/browse/ZOOKEEPER-91).
+    pub fn lock_path(&self) -> &str {
+        &self.lock
+    }
+
+    /// Similar to [Client::create] except [Error::RuntimeInconsistent] if lock lost.
+    ///
+    /// # BUG
+    /// [Stat] will be [Stat::is_invalid] due to bugs in ZooKeeper version before 3.7.2, 3.8.2 and
+    /// 3.9.0. See [ZOOKEEPER-4026][] for reference.
+    ///
+    /// [ZOOKEEPER-4026]: https://issues.apache.org/jira/browse/ZOOKEEPER-4026
+    pub fn create(
+        &self,
+        path: &str,
+        data: &[u8],
+        options: &CreateOptions<'_>,
+    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'a {
+        Client::wait(self.create_internally(path, data, options))
+    }
+
+    fn create_internally(
+        &self,
+        path: &str,
+        data: &[u8],
+        options: &CreateOptions<'_>,
+    ) -> Result<impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'a> {
+        let mut writer = self.client.new_check_writer(&self.lock, None)?;
+        writer.add_create(path, data, options)?;
+        let write = writer.commit();
+        // XXX: Ideally, we should enforce strict ephemeral node check here, but that will
+        // capture lifetime of `path` which fail to compile.
+        //
+        // See https://users.rust-lang.org/t/solved-future-lifetime-bounds/43664.
+        let path_len = path.len();
+        Ok(async move {
+            let result = Self::resolve_one_write(write).await?;
+            let (created_path, stat) = result.into_create()?;
+            let sequence = if created_path.len() <= path_len {
+                CreateSequence(-1)
+            } else {
+                Client::parse_sequence(&created_path, &created_path[..path_len])?
+            };
+            Ok((stat, sequence))
+        })
+    }
+
+    /// Similar to [Client::set_data] except [Error::RuntimeInconsistent] if lock lost.
+    pub fn set_data(
+        &self,
+        path: &str,
+        data: &[u8],
+        expected_version: Option<i32>,
+    ) -> impl Future<Output = Result<Stat>> + Send + 'a {
+        Self::wait(self.set_data_internally(path, data, expected_version))
+    }
+
+    fn set_data_internally(
+        &self,
+        path: &str,
+        data: &[u8],
+        expected_version: Option<i32>,
+    ) -> Result<impl Future<Output = Result<Stat>> + Send + 'a> {
+        let mut writer = self.new_check_writer();
+        writer.add_set_data(path, data, expected_version)?;
+        let write = writer.commit();
+        Ok(async move {
+            let result = Self::resolve_one_write(write).await?;
+            let stat = result.into_set_data()?;
+            Ok(stat)
+        })
+    }
+
+    /// Similar to [Client::delete] except [Error::RuntimeInconsistent] if lock lost.
+    pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send + 'a {
+        Self::wait(self.delete_internally(path, expected_version))
+    }
+
+    fn delete_internally(
+        &self,
+        path: &str,
+        expected_version: Option<i32>,
+    ) -> Result<impl Future<Output = Result<()>> + Send + 'a> {
+        let mut writer = self.new_check_writer();
+        writer.add_delete(path, expected_version)?;
+        let write = writer.commit();
+        Ok(async move {
+            let result = Self::resolve_one_write(write).await?;
+            result.into_delete()
+        })
+    }
+
+    /// Similar to [Client::new_check_writer] with this lock path.
+    pub fn new_check_writer(&self) -> CheckWriter<'a> {
+        unsafe { self.client.new_check_writer(&self.lock, None).unwrap_unchecked() }
+    }
+
+    /// Converts to [OwnedLockClient].
+    pub fn into_owned(self) -> OwnedLockClient {
+        let client = self.client.clone();
+        let mut drop = ManuallyDrop::new(self);
+        let lock = std::mem::take(drop.lock.to_mut());
+        OwnedLockClient { client: ManuallyDrop::new(client), lock }
+    }
+}
+
+/// Deletes lock path in background.
+impl Drop for LockClient<'_> {
+    fn drop(&mut self) {
+        let path = std::mem::take(self.lock.to_mut());
+        let client = self.client.clone();
+        client.delete_background(path);
+    }
+}
+
+/// Owned version of [LockClient].
+#[derive(Clone, Debug)]
+pub struct OwnedLockClient {
+    client: ManuallyDrop<Client>,
+    lock: String,
+}
+
+impl OwnedLockClient {
+    fn lock_client(&self) -> std::mem::ManuallyDrop<LockClient<'_>> {
+        std::mem::ManuallyDrop::new(LockClient { client: &self.client, lock: Cow::from(&self.lock) })
+    }
+
+    /// Underlying client.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Same as [LockClient::lock_path].
+    pub fn lock_path(&self) -> &str {
+        &self.lock
+    }
+
+    /// Same as [LockClient::create].
+    pub fn create<'a: 'f, 'b: 'f, 'f>(
+        &'a self,
+        path: &'b str,
+        data: &[u8],
+        options: &CreateOptions<'_>,
+    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'f {
+        self.lock_client().create(path, data, options)
+    }
+
+    /// Same as [LockClient::set_data].
+    pub fn set_data(
+        &self,
+        path: &str,
+        data: &[u8],
+        expected_version: Option<i32>,
+    ) -> impl Future<Output = Result<Stat>> + Send + '_ {
+        self.lock_client().set_data(path, data, expected_version)
+    }
+
+    /// Same as [LockClient::delete].
+    pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send + '_ {
+        self.lock_client().delete(path, expected_version)
+    }
+
+    /// Same as [LockClient::new_check_writer].
+    pub fn new_check_writer(&self) -> CheckWriter<'_> {
+        unsafe { self.client.new_check_writer(&self.lock, None).unwrap_unchecked() }
+    }
+}
+
+/// Deletes lock path in background.
+impl Drop for OwnedLockClient {
+    fn drop(&mut self) {
+        let client = unsafe { ManuallyDrop::take(&mut self.client) };
+        let path = std::mem::take(&mut self.lock);
+        client.delete_background(path);
+    }
 }
 
 /// Builder for [Client] with more options than [Client::connect].
@@ -1118,6 +1748,27 @@ impl MultiWriteResult {
             _ => Err(Error::UnexpectedError(format!("expect MultiWriteResult::Check, got {}", self.kind()))),
         }
     }
+
+    fn into_create(self) -> Result<(String, Stat)> {
+        match self {
+            MultiWriteResult::Create { path, stat } => Ok((path, stat)),
+            _ => Err(Error::UnexpectedError(format!("expect MultiWriteResult::Create, got {}", self.kind()))),
+        }
+    }
+
+    fn into_set_data(self) -> Result<Stat> {
+        match self {
+            MultiWriteResult::SetData { stat } => Ok(stat),
+            _ => Err(Error::UnexpectedError(format!("expect MultiWriteResult::SetData, got {}", self.kind()))),
+        }
+    }
+
+    fn into_delete(self) -> Result<()> {
+        match self {
+            MultiWriteResult::Delete => Ok(()),
+            _ => Err(Error::UnexpectedError(format!("expect MultiWriteResult::Delete, got {}", self.kind()))),
+        }
+    }
 }
 
 /// Error for [MultiWriter::commit].
@@ -1166,6 +1817,17 @@ impl From<MultiWriteError> for CheckWriteError {
             MultiWriteError::OperationFailed { index, source } => {
                 CheckWriteError::OperationFailed { index: index - 1, source }
             },
+        }
+    }
+}
+
+impl From<CheckWriteError> for Error {
+    fn from(err: CheckWriteError) -> Self {
+        match err {
+            CheckWriteError::RequestFailed { source } => source,
+            CheckWriteError::CheckFailed { source: Error::NoNode | Error::BadVersion } => Error::RuntimeInconsistent,
+            CheckWriteError::CheckFailed { source } => source,
+            CheckWriteError::OperationFailed { source, .. } => source,
         }
     }
 }
@@ -1356,5 +2018,26 @@ impl<'a> MultiWriter<'a> {
     /// Clears collected operations.
     pub fn abort(&mut self) {
         self.buf.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertor::*;
+
+    use super::*;
+
+    #[test]
+    fn test_lock_options_with_ancestor_options() {
+        let options = LockOptions::new(Acls::anyone_all());
+        assert_that!(options
+            .clone()
+            .with_ancestor_options(CreateMode::Ephemeral.with_acls(Acls::anyone_all()))
+            .unwrap_err())
+        .is_equal_to(Error::BadArguments(&"lock directory must not be ephemeral"));
+        assert_that!(options
+            .with_ancestor_options(CreateMode::PersistentSequential.with_acls(Acls::anyone_all()))
+            .unwrap_err())
+        .is_equal_to(Error::BadArguments(&"lock directory must not be sequential"));
     }
 }
