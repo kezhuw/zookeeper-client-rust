@@ -1275,15 +1275,6 @@ pub struct LockClient<'a> {
 }
 
 impl<'a> LockClient<'a> {
-    async fn wait<T, F>(result: Result<F>) -> Result<T>
-    where
-        F: Future<Output = Result<T>>, {
-        match result {
-            Err(err) => Err(err),
-            Ok(future) => future.await,
-        }
-    }
-
     async fn resolve_one_write(
         future: impl Future<Output = std::result::Result<Vec<MultiWriteResult>, CheckWriteError>>,
     ) -> Result<MultiWriteResult> {
@@ -1353,7 +1344,7 @@ impl<'a> LockClient<'a> {
         data: &[u8],
         expected_version: Option<i32>,
     ) -> impl Future<Output = Result<Stat>> + Send + 'a {
-        Self::wait(self.set_data_internally(path, data, expected_version))
+        Client::wait(self.set_data_internally(path, data, expected_version))
     }
 
     fn set_data_internally(
@@ -1374,7 +1365,7 @@ impl<'a> LockClient<'a> {
 
     /// Similar to [Client::delete] except [Error::RuntimeInconsistent] if lock lost.
     pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send + 'a {
-        Self::wait(self.delete_internally(path, expected_version))
+        Client::wait(self.delete_internally(path, expected_version))
     }
 
     fn delete_internally(
