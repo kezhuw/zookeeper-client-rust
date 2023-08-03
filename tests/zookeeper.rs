@@ -1147,6 +1147,9 @@ async fn test_session_event() {
     assert_eq!(event, oneshot_watcher2.changed().await);
     assert_eq!(event, oneshot_watcher3.changed().await);
     assert_eq!(event, oneshot_watcher4.changed().await);
+
+    // All operations will get session expired after observing it.
+    assert_eq!(client.get_data("/a/no-exist-path").await.unwrap_err(), zk::Error::SessionExpired);
 }
 
 #[tokio::test]
