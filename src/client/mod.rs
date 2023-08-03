@@ -1176,8 +1176,8 @@ impl<'a> MultiWriter<'a> {
             match result {
                 MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
                 MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
-                MultiWriteResponse::Create { path, stat } => {
-                    util::strip_root_path(path, &self.client.root)?;
+                MultiWriteResponse::Create { mut path, stat } => {
+                    path = util::strip_root_path(path, &self.client.root)?;
                     results.push(MultiWriteResult::Create { path: path.to_string(), stat });
                 },
                 MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),

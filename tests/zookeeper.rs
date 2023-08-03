@@ -1,6 +1,7 @@
 use std::future;
 use std::time::Duration;
 
+use test_case::test_case;
 use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
@@ -107,14 +108,39 @@ async fn test_example() {
     tokio::spawn(async move { example().await }).await.unwrap()
 }
 
+async fn connect(cluster: &str, chroot: &str) -> zk::Client {
+    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    if chroot.len() <= 1 {
+        return client;
+    }
+    let create_options = zk::CreateOptions::new(zk::CreateMode::Persistent, zk::Acl::anyone_all());
+    let mut i = 1;
+    while i <= chroot.len() {
+        let j = match chroot[i..].find('/') {
+            Some(j) => j + i,
+            None => chroot.len(),
+        };
+        let path = &chroot[..j];
+        match client.create(path, Default::default(), &create_options).await {
+            Ok(_) | Err(zk::Error::NodeExists) => {},
+            Err(err) => panic!("{err}"),
+        }
+        i = j + 1;
+    }
+    client.chroot(chroot).unwrap()
+}
+
+#[test_case("/"; "no_chroot")]
+#[test_case("/x"; "chroot_x")]
+#[test_case("/x/y"; "chroot_x_y")]
 #[tokio::test]
-async fn test_multi() {
+async fn test_multi(chroot: &str) {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
     let zk_port = zookeeper.get_host_port(2181);
 
     let cluster = format!("127.0.0.1:{}", zk_port);
-    let client = zk::Client::connect(&cluster, Duration::from_secs(20)).await.unwrap();
+    let client = connect(&cluster, chroot).await;
 
     let mut writer = client.new_multi_writer();
     assert_that!(writer.commit().await.unwrap()).is_empty();
