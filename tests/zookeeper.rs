@@ -700,6 +700,40 @@ async fn test_auth() {
 }
 
 #[tokio::test]
+async fn test_no_auth() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let scheme = "digest";
+    let auth = b"bob:xyz";
+
+    client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
+    client
+        .create("/acl_test", b"my_data", &zk::CreateMode::Persistent.with_acls(zk::Acls::creator_all()))
+        .await
+        .unwrap();
+    assert_eq!(client.get_data("/acl_test").await.unwrap().0, b"my_data".to_vec());
+
+    let no_auth_client = zk::Client::connect(&cluster).await.unwrap();
+    assert_eq!(no_auth_client.get_data("/acl_test").await.unwrap_err(), zk::Error::NoAuth);
+    assert_eq!(no_auth_client.set_data("/acl_test", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
+
+    client
+        .create("/acl_test_2", b"my_data", &zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_read()))
+        .await
+        .unwrap();
+    assert_eq!(client.get_data("/acl_test_2").await.unwrap().0, b"my_data".to_vec());
+    assert_eq!(client.set_data("/acl_test_2", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
+
+    assert_eq!(no_auth_client.get_data("/acl_test_2").await.unwrap().0, b"my_data".to_vec());
+    assert_eq!(no_auth_client.set_data("/acl_test_2", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
+}
+
+#[tokio::test]
 async fn test_delete() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());

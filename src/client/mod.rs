@@ -550,6 +550,7 @@ impl Client {
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
     /// * [Error::BadVersion] if such node exists but has different version.
+    /// * [Error::NoAuth] if the client has insufficient authorization to such node.
     pub fn set_data(
         &self,
         path: &str,
