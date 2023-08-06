@@ -541,8 +541,13 @@ impl Session {
         self.last_send = Instant::now();
         self.last_recv = self.last_send;
         self.last_ping = None;
-        self.serve_connecting(&sock, buf, depot).await?;
-        Ok(sock)
+        match self.serve_connecting(&sock, buf, depot).await {
+            Err(err) => {
+                log::warn!("ZooKeeper fails to establish session to {} due to {}", sock.peer_addr().unwrap(), err);
+                Err(err)
+            },
+            _ => Ok(sock),
+        }
     }
 
     pub async fn start(
