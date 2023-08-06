@@ -111,7 +111,7 @@ async fn example() {
     assert_eq!(session_event.session_state, zk::SessionState::Closed);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_example() {
     tokio::spawn(async move { example().await }).await.unwrap()
 }
@@ -140,7 +140,7 @@ async fn connect(cluster: &str, chroot: &str) -> zk::Client {
 #[test_case("/"; "no_chroot")]
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_multi(chroot: &str) {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -245,7 +245,7 @@ async fn test_multi(chroot: &str) {
     assert_that!(results).is_empty();
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_multi_async_order() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -274,7 +274,7 @@ async fn test_multi_async_order() {
     assert_that!(stat).is_equal_to(set_stat);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_check_writer() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -310,7 +310,7 @@ async fn test_check_writer() {
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_lock_shared(chroot: &str) {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -328,7 +328,7 @@ async fn test_lock_shared(chroot: &str) {
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_lock_custom(chroot: &str) {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -342,7 +342,7 @@ async fn test_lock_custom(chroot: &str) {
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_lock_curator(chroot: &str) {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -354,7 +354,7 @@ async fn test_lock_curator(chroot: &str) {
     test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_lock_no_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -366,7 +366,7 @@ async fn test_lock_no_node() {
     assert_eq!(client.lock(prefix, b"", zk::Acls::anyone_all()).await.unwrap_err(), zk::Error::NoNode);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_lock_curator_filter() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -430,7 +430,7 @@ async fn test_lock_with_path(
     assert_that!(client1.check_stat(&lock2_path).await.unwrap()).is_equal_to(None);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_no_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -453,7 +453,7 @@ async fn test_no_node() {
     );
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_request_order() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -485,7 +485,7 @@ async fn test_request_order() {
     assert_that!(get_child_data.await).is_equal_to(Err(zk::Error::NoNode));
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_data_node() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -508,7 +508,7 @@ async fn test_data_node() {
     assert_eq!(client.check_stat(path).await.unwrap(), None);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_create_sequential() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -536,7 +536,7 @@ async fn test_create_sequential() {
     assert_eq!((data, stat2), client.get_data(&path2).await.unwrap());
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_create_ttl() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image_with_properties(vec![
@@ -557,7 +557,7 @@ async fn test_create_ttl() {
     assert_that!(client.delete("/ttl", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_create_container() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image_with_properties(vec![
@@ -577,7 +577,7 @@ async fn test_create_container() {
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_descendants_number() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -629,7 +629,7 @@ where
     }
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_ephemerals() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -695,7 +695,7 @@ async fn test_ephemerals() {
     assert_eq!(vec!["/"], child_root_client.list_ephemerals("/").await.unwrap().into_sorted());
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_chroot() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -744,7 +744,7 @@ async fn test_chroot() {
     assert_eq!(relative_grandchild_event.path, relative_grandchild_path);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_auth() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -770,7 +770,7 @@ async fn test_auth() {
     assert!(authed_users.contains(&authed_user));
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_no_auth() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -804,7 +804,7 @@ async fn test_no_auth() {
     assert_eq!(no_auth_client.set_data("/acl_test_2", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_delete() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -826,7 +826,7 @@ async fn test_delete() {
     client.delete(path, Some(stat.version)).await.unwrap();
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_oneshot_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1002,7 +1002,7 @@ async fn test_oneshot_watcher() {
     eprintln!("node deletion done");
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_config_watch() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1023,7 +1023,7 @@ async fn test_config_watch() {
     assert_eq!(event.path, "/zookeeper/config");
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_persistent_watcher_passive_remove() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1062,7 +1062,7 @@ async fn test_persistent_watcher_passive_remove() {
     assert_eq!(child_event.path, "/");
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_persistent_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1187,7 +1187,7 @@ async fn test_persistent_watcher() {
     assert_eq!(event, path_persistent_watcher.changed().await);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_session_event() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1223,7 +1223,7 @@ async fn test_session_event() {
     assert_eq!(client.get_data("/a/no-exist-path").await.unwrap_err(), zk::Error::SessionExpired);
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_state_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1248,7 +1248,7 @@ async fn test_state_watcher() {
     }
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_client_drop() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1264,7 +1264,7 @@ async fn test_client_drop() {
     zk::Client::builder().with_session(id, password).connect(&cluster).await.unwrap_err();
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_client_detach() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
@@ -1310,7 +1310,7 @@ admin.enableServer=true";
 /// * https://docs.docker.com/network/drivers/bridge/
 /// * https://docs.docker.com/network/links/
 #[cfg(target_os = "linux")]
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_update_ensemble() {
     let dir = tempdir().unwrap();
     let docker = DockerCli::default();
