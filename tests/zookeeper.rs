@@ -23,18 +23,22 @@ fn random_data() -> Vec<u8> {
     rng.sample_iter(Standard).take(32).collect()
 }
 
-fn zookeeper_image() -> GenericImage {
+fn zookeeper_image_with_properties<'a>(mut properties: Vec<&'a str>) -> GenericImage {
+    properties.insert(0, "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU=");
+    properties.insert(0, "-Dzookeeper.enableEagerACLCheck=true");
+    let jvm_properties = properties.join(" ");
     let healthcheck = Healthcheck::default()
         .with_cmd(["./bin/zkServer.sh", "status"].iter())
         .with_interval(Duration::from_secs(2))
         .with_retries(60);
     GenericImage::new("zookeeper", "3.8.2")
-        .with_env_var(
-            "SERVER_JVMFLAGS",
-            "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU= -Dzookeeper.enableEagerACLCheck=true",
-        )
+        .with_env_var("SERVER_JVMFLAGS", jvm_properties)
         .with_healthcheck(healthcheck)
         .with_wait_for(WaitFor::Healthcheck)
+}
+
+fn zookeeper_image() -> GenericImage {
+    zookeeper_image_with_properties(Vec::default())
 }
 
 async fn example() {
@@ -515,9 +519,14 @@ async fn test_create_sequential() {
 
     let prefix = "/PREFIX-";
     let data = random_data();
-    let create_options = zk::CreateMode::PersistentSequential.with_acls(zk::Acls::anyone_all());
-    let (stat1, sequence1) = client.create(prefix, &data, &create_options).await.unwrap();
-    let (stat2, sequence2) = client.create(prefix, &data, &create_options).await.unwrap();
+    let (stat1, sequence1) = client
+        .create(prefix, &data, &zk::CreateMode::PersistentSequential.with_acls(zk::Acls::anyone_all()))
+        .await
+        .unwrap();
+    let (stat2, sequence2) = client
+        .create(prefix, &data, &zk::CreateMode::EphemeralSequential.with_acls(zk::Acls::anyone_all()))
+        .await
+        .unwrap();
 
     assert!(sequence2.0 > sequence1.0);
 
@@ -525,6 +534,47 @@ async fn test_create_sequential() {
     let path2 = format!("{}{}", prefix, sequence2);
     assert_eq!((data.clone(), stat1), client.get_data(&path1).await.unwrap());
     assert_eq!((data, stat2), client.get_data(&path2).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_create_ttl() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image_with_properties(vec![
+        "-Dzookeeper.extendedTypesEnabled=true",
+        "-Dznode.container.checkIntervalMs=1000",
+    ]));
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let ttl_options = PERSISTENT_OPEN.clone().with_ttl(Duration::from_millis(500));
+    client.create("/ttl", &vec![], &ttl_options).await.unwrap();
+    client.create("/ttl/child", &vec![], PERSISTENT_OPEN).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    client.delete("/ttl/child", None).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_that!(client.delete("/ttl", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
+}
+
+#[tokio::test]
+async fn test_create_container() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image_with_properties(vec![
+        "-Dzookeeper.extendedTypesEnabled=true",
+        "-Dznode.container.checkIntervalMs=1000",
+    ]));
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    client.create("/container", &vec![], &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all())).await.unwrap();
+    client.create("/container/child", &vec![], PERSISTENT_OPEN).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    client.delete("/container/child", None).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
 #[tokio::test]

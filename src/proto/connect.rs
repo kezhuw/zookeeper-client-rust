@@ -62,8 +62,6 @@ impl<'a> DeserializableRecord<'a> for ConnectResponse<'a> {
             return Err(DeserializeError::UnmarshalError(format!(
                 "invalid negotiated session timeout {session_timeout}"
             )));
-        } else if session_id < 0 {
-            return Err(DeserializeError::UnmarshalError(format!("invalid session id {session_id}")));
         }
         let len = unsafe { buf.get_unchecked_i32() };
         if len <= 0 || len != (buf.len() - 1) as i32 {
