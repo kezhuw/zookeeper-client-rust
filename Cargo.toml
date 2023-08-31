@@ -32,7 +32,7 @@ uuid = { version = "1.4.1", features = ["v4"] }
 
 [dev-dependencies]
 test-log = "0.2.12"
-env_logger = "*"
+env_logger = "0.10.0"
 rand = "0.8.4"
 pretty_assertions = "1.1.0"
 test-case = "3"
