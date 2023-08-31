@@ -518,6 +518,8 @@ async fn test_create_root() {
     let client = zk::Client::connect(&cluster).await.unwrap().chroot("/a").unwrap();
     assert_that!(client.create("/", &vec![], PERSISTENT_OPEN).await.unwrap_err())
         .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
+    assert_that!(client.mkdir("/", PERSISTENT_OPEN).await.unwrap_err())
+        .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
 }
 
 #[test_log::test(tokio::test)]
@@ -587,6 +589,26 @@ async fn test_create_container() {
     client.delete("/container/child", None).await.unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_mkdir() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    client.mkdir("/a/b/c/d", PERSISTENT_OPEN).await.unwrap();
+    let _stat = client.check_stat("/a/b/c/d").await.unwrap().unwrap();
+
+    client.mkdir("/a/./b/c", PERSISTENT_OPEN).await.unwrap_err();
+    client.mkdir("/a/b/c", &zk::CreateMode::Ephemeral.with_acls(zk::Acls::anyone_all())).await.unwrap_err();
+    client.mkdir("/a/b/c", &zk::CreateMode::PersistentSequential.with_acls(zk::Acls::anyone_all())).await.unwrap_err();
+
+    let _client = client.clone().chroot("/x").unwrap();
+    assert_that!(_client.mkdir("/a/b/c", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
 #[test_log::test(tokio::test)]

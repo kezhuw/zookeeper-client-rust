@@ -159,6 +159,16 @@ impl<'a> CreateOptions<'a> {
         }
         Ok(())
     }
+
+    fn validate_as_directory(&self) -> Result<()> {
+        self.validate()?;
+        if self.mode.is_ephemeral() {
+            return Err(Error::BadArguments(&"directory node must not be ephemeral"));
+        } else if self.mode.is_sequential() {
+            return Err(Error::BadArguments(&"directory node must not be sequential"));
+        }
+        Ok(())
+    }
 }
 
 /// Thin wrapper to encapsulate sequential node's sequence number.
@@ -360,6 +370,48 @@ impl Client {
                 "sequential path {} does not contain prefix path {}",
                 client_path, prefix
             )))
+        }
+    }
+
+    /// Makes directories up to path. Treats it as `mkdir -p`.
+    ///
+    /// # Notable behaviors
+    /// * No atomic, so it could fail with only partial directories created.
+    /// * Pure asynchronous, so there is no order guarantee.
+    /// * No [Error::NodeExists].
+    ///
+    /// # Notable errors
+    /// * [Error::NoNode] if chroot does not exist.
+    /// * [Error::BadArguments] if [CreateMode] is ephemeral or sequential.
+    /// * [Error::InvalidAcl] if acl is invalid or empty.
+    pub async fn mkdir(&self, path: &str, options: &CreateOptions<'_>) -> Result<()> {
+        options.validate_as_directory()?;
+        self.mkdir_internally(path, options).await
+    }
+
+    async fn mkdir_internally(&self, path: &str, options: &CreateOptions<'_>) -> Result<()> {
+        let mut j = path.len();
+        loop {
+            match self.create(&path[..j], Default::default(), options).await {
+                Ok(_) | Err(Error::NodeExists) => {
+                    if j >= path.len() {
+                        return Ok(());
+                    } else if let Some(i) = path[j + 1..].find('/') {
+                        j = j + 1 + i;
+                    } else {
+                        j = path.len();
+                    }
+                },
+                Err(Error::NoNode) => {
+                    let i = path[..j].rfind('/').unwrap();
+                    if i == 0 {
+                        // chroot does not exist,
+                        return Err(Error::NoNode);
+                    }
+                    j = i;
+                },
+                Err(err) => return Err(err),
+            }
         }
     }
 
@@ -931,32 +983,6 @@ impl Client {
         Ok(CheckWriter { writer })
     }
 
-    async fn create_ancestor_backword(&self, path: &str, options: &CreateOptions<'_>) -> Result<()> {
-        let mut j = path.len();
-        loop {
-            match Self::retry_on_connection_loss(|| self.create(&path[..j], Default::default(), options)).await {
-                Ok(_) | Err(Error::NodeExists) => {
-                    if j >= path.len() {
-                        return Ok(());
-                    } else if let Some(i) = path[j + 1..].find('/') {
-                        j = j + 1 + i;
-                    } else {
-                        j = path.len();
-                    }
-                },
-                Err(Error::NoNode) => {
-                    if j <= 1 {
-                        return Err(Error::NoNode);
-                    } else {
-                        let i = path[..j].rfind('/').unwrap();
-                        j = if i == 0 { 1 } else { i };
-                    }
-                },
-                Err(err) => return Err(err),
-            }
-        }
-    }
-
     async fn create_lock(
         &self,
         prefix: LockPrefix<'_>,
@@ -972,7 +998,7 @@ impl Client {
             let mut result = self.create(&prefix, data, &CreateMode::EphemeralSequential.with_acls(options.acls)).await;
             if result == Err(Error::NoNode) {
                 if let Some(options) = &options.parent {
-                    match self.create_ancestor_backword(parent, options).await {
+                    match Self::retry_on_connection_loss(|| self.mkdir_internally(parent, options)).await {
                         Ok(_) => continue,
                         Err(Error::NoNode) => result = Err(Error::NoNode),
                         Err(err) => return Err(err),
@@ -1142,12 +1168,7 @@ impl<'a> LockOptions<'a> {
     /// * [Error::BadArguments] if [CreateMode] is ephemeral or sequential.
     /// * [Error::InvalidAcl] if acl is invalid or empty.
     pub fn with_ancestor_options(mut self, options: CreateOptions<'a>) -> Result<Self> {
-        options.validate()?;
-        if options.mode.is_ephemeral() {
-            return Err(Error::BadArguments(&"lock directory must not be ephemeral"));
-        } else if options.mode.is_sequential() {
-            return Err(Error::BadArguments(&"lock directory must not be sequential"));
-        }
+        options.validate_as_directory()?;
         self.parent = Some(options);
         Ok(self)
     }
@@ -2070,10 +2091,10 @@ mod tests {
             .clone()
             .with_ancestor_options(CreateMode::Ephemeral.with_acls(Acls::anyone_all()))
             .unwrap_err())
-        .is_equal_to(Error::BadArguments(&"lock directory must not be ephemeral"));
+        .is_equal_to(Error::BadArguments(&"directory node must not be ephemeral"));
         assert_that!(options
             .with_ancestor_options(CreateMode::PersistentSequential.with_acls(Acls::anyone_all()))
             .unwrap_err())
-        .is_equal_to(Error::BadArguments(&"lock directory must not be sequential"));
+        .is_equal_to(Error::BadArguments(&"directory node must not be sequential"));
     }
 }
