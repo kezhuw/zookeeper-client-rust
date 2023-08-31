@@ -210,9 +210,9 @@ impl Session {
         }
     }
 
-    fn handle_notification(&mut self, mut body: &[u8], depot: &mut Depot) -> Result<(), Error> {
+    fn handle_notification(&mut self, zxid: i64, mut body: &[u8], depot: &mut Depot) -> Result<(), Error> {
         let event = record::unmarshal_entity::<WatcherEvent>(&"watch notification", &mut body)?;
-        self.watch_manager.dispatch_server_event(event, depot);
+        self.watch_manager.dispatch_server_event(event.with_zxid(zxid), depot);
         Ok(())
     }
 
@@ -281,7 +281,7 @@ impl Session {
             return Err(Error::AuthFailed);
         }
         if header.xid == PredefinedXid::Notification.into() {
-            self.handle_notification(body, depot)?;
+            self.handle_notification(header.zxid, body, depot)?;
             return Ok(());
         } else if header.xid == PredefinedXid::Ping.into() {
             depot.pop_ping()?;

@@ -68,6 +68,7 @@ impl SessionState {
 
 /// WatchedEvent represents update to watched node or session.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WatchedEvent {
     pub event_type: EventType,
 
@@ -79,9 +80,35 @@ pub struct WatchedEvent {
 
     /// Node path from chroot. Empty if this is a state event.
     pub path: String,
+
+    /// `zxid` of the transaction that triggered this node event, [WatchedEvent::NO_ZXID] for session event.
+    ///
+    /// # Notable behaviors
+    /// * This feature was shipped in 3.9.0, `zxid` wil be [WatchedEvent::NO_ZXID] for earlier versions. See [ZOOKEEPER-4655].
+    /// * It is possible to receive multiple events with same `zxid` and even same `path` due to [MultiWriter]. See [ZOOKEEPER-4695].
+    ///
+    /// [ZOOKEEPER-4655]: https://issues.apache.org/jira/browse/ZOOKEEPER-4655
+    /// [ZOOKEEPER-4695]: https://issues.apache.org/jira/browse/ZOOKEEPER-4695
+    pub zxid: i64,
 }
 
 impl WatchedEvent {
+    pub const NO_ZXID: i64 = -1;
+
+    pub fn new(event: EventType, path: impl Into<String>) -> Self {
+        debug_assert_ne!(event, EventType::Session);
+        Self { event_type: event, session_state: SessionState::SyncConnected, path: path.into(), zxid: Self::NO_ZXID }
+    }
+
+    pub fn with_zxid(self, zxid: i64) -> Self {
+        debug_assert_ne!(self.event_type, EventType::Session);
+        Self { zxid, ..self }
+    }
+
+    pub fn new_session(state: SessionState) -> Self {
+        Self { event_type: EventType::Session, session_state: state, path: Default::default(), zxid: Self::NO_ZXID }
+    }
+
     pub(crate) fn drain_root_path(&mut self, root: &str) {
         if self.event_type != EventType::Session && !root.is_empty() {
             util::drain_root_path(&mut self.path, root).unwrap();

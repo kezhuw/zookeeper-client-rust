@@ -16,19 +16,36 @@ pub struct WatcherEvent<'a> {
     pub event_type: EventType,
     pub session_state: SessionState,
     pub path: &'a str,
+    pub zxid: i64,
 }
 
 impl<'a> Ref<'a> for WatcherEvent<'a> {
     type Value = WatchedEvent;
 
     fn to_value(&self) -> Self::Value {
-        WatchedEvent { event_type: self.event_type, session_state: self.session_state, path: self.path.to_owned() }
+        WatchedEvent {
+            event_type: self.event_type,
+            session_state: self.session_state,
+            path: self.path.to_owned(),
+            zxid: self.zxid,
+        }
     }
 }
 
 impl<'a> ToRef<'a, WatcherEvent<'a>> for WatchedEvent {
     fn to_ref(&'a self) -> WatcherEvent<'a> {
-        WatcherEvent { event_type: self.event_type, session_state: self.session_state, path: &self.path }
+        WatcherEvent {
+            event_type: self.event_type,
+            session_state: self.session_state,
+            path: &self.path,
+            zxid: self.zxid,
+        }
+    }
+}
+
+impl WatcherEvent<'_> {
+    pub fn with_zxid(self, zxid: i64) -> Self {
+        Self { zxid, ..self }
     }
 }
 
@@ -81,6 +98,6 @@ impl<'a> DeserializableRecord<'a> for WatcherEvent<'a> {
         let event_type = EventType::from_server(unsafe { buf.get_unchecked_i32() })?;
         let session_state = SessionState::from_server(unsafe { buf.get_unchecked_i32() })?;
         let path = record::unmarshal(buf)?;
-        Ok(WatcherEvent { event_type, session_state, path })
+        Ok(WatcherEvent { event_type, session_state, path, zxid: WatchedEvent::NO_ZXID })
     }
 }

@@ -9,7 +9,7 @@ use super::request::{Operation, SessionOperation, StateReceiver, StateResponser}
 use super::types::{EventType, SessionState, WatchMode, WatchedEvent};
 use crate::error::Error;
 use crate::proto::{ErrorCode, OpCode, SetWatchesRequest};
-use crate::util::Ref;
+use crate::util::{Ref, ToRef};
 
 const SET_WATCHES_MAX_BYTES: usize = 128 * 1024;
 
@@ -320,7 +320,8 @@ impl WatchManager {
     }
 
     pub fn dispatch_session_state(&mut self, state: SessionState) {
-        let event = WatcherEvent { event_type: EventType::Session, session_state: state, path: Default::default() };
+        let _event = WatchedEvent::new_session(state);
+        let event = _event.to_ref();
         self.watches.values_mut().for_each(|watch| {
             watch.send(&event, &mut self.watching_paths);
         });
