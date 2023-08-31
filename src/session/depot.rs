@@ -133,6 +133,9 @@ impl Depot {
         if let Some(SessionOperation { responser, .. }) = self.unwatching_paths.remove(&(path, mode)) {
             responser.send_empty();
         }
+        if let Some(SessionOperation { responser, .. }) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
+            responser.send_empty();
+        }
     }
 
     pub fn fail_watch(&mut self, path: &str, mode: WatchMode) {
@@ -143,6 +146,9 @@ impl Depot {
             self.watching_paths.remove(&(path, mode));
             if let Some(operation) = self.unwatching_paths.remove(&(path, mode)) {
                 self.push_operation(Operation::Session(operation));
+            }
+            if self.has_watching_requests(path) {
+                return;
             }
             if let Some(operation) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
                 self.push_operation(Operation::Session(operation));

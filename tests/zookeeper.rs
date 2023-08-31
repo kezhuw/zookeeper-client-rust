@@ -1063,6 +1063,30 @@ async fn test_persistent_watcher_passive_remove() {
 }
 
 #[test_log::test(tokio::test)]
+async fn test_fail_watch_with_concurrent_passive_remove() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let recursive_watcher = client.watch("/a", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+    let data_watching = client.get_and_watch_data("/a");
+    let persistent_watching = client.watch("/a", zk::AddWatchMode::Persistent);
+    drop(recursive_watcher);
+
+    assert_that!(data_watching.await.unwrap_err()).is_equal_to(zk::Error::NoNode);
+    let mut persistent_watcher = persistent_watching.await.unwrap();
+
+    client.create("/a", b"a", PERSISTENT_OPEN).await.unwrap();
+
+    let event = persistent_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeCreated);
+    assert_that!(event.path).is_same_string_to("/a");
+}
+
+#[test_log::test(tokio::test)]
 async fn test_persistent_watcher() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
