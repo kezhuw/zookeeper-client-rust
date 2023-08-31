@@ -431,11 +431,11 @@ impl Session {
         Err(Error::ClientClosed)
     }
 
-    async fn new_socket(
+    async fn new_socket<'a>(
         &mut self,
-        hosts: &mut impl Iterator<Item = (&str, u16)>,
+        hosts: &mut impl Iterator<Item = (&'a str, u16)>,
         deadline: Instant,
-    ) -> Result<TcpStream, Error> {
+    ) -> Result<(TcpStream, (&'a str, u16)), Error> {
         let sleep = time::sleep_until(deadline);
         loop {
             let addr = match hosts.next() {
@@ -446,8 +446,14 @@ impl Session {
                 _ = sleep => return Err(Error::Timeout),
                 r = TcpStream::connect(addr) => {
                     return match r {
-                        Err(_) => Err(Error::ConnectionLoss),
-                        Ok(sock) => Ok(sock),
+                        Err(err) => {
+                            log::debug!("ZooKeeper fails to connect to {}:{} due to {}", addr.0, addr.1, err);
+                            Err(Error::ConnectionLoss)
+                        },
+                        Ok(sock) => {
+                            log::debug!("ZooKeeper succeeds in connectiong to {}:{}", addr.0, addr.1);
+                            Ok((sock, addr))
+                        },
                     };
                 },
             }
@@ -488,7 +494,7 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<TcpStream, Error> {
-        let sock = self.new_socket(hosts, deadline).await?;
+        let (sock, addr) = self.new_socket(hosts, deadline).await?;
         depot.clear();
         buf.clear();
         self.send_connect(depot);
@@ -500,10 +506,13 @@ impl Session {
         self.last_ping = None;
         match self.serve_connecting(&sock, buf, depot).await {
             Err(err) => {
-                log::warn!("ZooKeeper fails to establish session to {} due to {}", sock.peer_addr().unwrap(), err);
+                log::warn!("ZooKeeper fails to establish session to {}:{} due to {}", addr.0, addr.1, err);
                 Err(err)
             },
-            _ => Ok(sock),
+            _ => {
+                log::info!("ZooKeeper succeeds to establish session to {}:{}", addr.0, addr.1);
+                Ok(sock)
+            },
         }
     }
 
