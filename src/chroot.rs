@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 use crate::error::Error;
@@ -96,6 +97,14 @@ impl<'a> ChrootPath<'a> {
     }
 }
 
+impl Display for ChrootPath<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let (root, path) = self.path();
+        f.write_str(root)?;
+        f.write_str(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use assertor::*;
@@ -165,5 +174,18 @@ mod tests {
         ChrootPath::new(Chroot::default(), "", false).unwrap_err();
         ChrootPath::new(Chroot::default(), "abc", false).unwrap_err();
         ChrootPath::new(Chroot::default(), "//", false).unwrap_err();
+    }
+
+    #[test]
+    fn test_chroot_display() {
+        assert_that!(ChrootPath::new(Chroot::default(), "/a/b/c", false).unwrap().to_string())
+            .is_same_string_to("/a/b/c");
+        assert_that!(ChrootPath::new(Chroot::default(), "/a/b/c/", true).unwrap().to_string())
+            .is_same_string_to("/a/b/c/");
+
+        assert_that!(ChrootPath::new(Chroot::new("/x/y").unwrap(), "/a/b/c", false).unwrap().to_string())
+            .is_same_string_to("/x/y/a/b/c");
+        assert_that!(ChrootPath::new(Chroot::new("/x/y").unwrap(), "/a/b/c/", true).unwrap().to_string())
+            .is_same_string_to("/x/y/a/b/c/");
     }
 }
