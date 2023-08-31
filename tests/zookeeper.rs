@@ -497,7 +497,7 @@ async fn test_data_node() {
     let path = "/abc";
     let data = random_data();
     let (stat, sequence) = client.create(path, &data, PERSISTENT_OPEN).await.unwrap();
-    assert_eq!(sequence.0, -1);
+    assert_eq!(sequence.into_i64(), -1);
 
     assert_eq!(stat, client.check_stat(path).await.unwrap().unwrap());
     assert_eq!((data, stat), client.get_data(path).await.unwrap());
@@ -528,7 +528,7 @@ async fn test_create_sequential() {
         .await
         .unwrap();
 
-    assert!(sequence2.0 > sequence1.0);
+    assert!(sequence2.into_i64() > sequence1.into_i64());
 
     let path1 = format!("{}{}", prefix, sequence1);
     let path2 = format!("{}{}", prefix, sequence2);

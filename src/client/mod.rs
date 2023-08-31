@@ -165,11 +165,24 @@ impl<'a> CreateOptions<'a> {
 ///
 /// It prints in ten decimal digits with possible leading padding 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CreateSequence(pub i32);
+pub struct CreateSequence(i64);
 
 impl std::fmt::Display for CreateSequence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:010}", self.0)
+        // Discussion for 64-bit ephemeral sequence number:
+        // * https://lists.apache.org/thread/4o3rl49rdj5y0134df922zgc8clyt86s
+        // * https://issues.apache.org/jira/browse/ZOOKEEPER-4706
+        if self.0 <= i32::MAX.into() {
+            write!(f, "{:010}", self.0)
+        } else {
+            write!(f, "{:019}", self.0)
+        }
+    }
+}
+
+impl CreateSequence {
+    pub fn into_i64(self) -> i64 {
+        self.0
     }
 }
 
@@ -338,7 +351,7 @@ impl Client {
 
     fn parse_sequence(client_path: &str, prefix: &str) -> Result<CreateSequence> {
         if let Some(sequence_path) = client_path.strip_prefix(prefix) {
-            match sequence_path.parse::<i32>() {
+            match sequence_path.parse::<i64>() {
                 Err(_) => Err(Error::UnexpectedError(format!("sequential node get no i32 path {}", client_path))),
                 Ok(i) => Ok(CreateSequence(i)),
             }
