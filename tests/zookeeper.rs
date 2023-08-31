@@ -31,7 +31,7 @@ fn zookeeper_image_with_properties<'a>(mut properties: Vec<&'a str>) -> GenericI
         .with_cmd(["./bin/zkServer.sh", "status"].iter())
         .with_interval(Duration::from_secs(2))
         .with_retries(60);
-    GenericImage::new("zookeeper", "3.8.2")
+    GenericImage::new("zookeeper", "3.9.0")
         .with_env_var("SERVER_JVMFLAGS", jvm_properties)
         .with_healthcheck(healthcheck)
         .with_wait_for(WaitFor::Healthcheck)
@@ -1209,6 +1209,71 @@ async fn test_persistent_watcher() {
     assert_eq!(event.path, path);
     assert_eq!(event, path_recursive_watcher.changed().await);
     assert_eq!(event, path_persistent_watcher.changed().await);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_watcher_coexist_on_same_path() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
+    let mut persistent_watcher = client.watch("/a", zk::AddWatchMode::Persistent).await.unwrap();
+    let mut recursive_watcher = client.watch("/a", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+
+    client.create("/a", &vec![], PERSISTENT_OPEN).await.unwrap();
+
+    let event = exist_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeCreated);
+    assert_that!(event.path).is_same_string_to("/a");
+
+    assert_that!(persistent_watcher.changed().await).is_equal_to(&event);
+    assert_that!(recursive_watcher.changed().await).is_equal_to(&event);
+
+    let (_, _, data_watcher) = client.get_and_watch_data("/a").await.unwrap();
+    let (_, _, child_watcher) = client.get_and_watch_children("/a").await.unwrap();
+    let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
+
+    client.create("/a/b", &vec![], PERSISTENT_OPEN).await.unwrap();
+    let event = child_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeChildrenChanged);
+    assert_that!(event.path).is_same_string_to("/a");
+    assert_that!(persistent_watcher.changed().await).is_equal_to(&event);
+
+    let event = recursive_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeCreated);
+    assert_that!(event.path).is_same_string_to("/a/b");
+
+    let (_, _, child_watcher) = client.get_and_watch_children("/a").await.unwrap();
+
+    client.delete("/a/b", None).await.unwrap();
+    let event = child_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeChildrenChanged);
+    assert_that!(event.path).is_same_string_to("/a");
+    assert_that!(persistent_watcher.changed().await).is_equal_to(&event);
+
+    let event = recursive_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeDeleted);
+    assert_that!(event.path).is_same_string_to("/a/b");
+
+    let (_, _, child_watcher) = client.get_and_watch_children("/a").await.unwrap();
+
+    client.delete("/a", None).await.unwrap();
+    let event = child_watcher.changed().await;
+    assert_that!(event.event_type).is_equal_to(zk::EventType::NodeDeleted);
+    assert_that!(event.path).is_same_string_to("/a");
+    assert_that!(data_watcher.changed().await).is_equal_to(&event);
+    assert_that!(exist_watcher.changed().await).is_equal_to(&event);
+    assert_that!(persistent_watcher.changed().await).is_equal_to(&event);
+    assert_that!(recursive_watcher.changed().await).is_equal_to(&event);
+
+    // persistent ones still exist
+    client.create("/a", &vec![], PERSISTENT_OPEN).await.unwrap();
+    let event = persistent_watcher.changed().await;
+    assert_that!(recursive_watcher.changed().await).is_equal_to(&event);
 }
 
 #[test_log::test(tokio::test)]
