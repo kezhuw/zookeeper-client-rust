@@ -389,6 +389,9 @@ impl Client {
         let create_mode = options.mode;
         let sequential = create_mode.is_sequential();
         let chroot_path = if sequential { self.validate_sequential_path(path)? } else { self.validate_path(path)? };
+        if chroot_path.is_root() {
+            return Err(Error::BadArguments(&"can not create root node"));
+        }
         let ttl = options.ttl.map(|ttl| ttl.as_millis() as i64).unwrap_or(0);
         let op_code = if ttl != 0 {
             OpCode::CreateTtl

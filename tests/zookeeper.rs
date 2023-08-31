@@ -509,6 +509,18 @@ async fn test_data_node() {
 }
 
 #[test_log::test(tokio::test)]
+async fn test_create_root() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap().chroot("/a").unwrap();
+    assert_that!(client.create("/", &vec![], PERSISTENT_OPEN).await.unwrap_err())
+        .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
+}
+
+#[test_log::test(tokio::test)]
 async fn test_create_sequential() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
