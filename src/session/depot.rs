@@ -174,7 +174,8 @@ impl Depot {
                 }
             } else {
                 // Overwrite old paths as they could be invalidated after reply.
-                let count = self.watching_paths.get(&(path, mode)).copied().unwrap_or(0) + 1;
+                // `HashMap::insert` does not update the key in case it is present, so we have to remove it first.
+                let count = self.watching_paths.remove(&(path, mode)).unwrap_or(0) + 1;
                 self.watching_paths.insert((path, mode), count);
             }
         }
