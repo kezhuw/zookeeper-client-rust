@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 use strum::IntoEnumIterator;
 use tokio::net::TcpStream;
 
-use super::request::{MarshalledRequest, Operation, SessionOperation, StateResponser};
+use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};
 use super::types::WatchMode;
 use super::xid::Xid;
 use super::SessionId;
@@ -161,7 +161,9 @@ impl Depot {
     }
 
     pub fn push_session(&mut self, mut operation: SessionOperation) {
-        if let (op_code, Some((path, mode))) = operation.request.get_operation_info() {
+        let info = operation.request.get_operation_info();
+        log::debug!("ZooKeeper operation request: {:?}", info);
+        if let (op_code, OpStat::Watch { path, mode }) = info {
             let path = unsafe { std::mem::transmute::<&str, &'_ str>(path) };
             if op_code == OpCode::RemoveWatches {
                 if self.watching_paths.contains_key(&(path, mode))

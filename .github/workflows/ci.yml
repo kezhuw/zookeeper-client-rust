@@ -5,7 +5,7 @@ on:
 
 env:
   RUSTFLAGS: -Dwarnings
-  RUST_BACKTRACE: 1
+  RUST_BACKTRACE: full
 
 jobs:
   fmt:
@@ -36,6 +36,8 @@ jobs:
   test:
     needs: [build]
     runs-on: ubuntu-latest
+    env:
+      RUST_LOG: debug
     steps:
     - uses: actions/checkout@v2
     - uses: Swatinem/rust-cache@v1
@@ -45,7 +47,7 @@ jobs:
           toolchain: stable
           override: true
     - name: Test code
-      run: cargo test
+      run: cargo test -- --nocapture
   coverage:
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'master')
     needs: [test]

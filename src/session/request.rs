@@ -15,6 +15,13 @@ use crate::record::{self, Record, StaticRecord};
 #[derive(Clone, Debug, Default)]
 pub struct MarshalledRequest(pub Vec<u8>);
 
+#[derive(Clone, Copy, Debug)]
+pub enum OpStat<'a> {
+    None,
+    Path(&'a str),
+    Watch { path: &'a str, mode: WatchMode },
+}
+
 impl MarshalledRequest {
     pub fn new(code: OpCode, body: &dyn Record) -> MarshalledRequest {
         let header = RequestHeader::with_code(code);
@@ -45,17 +52,39 @@ impl MarshalledRequest {
         xid_buf.put_i32(xid);
     }
 
-    pub fn get_operation_info(&self) -> (OpCode, Option<(&str, WatchMode)>) {
+    fn get_body(&self) -> &[u8] {
+        let offset = 4 + RequestHeader::record_len();
+        &self.0[offset..]
+    }
+
+    pub fn get_operation_info(&self) -> (OpCode, OpStat<'_>) {
         let op_code = self.get_code();
-        let watcher_info = match op_code {
+        let stat = match op_code {
+            OpCode::Create
+            | OpCode::Create2
+            | OpCode::CreateTtl
+            | OpCode::CreateContainer
+            | OpCode::SetData
+            | OpCode::Delete
+            | OpCode::DeleteContainer
+            | OpCode::GetACL
+            | OpCode::SetACL
+            | OpCode::Sync
+            | OpCode::Check
+            | OpCode::CheckWatches
+            | OpCode::GetEphemerals
+            | OpCode::GetAllChildrenNumber => {
+                let mut body = self.get_body();
+                let server_path = record::deserialize::<&str>(&mut body).unwrap();
+                OpStat::Path(server_path)
+            },
             OpCode::GetData
             | OpCode::Exists
             | OpCode::GetChildren
             | OpCode::GetChildren2
             | OpCode::AddWatch
             | OpCode::RemoveWatches => {
-                let offset = 4 + RequestHeader::record_len();
-                let mut body = &self.0[offset..];
+                let mut body = self.get_body();
                 let server_path = record::deserialize::<&str>(&mut body).unwrap();
                 if op_code == OpCode::AddWatch || op_code == OpCode::RemoveWatches {
                     body.advance(3);
@@ -63,24 +92,24 @@ impl MarshalledRequest {
                 let watch = body.get_u8();
                 if op_code == OpCode::AddWatch {
                     let add_mode = AddWatchMode::try_from(watch as i32).unwrap();
-                    Some((server_path, WatchMode::from(add_mode)))
+                    OpStat::Watch { path: server_path, mode: WatchMode::from(add_mode) }
                 } else if op_code == OpCode::RemoveWatches {
-                    Some((server_path, WatchMode::try_from(watch as i32).unwrap()))
+                    OpStat::Watch { path: server_path, mode: WatchMode::try_from(watch as i32).unwrap() }
                 } else if watch == 1 {
                     let mode = if op_code == OpCode::GetData || op_code == OpCode::Exists {
                         WatchMode::Data
                     } else {
                         WatchMode::Child
                     };
-                    Some((server_path, mode))
+                    OpStat::Watch { path: server_path, mode }
                 } else {
                     assert!(watch == 0);
-                    None
+                    OpStat::Path(server_path)
                 }
             },
-            _ => None,
+            _ => OpStat::None,
         };
-        (op_code, watcher_info)
+        (op_code, stat)
     }
 
     pub fn is_empty(&self) -> bool {
