@@ -19,6 +19,7 @@ use self::event::WatcherEvent;
 pub use self::request::{
     ConnectOperation,
     MarshalledRequest,
+    OpStat,
     Operation,
     SessionOperation,
     StateReceiver,
@@ -211,11 +212,11 @@ impl Session {
 
     fn handle_session_failure(&mut self, operation: SessionOperation, err: Error, depot: &mut Depot) {
         let SessionOperation { responser, request, .. } = operation;
-        let (op_code, watch_info) = request.get_operation_info();
-        if let Some((path, mode)) = watch_info {
-            if op_code != OpCode::RemoveWatches {
-                depot.fail_watch(path, mode);
-            }
+        let info = request.get_operation_info();
+        log::debug!("ZooKeeper operation unknown failure: {:?}, {:?}", info, err);
+        match info {
+            (op_code, OpStat::Watch { path, mode }) if op_code != OpCode::RemoveWatches => depot.fail_watch(path, mode),
+            _ => {},
         }
         responser.send(Err(err));
     }
@@ -226,11 +227,12 @@ impl Session {
         error_code: ErrorCode,
         depot: &mut Depot,
     ) -> (OpCode, WatchReceiver) {
-        let (op_code, watch_info) = request.get_operation_info();
-        if op_code == OpCode::RemoveWatches || watch_info.is_none() {
-            return (op_code, WatchReceiver::None);
-        }
-        let (path, mode) = watch_info.unwrap();
+        let info = request.get_operation_info();
+        log::debug!("ZooKeeper operation get reply: {:?}, {:?}", info, error_code);
+        let (op_code, path, mode) = match info {
+            (op_code, OpStat::Watch { path, mode }) if op_code != OpCode::RemoveWatches => (op_code, path, mode),
+            (op_code, _) => return (op_code, WatchReceiver::None),
+        };
         let watcher = self.watch_manager.create_watcher(path, mode, request.get_code(), error_code);
         if watcher.is_none() {
             depot.fail_watch(path, mode);
