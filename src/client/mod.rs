@@ -46,7 +46,7 @@ use crate::session::StateReceiver;
 pub use crate::session::{EventType, SessionId, SessionState, WatchedEvent};
 use crate::util::{self, Ref as _};
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// CreateMode specifies ZooKeeper znode type. It covers all znode types with help from
 /// [CreateOptions::with_ttl].
@@ -191,10 +191,40 @@ impl std::fmt::Display for CreateSequence {
 }
 
 impl CreateSequence {
+    pub fn new(n: i64) -> Self {
+        Self(n)
+    }
+
     pub fn into_i64(self) -> i64 {
         self.0
     }
 }
+
+macro_rules! impl_from {
+    (infaillible: $($type:ty )+) => {
+        $(
+            impl From<$type> for CreateSequence {
+                fn from(seq: $type) -> Self {
+                    CreateSequence(seq.into())
+                }
+            }
+        )+
+    };
+    (faillible: $($type:ty )+) => {
+        $(
+            impl TryFrom<$type> for CreateSequence {
+                type Error = <$type as TryInto<i64>>::Error;
+
+                fn try_from(seq: $type) -> Result<Self, Self::Error> {
+                    seq.try_into().map(CreateSequence)
+                }
+            }
+        )+
+    };
+}
+
+impl_from!(infaillible: u8 i8 u16 i16 u32 i32 i64);
+impl_from!(faillible: u64 u128 i128 usize isize);
 
 /// Client encapsulates ZooKeeper session to interact with ZooKeeper cluster.
 ///
