@@ -46,7 +46,7 @@ use crate::record::Record;
 
 pub trait RequestBuffer {
     fn write_request(&mut self, header: &RequestHeader, record: &dyn Record) -> usize;
-    fn write_lenght_prefixed_record(&mut self, record: &dyn Record) -> usize;
+    fn write_length_prefixed_record(&mut self, record: &dyn Record) -> usize;
 
     fn prepare_and_reserve(&mut self, n: usize);
     fn append_record(&mut self, record: &dyn Record);
@@ -68,7 +68,7 @@ impl RequestBuffer for Vec<u8> {
         len + 4
     }
 
-    fn write_lenght_prefixed_record(&mut self, record: &dyn Record) -> usize {
+    fn write_length_prefixed_record(&mut self, record: &dyn Record) -> usize {
         let i = self.len();
         self.reserve(4);
         unsafe { self.set_len(i + 4) };
@@ -103,7 +103,7 @@ impl RequestBuffer for Vec<u8> {
 
 pub fn build_record_request(record: &dyn Record) -> Vec<u8> {
     let mut buf = Vec::with_capacity(record.serialized_len() + 4);
-    buf.write_lenght_prefixed_record(record);
+    buf.write_length_prefixed_record(record);
     buf
 }
 
