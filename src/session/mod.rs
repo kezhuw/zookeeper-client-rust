@@ -475,30 +475,28 @@ impl Session {
         hosts: &mut impl Iterator<Item = (&'a str, u16)>,
         deadline: &mut Sleep,
     ) -> Result<(TcpStream, (&'a str, u16)), Error> {
-        loop {
-            let addr = match hosts.next() {
-                None => return Err(Error::NoHosts),
-                Some(addr) => addr,
-            };
-            select! {
-                _ = unsafe { Pin::new_unchecked(deadline) } => return Err(Error::Timeout),
-                _ = time::sleep(self.connection_timeout) => {
-                    log::debug!("ZooKeeper fails to connect to {}:{} in {}ms", addr.0, addr.1, self.connection_timeout.as_millis());
-                    return Err(Error::ConnectionLoss)
-                },
-                r = TcpStream::connect(addr) => {
-                    return match r {
-                        Err(err) => {
-                            log::debug!("ZooKeeper fails to connect to {}:{} due to {}", addr.0, addr.1, err);
-                            Err(Error::ConnectionLoss)
-                        },
-                        Ok(sock) => {
-                            log::debug!("ZooKeeper succeeds in connectiong to {}:{}", addr.0, addr.1);
-                            Ok((sock, addr))
-                        },
-                    };
-                },
-            }
+        let addr = match hosts.next() {
+            None => return Err(Error::NoHosts),
+            Some(addr) => addr,
+        };
+        select! {
+            _ = unsafe { Pin::new_unchecked(deadline) } => Err(Error::Timeout),
+            _ = time::sleep(self.connection_timeout) => {
+                log::debug!("ZooKeeper fails to connect to {}:{} in {}ms", addr.0, addr.1, self.connection_timeout.as_millis());
+                Err(Error::ConnectionLoss)
+            },
+            r = TcpStream::connect(addr) => {
+                match r {
+                    Err(err) => {
+                        log::debug!("ZooKeeper fails to connect to {}:{} due to {}", addr.0, addr.1, err);
+                        Err(Error::ConnectionLoss)
+                    },
+                    Ok(sock) => {
+                        log::debug!("ZooKeeper succeeds in connectiong to {}:{}", addr.0, addr.1);
+                        Ok((sock, addr))
+                    },
+                }
+            },
         }
     }
 
