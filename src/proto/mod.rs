@@ -27,7 +27,6 @@ pub use self::data::{
     GetChildren2Response,
     GetChildrenRequest,
     GetRequest,
-    OneshotWatchRequest,
     PersistentWatchRequest,
     RemoveWatchesRequest,
     SetDataRequest,
