@@ -23,7 +23,7 @@ fn random_data() -> Vec<u8> {
     rng.sample_iter(Standard).take(32).collect()
 }
 
-fn zookeeper_image_with_properties<'a>(mut properties: Vec<&'a str>) -> GenericImage {
+fn zookeeper_image_with_version_and_properties<'a>(version: &'a str, mut properties: Vec<&'a str>) -> GenericImage {
     properties.insert(0, "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU=");
     properties.insert(0, "-Dzookeeper.enableEagerACLCheck=true");
     let jvm_properties = properties.join(" ");
@@ -31,14 +31,22 @@ fn zookeeper_image_with_properties<'a>(mut properties: Vec<&'a str>) -> GenericI
         .with_cmd(["./bin/zkServer.sh", "status"].iter())
         .with_interval(Duration::from_secs(2))
         .with_retries(60);
-    GenericImage::new("zookeeper", "3.9.0")
+    GenericImage::new("zookeeper", version)
         .with_env_var("SERVER_JVMFLAGS", jvm_properties)
         .with_healthcheck(healthcheck)
         .with_wait_for(WaitFor::Healthcheck)
 }
 
+fn zookeeper_image_with_properties<'a>(properties: Vec<&'a str>) -> GenericImage {
+    zookeeper_image_with_version_and_properties("3.9.0", properties)
+}
+
 fn zookeeper_image() -> GenericImage {
     zookeeper_image_with_properties(Vec::default())
+}
+
+fn zookeeper34_image() -> GenericImage {
+    zookeeper_image_with_version_and_properties("3.4", Vec::default())
 }
 
 async fn example() {
@@ -589,6 +597,44 @@ async fn test_create_container() {
     client.delete("/container/child", None).await.unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_zookeeper34() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper34_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::builder().assume_server_version(3, 4, u32::MAX).connect(&cluster).await.unwrap();
+    let (stat, _sequence) = client.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
+    assert_that!(stat.is_invalid()).is_true();
+
+    let (data, stat) = client.get_data("/a").await.unwrap();
+    assert_eq!(data, b"a1".to_vec());
+    assert_eq!(stat.version, 0);
+
+    let (data, stat, watcher) = client.get_and_watch_data("/a").await.unwrap();
+    assert_eq!(data, b"a1".to_vec());
+    assert_eq!(stat.version, 0);
+
+    let stat = client.set_data("/a", b"a2", Some(0)).await.unwrap();
+    assert_eq!(stat.version, 1);
+
+    let event = watcher.changed().await;
+    assert_eq!(event.path, "/a");
+    assert_eq!(event.zxid, -1);
+    assert_eq!(event.event_type, zk::EventType::NodeDataChanged);
+
+    let (data, stat, watcher) = client.get_and_watch_data("/a").await.unwrap();
+    assert_eq!(data, b"a2".to_vec());
+    assert_eq!(stat.version, 1);
+
+    client.delete("/a", Some(1)).await.unwrap();
+
+    let event = watcher.changed().await;
+    assert_eq!(event.path, "/a");
+    assert_eq!(event.zxid, -1);
+    assert_eq!(event.event_type, zk::EventType::NodeDeleted);
 }
 
 #[test_log::test(tokio::test)]

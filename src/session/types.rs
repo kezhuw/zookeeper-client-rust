@@ -85,7 +85,7 @@ pub struct WatchedEvent {
     ///
     /// # Notable behaviors
     /// * This feature was shipped in 3.9.0, `zxid` wil be [WatchedEvent::NO_ZXID] for earlier versions. See [ZOOKEEPER-4655].
-    /// * It is possible to receive multiple events with same `zxid` and even same `path` due to [MultiWriter]. See [ZOOKEEPER-4695].
+    /// * It is possible to receive multiple events with same `zxid` and even same `path` due to [crate::MultiWriter]. See [ZOOKEEPER-4695].
     ///
     /// [ZOOKEEPER-4655]: https://issues.apache.org/jira/browse/ZOOKEEPER-4655
     /// [ZOOKEEPER-4695]: https://issues.apache.org/jira/browse/ZOOKEEPER-4695
