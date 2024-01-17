@@ -199,7 +199,8 @@ impl CreateSequence {
 /// Client encapsulates ZooKeeper session to interact with ZooKeeper cluster.
 ///
 /// Besides semantic errors, node operations could also fail due to cluster availability and
-/// limitations, e.g. [Error::ConnectionLoss], [Error::QuotaExceeded] and so on.
+/// capabilities, e.g. [Error::ConnectionLoss], [Error::QuotaExceeded], [Error::Unimplemented] and
+/// so on.
 ///
 /// All remote operations will fail after session expired, failed or closed.
 ///
@@ -211,6 +212,7 @@ impl CreateSequence {
 #[derive(Clone, Debug)]
 pub struct Client {
     chroot: OwnedChroot,
+    version: Version,
     session: (SessionId, Vec<u8>),
     session_timeout: Duration,
     requester: mpsc::UnboundedSender<SessionOperation>,
@@ -232,13 +234,14 @@ impl Client {
 
     pub(crate) fn new(
         chroot: OwnedChroot,
+        version: Version,
         session: (SessionId, Vec<u8>),
         timeout: Duration,
         requester: mpsc::UnboundedSender<SessionOperation>,
         state_receiver: watch::Receiver<SessionState>,
     ) -> Client {
         let state_watcher = StateWatcher::new(state_receiver);
-        Client { chroot, session, session_timeout: timeout, requester, state_watcher }
+        Client { chroot, version, session, session_timeout: timeout, requester, state_watcher }
     }
 
     fn validate_path<'a>(&'a self, path: &'a str) -> Result<ChrootPath<'a>> {
@@ -422,6 +425,12 @@ impl Client {
     /// * [Error::NoNode] if parent node does not exist.
     /// * [Error::NoChildrenForEphemerals] if parent node is ephemeral.
     /// * [Error::InvalidAcl] if acl is invalid or empty.
+    ///
+    /// # Notable behaviors
+    /// The resulting [Stat] will be [Stat::is_invalid] if assumed server version is 3.4 series or
+    /// below. See [ClientBuilder::assume_server_version] and [ZOOKEEPER-1297][].
+    ///
+    /// [ZOOKEEPER-1297]: https://issues.apache.org/jira/browse/ZOOKEEPER-1297
     pub fn create<'a: 'f, 'b: 'f, 'f>(
         &'a self,
         path: &'b str,
@@ -449,8 +458,10 @@ impl Client {
             OpCode::CreateTtl
         } else if create_mode.is_container() {
             OpCode::CreateContainer
-        } else {
+        } else if self.version >= Version(3, 5, 0) {
             OpCode::Create2
+        } else {
+            OpCode::Create
         };
         let flags = create_mode.as_flags(ttl != 0);
         let request = CreateRequest { path: chroot_path, data, acls: options.acls, flags, ttl };
@@ -461,7 +472,8 @@ impl Client {
             let server_path = record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
             let client_path = util::strip_root_path(server_path, self.chroot.root())?;
             let sequence = if sequential { Self::parse_sequence(client_path, path)? } else { CreateSequence(-1) };
-            let stat = record::unmarshal::<Stat>(&mut buf)?;
+            let stat =
+                if op_code == OpCode::Create { Stat::new_invalid() } else { record::unmarshal::<Stat>(&mut buf)? };
             Ok((stat, sequence))
         })
     }
@@ -1508,10 +1520,14 @@ impl Drop for OwnedLockClient {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub(crate) struct Version(u32, u32, u32);
+
 /// Builder for [Client] with more options than [Client::connect].
 #[derive(Clone, Debug)]
 pub struct ClientBuilder {
     authes: Vec<AuthPacket>,
+    version: Version,
     session: Option<(SessionId, Vec<u8>)>,
     readonly: bool,
     detached: bool,
@@ -1523,6 +1539,7 @@ impl ClientBuilder {
     fn new() -> Self {
         Self {
             authes: Default::default(),
+            version: Version(u32::MAX, u32::MAX, u32::MAX),
             session: None,
             readonly: false,
             detached: false,
@@ -1562,6 +1579,20 @@ impl ClientBuilder {
     /// Specifies session to reestablish.
     pub fn with_session(&mut self, id: SessionId, password: Vec<u8>) -> &mut Self {
         self.session = Some((id, password));
+        self
+    }
+
+    /// Specifies client assumed server version of ZooKeeper cluster.
+    ///
+    /// Client will issue server compatible protocol to avoid [Error::Unimplemented] for some
+    /// operations. See [Client::create] for an example.
+    ///
+    /// See [ZOOKEEPER-1381][] and [ZOOKEEPER-3762][] for references.
+    ///
+    /// [ZOOKEEPER-1381]: https://issues.apache.org/jira/browse/ZOOKEEPER-1381
+    /// [ZOOKEEPER-3762]: https://issues.apache.org/jira/browse/ZOOKEEPER-3762
+    pub fn assume_server_version(&mut self, major: u32, minor: u32, patch: u32) -> &mut Self {
+        self.version = Version(major, minor, patch);
         self
     }
 
@@ -1608,7 +1639,8 @@ impl ClientBuilder {
         tokio::spawn(async move {
             session.serve(servers, sock, buf, connecting_depot, receiver).await;
         });
-        let client = Client::new(chroot.to_owned(), session_info, session_timeout, sender, state_receiver);
+        let client =
+            Client::new(chroot.to_owned(), self.version, session_info, session_timeout, sender, state_receiver);
         Ok(client)
     }
 }
