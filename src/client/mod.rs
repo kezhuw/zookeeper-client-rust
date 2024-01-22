@@ -1605,6 +1605,10 @@ impl ClientBuilder {
     }
 
     /// Connects to ZooKeeper cluster.
+    ///
+    /// # Notable errors
+    /// * [Error::NoHosts] if no host is available
+    /// * [Error::SessionExpired] if specified session expired
     pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
         let (hosts, chroot) = util::parse_connect_string(cluster)?;
         let mut buf = Vec::with_capacity(4096);

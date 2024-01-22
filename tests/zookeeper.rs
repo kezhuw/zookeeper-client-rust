@@ -145,6 +145,28 @@ async fn connect(cluster: &str, chroot: &str) -> zk::Client {
     client.chroot(chroot).unwrap()
 }
 
+#[test_log::test(tokio::test)]
+async fn test_connect_nohosts() {
+    assert_that!(zk::Client::connect("127.0.0.1:100,127.0.0.1:101").await.unwrap_err()).is_equal_to(zk::Error::NoHosts);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_connect_session_expired() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+
+    let cluster = format!("127.0.0.1:{}", zk_port);
+    let client = zk::Client::builder().detach().connect(&cluster).await.unwrap();
+    let timeout = client.session_timeout();
+    let (id, password) = client.into_session();
+
+    tokio::time::sleep(timeout * 2).await;
+
+    assert_that!(zk::Client::builder().with_session(id, password).connect(&cluster).await.unwrap_err())
+        .is_equal_to(zk::Error::SessionExpired);
+}
+
 #[test_case("/"; "no_chroot")]
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
