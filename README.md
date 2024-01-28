@@ -10,7 +10,7 @@ ZooKeeper client writes in async rust.
 ## Features
 * No callbacks.
 * No catch-all watcher.
-* `StateWatcher` trackes session state updates.
+* `StateWatcher` tracks session state updates.
 * `OneshotWatcher` tracks oneshot ZooKeeper node event.
 * `PersistentWatcher` tracks persistent and recursive persistent ZooKeeper node events.
 * No event type `XyzWatchRemoved` as there is no way to receive such event after watchers dropped.

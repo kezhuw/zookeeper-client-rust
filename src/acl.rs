@@ -209,18 +209,18 @@ impl<'a> Acls<'a> {
         Self { inner: AclsInner::Acls { acls } }
     }
 
-    /// Returns acls that expresse anyone can have full permissions over nodes created by this
+    /// Returns acls that expresses anyone can have full permissions over nodes created by this
     /// session.
     pub const fn anyone_all() -> Acls<'static> {
         Acls { inner: AclsInner::AnyoneAll }
     }
 
-    /// Returns acls that expresse anyone can read nodes created by this session.
+    /// Returns acls that expresses anyone can read nodes created by this session.
     pub const fn anyone_read() -> Acls<'static> {
         Acls { inner: AclsInner::AnyoneRead }
     }
 
-    /// Returns acls that expresse anyone who has same auth as creator can have full permisssions
+    /// Returns acls that expresses anyone who has same auth as creator can have full permissions
     /// over nodes created by this session.
     pub const fn creator_all() -> Acls<'static> {
         Acls { inner: AclsInner::CreatorAll }

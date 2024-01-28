@@ -492,7 +492,7 @@ impl Session {
                         Err(Error::ConnectionLoss)
                     },
                     Ok(sock) => {
-                        log::debug!("ZooKeeper succeeds in connectiong to {}:{}", addr.0, addr.1);
+                        log::debug!("ZooKeeper succeeds in connecting to {}:{}", addr.0, addr.1);
                         Ok((sock, addr))
                     },
                 }

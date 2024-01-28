@@ -11,7 +11,7 @@ pub enum PredefinedXid {
     Ping = -2,
 
     /// Fortunately, ZooKeeper server [use xid from header](auth-xid) to reply auth request, so we can have
-    /// multiple auth requets in network.
+    /// multiple auth requests in network.
     ///
     /// auth-xid: https://github.com/apache/zookeeper/blob/de7c5869d372e46af43979134d0e30b49d2319b1/zookeeper-server/src/main/java/org/apache/zookeeper/server/ZooKeeperServer.java#L1621
     Auth = -4,

@@ -132,7 +132,7 @@ pub struct CreateOptions<'a> {
     ttl: Option<Duration>,
 }
 
-// Five bytes are avaiable for milliseconds. See javadoc of EphemeralType in ZooKeeper for reference.
+// Five bytes are available for milliseconds. See javadoc of EphemeralType in ZooKeeper for reference.
 //
 // https://github.com/apache/zookeeper/blob/ebcf18e52fa095773429348ce495d59c896f4a26/zookeeper-server/src/main/java/org/apache/zookeeper/server/EphemeralType.java#L46
 const TTL_MAX_MILLIS: u128 = 0x00FFFFFFFFFF;
@@ -849,7 +849,7 @@ impl Client {
     /// * Holds returned watcher without polling events may result in memory burst.
     /// * At the time of written, ZooKeeper [ZOOKEEPER-4466][] does not support oneshot and
     /// persistent watch on same path.
-    /// * Persistent watch could loss events during reconnection due to [ZOOKEEPER-4698][].
+    /// * Persistent watch could lose events during reconnection due to [ZOOKEEPER-4698][].
     ///
     /// [ZOOKEEPER-4466]: https://issues.apache.org/jira/browse/ZOOKEEPER-4466
     /// [ZOOKEEPER-4698]: https://issues.apache.org/jira/browse/ZOOKEEPER-4698
@@ -898,7 +898,7 @@ impl Client {
         })
     }
 
-    /// Authenticates session using given scheme and auth identication. This affects only
+    /// Authenticates session using given scheme and auth identification. This affects only
     /// subsequent operations.
     ///
     /// # Errors
@@ -907,7 +907,7 @@ impl Client {
     ///
     /// # Notable behaviors
     /// * Same auth will be resubmitted for authentication after session reestablished.
-    /// * This method is resistent to temporary session unavailability, that means
+    /// * This method is resistant to temporary session unavailability, that means
     ///   [SessionState::Disconnected] will not end authentication.
     /// * It is ok to ignore resulting future of this method as request is sending synchronously
     ///   and auth failure will fail ZooKeeper session with [SessionState::AuthFailed].
@@ -1122,7 +1122,7 @@ impl Client {
     ///
     /// # Asynchronous ordering
     /// Comparing to other data operations, e.g. [Client::create], this operation is pure
-    /// asynchronous, so there is no data order guaranttee.
+    /// asynchronous, so there is no data order guarantee.
     ///
     /// # Error handling on [Error::ConnectionLoss]
     /// * If connection loss during lock path creation, this method will find out the created lock
@@ -1219,7 +1219,7 @@ enum LockPrefixInner<'a> {
     Shared { prefix: &'a str },
 }
 
-// It is intentional for this to not `Clone` as it is non sense for [LockPrefix::new_custom], and I
+// It is intentional for this to not `Clone` as it is nonsense for [LockPrefix::new_custom], and I
 // don't want to complicate this anymore, e.g. `LockPatternPrefix` and `LockCustomPrefix`. The side
 // effect is that it is not easy to share `LockPrefix`. But, let the caller/tester to bore about that.
 //
@@ -1731,7 +1731,7 @@ impl<'a> MultiReader<'a> {
     /// Commits multiple operations in one request to reach consistent read.
     ///
     /// # Notable behaviors
-    /// Individual errors(eg. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
+    /// Individual errors(e.g. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
     pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'a {
         let request = self.build_request();
         Client::resolve(self.commit_internally(request))
