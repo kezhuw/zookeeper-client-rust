@@ -360,7 +360,7 @@ impl WatchManager {
             }
         }
         if !has_watch {
-            // Probably a dangling peristent watcher.
+            // Probably a dangling persistent watcher.
             depot.push_remove_watch(event.path, WatchMode::Any, StateResponser::none());
         }
     }

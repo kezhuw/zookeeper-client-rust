@@ -26,7 +26,7 @@ impl StateWatcher {
     /// This method will block indefinitely after one of terminal states consumed.
     pub async fn changed(&mut self) -> SessionState {
         if self.receiver.changed().await.is_err() {
-            // Terminal state must be deliveried.
+            // Terminal state must be delivered.
             std::future::pending().await
         }
         self.state()
@@ -106,7 +106,7 @@ impl PersistentWatcher {
     /// Removes this watcher.
     ///
     /// # Cautions
-    /// It is a best effect as ZooKeper ([ZOOKEEPER-4472][]) does not support persistent watch
+    /// It is a best effect as ZooKeeper ([ZOOKEEPER-4472][]) does not support persistent watch
     /// removing individually.
     ///
     /// [ZOOKEEPER-4472]: https://issues.apache.org/jira/browse/ZOOKEEPER-4472
