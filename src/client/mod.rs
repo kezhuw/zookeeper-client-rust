@@ -1213,6 +1213,7 @@ impl<'a> LockPrefixKind<'a> {
     }
 }
 
+#[derive(Debug)]
 enum LockPrefixInner<'a> {
     Curator { dir: &'a str, name: &'a str },
     Custom { prefix: String, name: &'a str },
@@ -1227,6 +1228,7 @@ enum LockPrefixInner<'a> {
 ///
 /// This struct carries path prefix for ephemeral lock path, name filter for candidate contenders
 /// and hint to find created lock path in case of [Error::ConnectionLoss].
+#[derive(Debug)]
 pub struct LockPrefix<'a> {
     inner: LockPrefixInner<'a>,
 }
