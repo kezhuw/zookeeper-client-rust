@@ -1375,6 +1375,34 @@ async fn test_watcher_coexist_on_same_path() {
     assert_that!(recursive_watcher.changed().await).is_equal_to(&expected);
 }
 
+// Use "current_thread" explicitly.
+#[test_log::test(tokio::test(flavor = "current_thread"))]
+async fn test_remove_no_watcher() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
+    let create = client.create("/a", &vec![], PERSISTENT_OPEN);
+
+    // Let session task issue `create` request first, oneshot watch will be removed by server.
+    tokio::task::yield_now().await;
+
+    // Issue `RemoveWatches` which likely happen before watch event notification as it involves
+    // several IO paths.
+    assert_that!(exist_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
+    create.await.unwrap();
+
+    let (_, _, data_watcher) = client.get_and_watch_data("/a").await.unwrap();
+    let delete = client.delete("/a", None);
+    tokio::task::yield_now().await;
+    assert_that!(data_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
+    delete.await.unwrap();
+}
+
 #[test_log::test(tokio::test)]
 async fn test_session_event() {
     let docker = DockerCli::default();
