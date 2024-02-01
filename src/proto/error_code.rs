@@ -49,7 +49,7 @@ pub enum ErrorCode {
     AuthFailed = -115,
     SessionMoved = -118,
     NotReadOnly = -119,
-    NoWatcher = -122,
+    NoWatcher = -121,
     ReconfigDisabled = -123,
     SessionClosedRequireSaslAuth = -124,
     QuotaExceeded = -125,
