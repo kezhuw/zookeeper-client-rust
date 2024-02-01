@@ -281,6 +281,9 @@ impl Session {
             return Err(Error::SessionExpired);
         } else if header.err == ErrorCode::AuthFailed.into() {
             return Err(Error::AuthFailed);
+        } else if header.err == ErrorCode::NoWatcher.into() {
+            log::debug!("attempted to delete non-existing watcher.");
+            return Ok(());
         }
         if header.xid == PredefinedXid::Notification.into() {
             self.handle_notification(header.zxid, body, depot)?;
