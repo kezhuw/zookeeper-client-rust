@@ -107,6 +107,11 @@ impl Depot {
         }
     }
 
+    fn push_request(&mut self, mut operation: SessionOperation) {
+        operation.request.set_xid(self.xid.next());
+        self.push_operation(Operation::Session(operation));
+    }
+
     pub fn pop_ping(&mut self) -> Result<(), Error> {
         self.pop_request(PredefinedXid::Ping.into()).map(|_| ())
     }
@@ -145,13 +150,13 @@ impl Depot {
         if *count == 0 {
             self.watching_paths.remove(&(path, mode));
             if let Some(operation) = self.unwatching_paths.remove(&(path, mode)) {
-                self.push_operation(Operation::Session(operation));
+                self.push_request(operation);
             }
             if self.has_watching_requests(path) {
                 return;
             }
             if let Some(operation) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
-                self.push_operation(Operation::Session(operation));
+                self.push_request(operation);
             }
         }
     }
@@ -166,7 +171,7 @@ impl Depot {
         self.cancel_unwatch(path, mode);
     }
 
-    pub fn push_session(&mut self, mut operation: SessionOperation) {
+    pub fn push_session(&mut self, operation: SessionOperation) {
         let info = operation.request.get_operation_info();
         log::debug!("ZooKeeper operation request: {:?}", info);
         if let (op_code, OpStat::Watch { path, mode }) = info {
@@ -185,8 +190,7 @@ impl Depot {
                 self.watching_paths.insert((path, mode), count);
             }
         }
-        operation.request.set_xid(self.xid.next());
-        self.push_operation(Operation::Session(operation));
+        self.push_request(operation);
     }
 
     pub fn push_remove_watch(&mut self, path: &str, mode: WatchMode, responser: StateResponser) {
