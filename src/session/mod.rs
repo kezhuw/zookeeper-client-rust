@@ -203,7 +203,7 @@ impl Session {
     ) {
         if let Err(err) = self.serve_session(&sock, buf, depot, requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
-            log::debug!("ZooKeeper session {} state {} error {}", self.session_id, self.session_state, err);
+            log::info!("ZooKeeper session {} state {} error {}", self.session_id, self.session_state, err);
             depot.error(&err);
         } else {
             self.change_state(SessionState::Disconnected);

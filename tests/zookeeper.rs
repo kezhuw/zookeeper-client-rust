@@ -1165,6 +1165,35 @@ async fn test_persistent_watcher_passive_remove() {
 }
 
 #[test_log::test(tokio::test)]
+async fn test_fail_watch_with_multiple_unwatching() {
+    let docker = DockerCli::default();
+    let zookeeper = docker.run(zookeeper_image());
+    let zk_port = zookeeper.get_host_port(2181);
+    let cluster = format!("127.0.0.1:{}", zk_port);
+
+    let client = zk::Client::connect(&cluster).await.unwrap();
+
+    let (_, exist_watcher1) = client.check_and_watch_stat("/a1").await.unwrap();
+    let (_, exist_watcher2) = client.check_and_watch_stat("/a2").await.unwrap();
+
+    let mut state_watcher = client.state_watcher();
+
+    let data_watching1 = client.get_and_watch_data("/a1");
+    let data_watching2 = client.get_and_watch_data("/a2");
+
+    drop(exist_watcher1);
+    drop(exist_watcher2);
+
+    assert_that!(data_watching1.await.unwrap_err()).is_equal_to(zk::Error::NoNode);
+    assert_that!(data_watching2.await.unwrap_err()).is_equal_to(zk::Error::NoNode);
+
+    select! {
+        state = state_watcher.changed() => panic!("expect no state update, but got {state}"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+    }
+}
+
+#[test_log::test(tokio::test)]
 async fn test_fail_watch_with_concurrent_passive_remove() {
     let docker = DockerCli::default();
     let zookeeper = docker.run(zookeeper_image());
