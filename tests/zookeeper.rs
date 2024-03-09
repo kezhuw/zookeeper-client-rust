@@ -5,7 +5,7 @@ use assert_matches::assert_matches;
 use assertor::*;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
-use rand::{self, Rng};
+use rand::Rng;
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
 use test_case::test_case;
