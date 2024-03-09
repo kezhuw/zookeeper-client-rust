@@ -142,11 +142,7 @@ impl From<InvalidData> for DeserializeError {
     }
 }
 
-pub trait Record: SerializableRecord + DynamicRecord {
-    fn take_serialized(&self) -> Option<Vec<u8>> {
-        None
-    }
-}
+pub trait Record: SerializableRecord + DynamicRecord {}
 
 impl<T> Record for T where T: SerializableRecord + DynamicRecord {}
 
