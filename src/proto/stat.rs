@@ -124,7 +124,7 @@ impl UnsafeRead<'_> for Stat {
 #[cfg(test)]
 mod tests {
     use rand::distributions::Standard;
-    use rand::{self, Rng};
+    use rand::Rng;
 
     use super::Stat;
     use crate::record::{self, DeserializableRecord, SerializableRecord, StaticRecord};
