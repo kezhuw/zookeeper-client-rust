@@ -1,6 +1,6 @@
 [package]
 name = "zookeeper-client"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 authors = ["Kezhu Wang <kezhuw@gmail.com>"]
 description = "ZooKeeper async client"
