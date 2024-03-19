@@ -27,9 +27,9 @@ fn parse_host_port(host: &str, port: &str) -> Result<u16, InvalidAddress> {
     Ok(port)
 }
 
-pub type HostPort = (String, u16);
+pub type HostPort = (String, u16, bool);
 
-pub type HostPortRef<'a> = (&'a str, u16);
+pub type HostPortRef<'a> = (&'a str, u16, bool);
 
 pub trait ToRef<'a, T: 'a> {
     fn to_ref(&'a self) -> T;
@@ -43,7 +43,7 @@ pub trait Ref<'a>: Sized + 'a {
 
 impl<'a> ToRef<'a, HostPortRef<'a>> for HostPort {
     fn to_ref(&'a self) -> HostPortRef<'a> {
-        return (self.0.as_str(), self.1);
+        return (self.0.as_str(), self.1, self.2);
     }
 }
 
@@ -51,7 +51,7 @@ impl<'a> Ref<'a> for HostPortRef<'a> {
     type Value = HostPort;
 
     fn to_value(&self) -> HostPort {
-        (self.0.to_owned(), self.1)
+        (self.0.to_owned(), self.1, self.2)
     }
 }
 
@@ -81,24 +81,36 @@ fn parse_address(s: &str) -> Result<(&str, u16), InvalidAddress> {
 }
 
 /// Parses connection string to host port pairs and chroot.
-pub fn parse_connect_string(s: &str) -> Result<(Vec<HostPortRef>, Chroot<'_>), Error> {
-    if s.is_empty() {
-        return Err(Error::BadArguments(&"empty connect string"));
-    }
-    let (cluster, chroot) = if let Some(i) = s.find('/') {
-        if i + 1 == s.len() {
-            (&s[..i], Chroot::default())
-        } else {
-            (&s[..i], Chroot::new(&s[i..])?)
-        }
-    } else {
-        (s, Chroot::default())
-    };
+pub fn parse_connect_string(s: &str, tls: bool) -> Result<(Vec<HostPortRef>, Chroot<'_>), Error> {
+    let mut chroot = None;
     let mut servers = Vec::with_capacity(10);
-    for server in cluster.split(',') {
-        servers.push(parse_address(server)?);
+    for s in s.rsplit(',') {
+        let (mut hostport, tls) = if let Some(s) = s.strip_prefix("tcp://") {
+            (s, false)
+        } else if let Some(s) = s.strip_prefix("tcp+tls://") {
+            (s, true)
+        } else if s.is_empty() {
+            let err = if chroot.is_none() {
+                Error::BadArguments(&"empty connect string")
+            } else {
+                Error::BadArguments(&"invalid address")
+            };
+            return Err(err);
+        } else {
+            (s, tls)
+        };
+        if chroot.is_none() {
+            chroot = Some(Chroot::default());
+            if let Some(i) = hostport.find('/') {
+                chroot = Some(Chroot::new(&hostport[i..])?);
+                hostport = &hostport[..i];
+            }
+        }
+        let (host, port) = parse_address(hostport)?;
+        servers.push((host, port, tls));
     }
-    Ok((servers, chroot))
+    servers.reverse();
+    Ok((servers, chroot.unwrap()))
 }
 
 /// Splits path to `(parent, tree, name)` where `tree` has trailing slash but `parent` does not
@@ -265,18 +277,30 @@ mod tests {
     fn test_parse_connect_string() {
         use super::parse_connect_string;
 
-        assert_eq!(parse_connect_string("").unwrap_err(), Error::BadArguments(&"empty connect string"));
-        assert_eq!(parse_connect_string("host1:abc").unwrap_err(), Error::BadArguments(&"invalid address"));
-        assert_eq!(parse_connect_string("host1/abc/").unwrap_err(), Error::BadArguments(&"path must not end with '/'"));
-
-        assert_eq!(parse_connect_string("host1").unwrap(), (vec![("host1", 2181)], Chroot::default()));
+        assert_eq!(parse_connect_string("", false).unwrap_err(), Error::BadArguments(&"empty connect string"));
+        assert_eq!(parse_connect_string("host1:abc", false).unwrap_err(), Error::BadArguments(&"invalid address"));
         assert_eq!(
-            parse_connect_string("host1,host2:2222/").unwrap(),
-            (vec![("host1", 2181), ("host2", 2222)], Chroot::default())
+            parse_connect_string("host1/abc/", true).unwrap_err(),
+            Error::BadArguments(&"path must not end with '/'")
+        );
+
+        assert_eq!(parse_connect_string("host1", false).unwrap(), (vec![("host1", 2181, false)], Chroot::default()));
+        assert_eq!(parse_connect_string("host1", true).unwrap(), (vec![("host1", 2181, true)], Chroot::default()));
+        assert_eq!(
+            parse_connect_string("tcp+tls://host1", false).unwrap(),
+            (vec![("host1", 2181, true)], Chroot::default())
         );
         assert_eq!(
-            parse_connect_string("host1,host2:2222/abc").unwrap(),
-            (vec![("host1", 2181), ("host2", 2222)], Chroot::new("/abc").unwrap())
+            parse_connect_string("host1,host2:2222/", false).unwrap(),
+            (vec![("host1", 2181, false), ("host2", 2222, false)], Chroot::default())
+        );
+        assert_eq!(
+            parse_connect_string("host1,host2:2222/abc", false).unwrap(),
+            (vec![("host1", 2181, false), ("host2", 2222, false)], Chroot::new("/abc").unwrap())
+        );
+        assert_eq!(
+            parse_connect_string("host1,tcp+tls://host2:2222,tcp://host3/abc", true).unwrap(),
+            (vec![("host1", 2181, true), ("host2", 2222, true), ("host3", 2181, false)], Chroot::new("/abc").unwrap())
         );
     }
 

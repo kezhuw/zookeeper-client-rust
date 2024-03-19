@@ -4,11 +4,14 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use std::time::Duration;
 
 use const_format::formatcp;
 use either::{Either, Left, Right};
 use ignore_result::Ignore;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{ClientConfig, RootCertStore};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
@@ -1528,6 +1531,9 @@ pub(crate) struct Version(u32, u32, u32);
 /// Builder for [Client] with more options than [Client::connect].
 #[derive(Clone, Debug)]
 pub struct ClientBuilder {
+    tls: bool,
+    trusted_certs: RootCertStore,
+    client_certs: Option<(Vec<CertificateDer<'static>>, Arc<PrivateKeyDer<'static>>)>,
     authes: Vec<AuthPacket>,
     version: Version,
     session: Option<(SessionId, Vec<u8>)>,
@@ -1540,6 +1546,9 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     fn new() -> Self {
         Self {
+            tls: false,
+            trusted_certs: RootCertStore::empty(),
+            client_certs: None,
             authes: Default::default(),
             version: Version(u32::MAX, u32::MAX, u32::MAX),
             session: None,
@@ -1584,6 +1593,43 @@ impl ClientBuilder {
         self
     }
 
+    /// Assumes tls for server in connection string if no protocol specified individually.
+    /// See [Self::connect] for syntax to specify protocol individually.
+    pub fn assume_tls(&mut self) -> &mut Self {
+        self.tls = true;
+        self
+    }
+
+    /// Trusts certificates signed by given ca certificates.
+    pub fn trust_ca_pem_certs(&mut self, certs: &str) -> Result<&mut Self> {
+        for r in rustls_pemfile::certs(&mut certs.as_bytes()) {
+            let cert = match r {
+                Ok(cert) => cert,
+                Err(err) => return Err(Error::other(format!("fail to read cert {}", err), err)),
+            };
+            if let Err(err) = self.trusted_certs.add(cert) {
+                return Err(Error::other(format!("fail to add cert {}", err), err));
+            }
+        }
+        Ok(self)
+    }
+
+    /// Identifies client itself to server with given cert chain and private key.
+    pub fn use_client_pem_cert(&mut self, cert: &str, key: &str) -> Result<&mut Self> {
+        let r: std::result::Result<Vec<_>, _> = rustls_pemfile::certs(&mut cert.as_bytes()).collect();
+        let certs = match r {
+            Err(err) => return Err(Error::other(format!("fail to read cert {}", err), err)),
+            Ok(certs) => certs,
+        };
+        let key = match rustls_pemfile::private_key(&mut key.as_bytes()) {
+            Err(err) => return Err(Error::other(format!("fail to read client private key {err}"), err)),
+            Ok(None) => return Err(Error::BadArguments(&"no client private key")),
+            Ok(Some(key)) => key,
+        };
+        self.client_certs = Some((certs, Arc::new(key)));
+        Ok(self)
+    }
+
     /// Specifies client assumed server version of ZooKeeper cluster.
     ///
     /// Client will issue server compatible protocol to avoid [Error::Unimplemented] for some
@@ -1606,13 +1652,17 @@ impl ClientBuilder {
 
     /// Connects to ZooKeeper cluster.
     ///
+    /// Parameter `cluster` specifies connection string to ZooKeeper cluster. It has same syntax as
+    /// Java client except that you can specifies protocol for server individually. For example,
+    /// `tcp://server1,tcp+tls://server2:port,server3`. This claims that `server1` uses plaintext
+    /// protocol, `server2` uses tls encrypted protocol while `server3` uses tls if
+    /// [Self::assume_tls] is specified or plaintext otherwise.
+    ///
     /// # Notable errors
     /// * [Error::NoHosts] if no host is available
     /// * [Error::SessionExpired] if specified session expired
     pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
-        let (hosts, chroot) = util::parse_connect_string(cluster)?;
-        let mut buf = Vec::with_capacity(4096);
-        let mut connecting_depot = Depot::for_connecting();
+        let (hosts, chroot) = util::parse_connect_string(cluster, self.tls)?;
         if let Some((id, password)) = &self.session {
             if id.0 == 0 {
                 return Err(Error::BadArguments(&"session id must not be 0"));
@@ -1628,22 +1678,39 @@ impl ClientBuilder {
         } else if self.connection_timeout < Duration::ZERO {
             return Err(Error::BadArguments(&"connection timeout must not be negative"));
         }
+        self.trusted_certs.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = if let Some((certs, private_key)) = self.client_certs.take() {
+            match ClientConfig::builder()
+                .with_root_certificates(std::mem::replace(&mut self.trusted_certs, RootCertStore::empty()))
+                .with_client_auth_cert(certs, Arc::try_unwrap(private_key).unwrap_or_else(|k| k.clone_key()))
+            {
+                Ok(config) => config,
+                Err(err) => return Err(Error::other(format!("invalid client private key {err}"), err)),
+            }
+        } else {
+            ClientConfig::builder()
+                .with_root_certificates(std::mem::replace(&mut self.trusted_certs, RootCertStore::empty()))
+                .with_no_client_auth()
+        };
         let (mut session, state_receiver) = Session::new(
             self.session.take(),
             &self.authes,
             self.readonly,
             self.detached,
+            tls_config,
             self.session_timeout,
             self.connection_timeout,
         );
         let mut hosts_iter = hosts.iter().copied();
-        let sock = session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await?;
+        let mut buf = Vec::with_capacity(4096);
+        let mut connecting_depot = Depot::for_connecting();
+        let conn = session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let servers = hosts.into_iter().map(|addr| addr.to_value()).collect();
         let session_info = (session.session_id, session.session_password.clone());
         let session_timeout = session.session_timeout;
         tokio::spawn(async move {
-            session.serve(servers, sock, buf, connecting_depot, receiver).await;
+            session.serve(servers, conn, buf, connecting_depot, receiver).await;
         });
         let client =
             Client::new(chroot.to_owned(), self.version, session_info, session_timeout, sender, state_receiver);

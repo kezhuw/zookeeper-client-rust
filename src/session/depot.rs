@@ -3,8 +3,8 @@ use std::io::{self, IoSlice};
 
 use hashbrown::HashMap;
 use strum::IntoEnumIterator;
-use tokio::net::TcpStream;
 
+use super::connection::Connection;
 use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};
 use super::types::WatchMode;
 use super::xid::Xid;
@@ -205,8 +205,18 @@ impl Depot {
             .any(|mode| self.watching_paths.contains_key(&(path, mode)))
     }
 
-    pub fn write_operations(&mut self, sock: &TcpStream, session_id: SessionId) -> Result<(), Error> {
-        let result = sock.try_write_vectored(self.writing_slices.as_slice());
+    pub fn write_operations(&mut self, conn: &mut Connection, session_id: SessionId) -> Result<(), Error> {
+        if !self.has_pending_writes() {
+            if let Err(err) = conn.flush() {
+                if err.kind() == io::ErrorKind::WouldBlock {
+                    return Ok(());
+                }
+                log::debug!("ZooKeeper session {} write failed {}", session_id, err);
+                return Err(Error::ConnectionLoss);
+            }
+            return Ok(());
+        }
+        let result = conn.write_vectored(self.writing_slices.as_slice());
         let mut written_bytes = match result {
             Err(err) => {
                 if err.kind() == io::ErrorKind::WouldBlock {
