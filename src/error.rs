@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use derive_where::derive_where;
 use static_assertions::assert_impl_all;
 use thiserror::Error;
 
@@ -82,6 +85,18 @@ pub enum Error {
 
     #[error("runtime condition mismatch")]
     RuntimeInconsistent,
+
+    #[error(transparent)]
+    Other(OtherError),
+}
+
+#[derive(Error, Clone, Debug)]
+#[derive_where(Eq, PartialEq)]
+#[error("{message}")]
+pub struct OtherError {
+    message: Arc<String>,
+    #[derive_where(skip(EqHashOrd))]
+    source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
 impl Error {
@@ -110,6 +125,10 @@ impl Error {
             Self::ClientClosed => true,
             _ => false,
         }
+    }
+
+    pub(crate) fn other(message: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Other(OtherError { message: Arc::new(message.into()), source: Some(Arc::new(source)) })
     }
 }
 

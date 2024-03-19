@@ -1,3 +1,4 @@
+mod connection;
 mod depot;
 mod event;
 mod request;
@@ -6,14 +7,17 @@ mod watch;
 mod xid;
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ignore_result::Ignore;
+use rustls::ClientConfig;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant, Sleep};
 
+use self::connection::Connection;
 pub use self::depot::Depot;
 use self::event::WatcherEvent;
 pub use self::request::{
@@ -31,6 +35,7 @@ use self::watch::{WatchManager, WatcherId};
 use crate::error::Error;
 use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
 use crate::record;
+use crate::util::HostPort;
 
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
@@ -54,6 +59,8 @@ impl RequestOperation for (WatcherId, StateResponser) {
 pub struct Session {
     readonly: bool,
     detached: bool,
+
+    tls_config: Arc<ClientConfig>,
 
     configured_connection_timeout: Duration,
 
@@ -85,6 +92,7 @@ impl Session {
         authes: &[AuthPacket],
         readonly: bool,
         detached: bool,
+        tls_config: ClientConfig,
         session_timeout: Duration,
         connection_timeout: Duration,
     ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
@@ -96,6 +104,7 @@ impl Session {
         let mut session = Session {
             readonly,
             detached,
+            tls_config: Arc::new(tls_config),
 
             configured_connection_timeout: connection_timeout,
 
@@ -134,26 +143,26 @@ impl Session {
 
     pub async fn serve(
         &mut self,
-        servers: Vec<(String, u16)>,
-        sock: TcpStream,
+        servers: Vec<HostPort>,
+        conn: Connection,
         mut buf: Vec<u8>,
         mut connecting_trans: Depot,
         mut requester: mpsc::UnboundedReceiver<SessionOperation>,
     ) {
         let mut depot = Depot::for_serving();
         let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
-        self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
+        self.serve_once(conn, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
-            let mut hosts = servers.iter().cycle().map(|(host, port)| (host.as_str(), *port));
-            let sock = match self.start(&mut hosts, &mut buf, &mut connecting_trans).await {
+            let mut hosts = servers.iter().cycle().map(|(host, port, tls)| (host.as_str(), *port, *tls));
+            let conn = match self.start(&mut hosts, &mut buf, &mut connecting_trans).await {
                 Err(err) => {
                     log::warn!("fail to connect to cluster {:?} due to {}", servers, err);
                     self.resolve_start_error(&err);
                     break;
                 },
-                Ok(sock) => sock,
+                Ok(conn) => conn,
             };
-            self.serve_once(sock, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
+            self.serve_once(conn, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         }
         let err = self.state_error();
         Self::close_requester(requester, &err).await;
@@ -195,13 +204,13 @@ impl Session {
 
     async fn serve_once(
         &mut self,
-        sock: TcpStream,
+        mut conn: Connection,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
         requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
         unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) {
-        if let Err(err) = self.serve_session(&sock, buf, depot, requester, unwatch_requester).await {
+        if let Err(err) = self.serve_session(&mut conn, buf, depot, requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
             log::info!("ZooKeeper session {} state {} error {}", self.session_id, self.session_state, err);
             depot.error(&err);
@@ -357,8 +366,8 @@ impl Session {
         Ok(())
     }
 
-    fn read_socket(&mut self, sock: &TcpStream, buf: &mut Vec<u8>) -> Result<(), Error> {
-        match sock.try_read_buf(buf) {
+    fn read_connection(&mut self, conn: &mut Connection, buf: &mut Vec<u8>) -> Result<(), Error> {
+        match conn.read_buf(buf) {
             Ok(0) => {
                 log::debug!("ZooKeeper session {} encounters server closed", self.session_id);
                 return Err(Error::ConnectionLoss);
@@ -394,17 +403,22 @@ impl Session {
         Ok(())
     }
 
-    async fn serve_connecting(&mut self, sock: &TcpStream, buf: &mut Vec<u8>, depot: &mut Depot) -> Result<(), Error> {
+    async fn serve_connecting(
+        &mut self,
+        conn: &mut Connection,
+        buf: &mut Vec<u8>,
+        depot: &mut Depot,
+    ) -> Result<(), Error> {
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         while !(self.session_state.is_connected() && depot.is_empty()) {
             select! {
-                _ = sock.readable() => {
-                    self.read_socket(sock, buf)?;
+                _ = conn.readable() => {
+                    self.read_connection(conn, buf)?;
                     self.handle_recv_buf(buf, depot)?;
                 },
-                _ = sock.writable(), if depot.has_pending_writes() => {
-                    depot.write_operations(sock, self.session_id)?;
+                _ = conn.writable(), if depot.has_pending_writes() || conn.wants_write() => {
+                    depot.write_operations(conn, self.session_id)?;
                     self.last_send = Instant::now();
                 },
                 now = tick.tick() => {
@@ -419,7 +433,7 @@ impl Session {
 
     async fn serve_session(
         &mut self,
-        sock: &TcpStream,
+        conn: &mut Connection,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
         requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
@@ -431,12 +445,12 @@ impl Session {
         depot.start();
         while !(channel_closed && depot.is_empty()) {
             select! {
-                _ = sock.readable() => {
-                    self.read_socket(sock, buf)?;
+                _ = conn.readable() => {
+                    self.read_connection(conn, buf)?;
                     self.handle_recv_buf(buf, depot)?;
                 },
-                _ = sock.writable(), if depot.has_pending_writes() => {
-                    depot.write_operations(sock, self.session_id)?;
+                _ = conn.writable(), if depot.has_pending_writes() || conn.wants_write() => {
+                    depot.write_operations(conn, self.session_id)?;
                     self.last_send = Instant::now();
                 },
                 r = requester.recv(), if !channel_closed => {
@@ -450,7 +464,7 @@ impl Session {
                         continue;
                     };
                     depot.push_session(operation);
-                    depot.write_operations(sock, self.session_id)?;
+                    depot.write_operations(conn, self.session_id)?;
                     self.last_send = Instant::now();
                 },
                 r = unwatch_requester.recv() => if let Some((watcher_id, responser)) = r {
@@ -462,7 +476,7 @@ impl Session {
                     }
                     if self.last_ping.is_none() && now >= self.last_send + self.ping_timeout {
                         self.send_ping(depot, now);
-                        depot.write_operations(sock, self.session_id)?;
+                        depot.write_operations(conn, self.session_id)?;
                     }
                 },
             }
@@ -470,30 +484,35 @@ impl Session {
         Err(Error::ClientClosed)
     }
 
-    async fn new_socket<'a>(
+    async fn new_connection<'a>(
         &mut self,
-        hosts: &mut impl Iterator<Item = (&'a str, u16)>,
+        hosts: &mut impl Iterator<Item = (&'a str, u16, bool)>,
         deadline: &mut Sleep,
-    ) -> Result<(TcpStream, (&'a str, u16)), Error> {
-        let addr = match hosts.next() {
+    ) -> Result<(Connection, (&'a str, u16, bool)), Error> {
+        let (host, port, tls) = match hosts.next() {
             None => return Err(Error::NoHosts),
             Some(addr) => addr,
         };
         select! {
             _ = unsafe { Pin::new_unchecked(deadline) } => Err(Error::Timeout),
             _ = time::sleep(self.connection_timeout) => {
-                log::debug!("ZooKeeper fails to connect to {}:{} in {}ms", addr.0, addr.1, self.connection_timeout.as_millis());
+                log::debug!("ZooKeeper fails to connect to {}:{} in {}ms", host, port, self.connection_timeout.as_millis());
                 Err(Error::ConnectionLoss)
             },
-            r = TcpStream::connect(addr) => {
+            r = TcpStream::connect((host, port)) => {
                 match r {
                     Err(err) => {
-                        log::debug!("ZooKeeper fails to connect to {}:{} due to {}", addr.0, addr.1, err);
+                        log::debug!("ZooKeeper fails to connect to {}:{} due to {}", host, port, err);
                         Err(Error::ConnectionLoss)
                     },
                     Ok(sock) => {
-                        log::debug!("ZooKeeper succeeds in connecting to {}:{}", addr.0, addr.1);
-                        Ok((sock, addr))
+                        let connection = if tls {
+                            Connection::new_tls(host, self.tls_config.clone(), sock)?
+                        } else {
+                            Connection::new_raw(sock)
+                        };
+                        log::debug!("ZooKeeper succeeds in connecting to {}:{}", host, port);
+                        Ok((connection, (host, port, tls)))
                     },
                 }
             },
@@ -529,12 +548,12 @@ impl Session {
 
     async fn start_once(
         &mut self,
-        hosts: &mut impl Iterator<Item = (&str, u16)>,
+        hosts: &mut impl Iterator<Item = (&str, u16, bool)>,
         deadline: &mut Sleep,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
-    ) -> Result<TcpStream, Error> {
-        let (sock, addr) = self.new_socket(hosts, deadline).await?;
+    ) -> Result<Connection, Error> {
+        let (mut conn, addr) = self.new_connection(hosts, deadline).await?;
         depot.clear();
         buf.clear();
         self.send_connect(depot);
@@ -544,29 +563,29 @@ impl Session {
         self.last_send = Instant::now();
         self.last_recv = self.last_send;
         self.last_ping = None;
-        match self.serve_connecting(&sock, buf, depot).await {
+        match self.serve_connecting(&mut conn, buf, depot).await {
             Err(err) => {
                 log::warn!("ZooKeeper fails to establish session to {}:{} due to {}", addr.0, addr.1, err);
                 Err(err)
             },
             _ => {
                 log::info!("ZooKeeper succeeds to establish session to {}:{}", addr.0, addr.1);
-                Ok(sock)
+                Ok(conn)
             },
         }
     }
 
     pub async fn start(
         &mut self,
-        hosts: &mut impl Iterator<Item = (&str, u16)>,
+        hosts: &mut impl Iterator<Item = (&str, u16, bool)>,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
-    ) -> Result<TcpStream, Error> {
+    ) -> Result<Connection, Error> {
         let session_timeout = if self.session_id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
         let mut deadline = time::sleep_until(self.last_recv + session_timeout);
         let mut last_error = match self.start_once(hosts, &mut deadline, buf, depot).await {
             Err(err) => err,
-            Ok(sock) => return Ok(sock),
+            Ok(conn) => return Ok(conn),
         };
         while last_error != Error::NoHosts && last_error != Error::Timeout && last_error != Error::SessionExpired {
             match self.start_once(hosts, &mut deadline, buf, depot).await {
@@ -574,7 +593,7 @@ impl Session {
                     last_error = err;
                     continue;
                 },
-                Ok(sock) => return Ok(sock),
+                Ok(conn) => return Ok(conn),
             };
         }
         Err(last_error)

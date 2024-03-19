@@ -1,11 +1,15 @@
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 use std::{fs, future};
 
 use assert_matches::assert_matches;
 use assertor::*;
+use maplit::hashmap;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::Rng;
+use rcgen::{Certificate, CertificateParams};
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
 use test_case::test_case;
@@ -39,6 +43,17 @@ fn zookeeper_image_with_version_and_properties<'a>(version: &'a str, mut propert
 
 fn zookeeper_image_with_properties<'a>(properties: Vec<&'a str>) -> GenericImage {
     zookeeper_image_with_version_and_properties("3.9.0", properties)
+}
+
+fn zookeeper_image_with_port_and_volumes<'a>(
+    port: u16,
+    volumes: HashMap<&'a str, &'a Path>,
+) -> RunnableImage<GenericImage> {
+    let mut image: RunnableImage<_> = zookeeper_image().with_exposed_port(port).into();
+    for (dest, source) in volumes {
+        image = image.with_volume((source.to_str().unwrap(), dest));
+    }
+    image
 }
 
 fn zookeeper_image() -> GenericImage {
@@ -1523,6 +1538,95 @@ async fn test_client_detach() {
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
     zk::Client::builder().with_session(id, password).connect(&cluster).await.unwrap();
+}
+
+fn generate_ca_cert() -> (Certificate, String) {
+    let mut params = CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.distinguished_name.push(rcgen::DnType::CommonName, "ca");
+    let ca_cert = Certificate::from_params(params).unwrap();
+    let ca_cert_pem = ca_cert.serialize_pem().unwrap();
+    let ca_cert_key = rcgen::KeyPair::from_pem(&ca_cert.get_key_pair().serialize_pem()).unwrap();
+    let ca_cert_params = CertificateParams::from_ca_cert_pem(&ca_cert_pem, ca_cert_key).unwrap();
+    (Certificate::from_params(ca_cert_params).unwrap(), ca_cert_pem)
+}
+
+fn generate_server_cert() -> Certificate {
+    let mut params = CertificateParams::new(vec!["127.0.0.1".to_string()]);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature, rcgen::KeyUsagePurpose::KeyEncipherment];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    params.distinguished_name.push(rcgen::DnType::CommonName, "server");
+    Certificate::from_params(params).unwrap()
+}
+
+fn generate_client_cert() -> Certificate {
+    let mut params = CertificateParams::default();
+    params.distinguished_name.push(rcgen::DnType::CommonName, "client");
+    Certificate::from_params(params).unwrap()
+}
+
+#[test_log::test(tokio::test)]
+async fn test_tls() {
+    let dir = tempdir().unwrap();
+
+    let (ca_cert, ca_cert_pem) = generate_ca_cert();
+    let server_cert = generate_server_cert();
+    let signed_server_cert = server_cert.serialize_pem_with_signer(&ca_cert).unwrap();
+
+    // ZooKeeper needs a keystore with both key and signed cert.
+    let server_pem = server_cert.serialize_private_key_pem() + &signed_server_cert;
+
+    let ca_cert_file = dir.path().join("ca.cert.pem");
+    fs::write(&ca_cert_file, &ca_cert_pem).unwrap();
+
+    let server_pem_file = dir.path().join("server.pem");
+    fs::write(&server_pem_file, &server_pem).unwrap();
+
+    let config = r"
+dataDir=/data
+dataLogDir=/datalog
+tickTime=2000
+initLimit=5
+syncLimit=2
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=0
+maxClientCnxns=60
+
+# for healthcheck
+clientPort=2181
+secureClientPort=2182
+ssl.clientAuth=need
+ssl.keyStore.location=/certs/server.pem
+ssl.trustStore.location=/certs/ca.cert.pem
+serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
+";
+    let config_file = dir.path().join("zoo.cfg");
+    fs::write(&config_file, &config).unwrap();
+
+    let docker = DockerCli::default();
+    let image = zookeeper_image_with_port_and_volumes(2182, hashmap! {
+        "/conf/zoo.cfg" => config_file.as_path(),
+        "/certs/server.pem" => server_pem_file.as_path(),
+        "/certs/ca.cert.pem" => ca_cert_file.as_path(),
+    });
+    let zookeeper = docker.run(image);
+    let zk_port = zookeeper.get_host_port(2182);
+
+    let client_cert = generate_client_cert();
+    let signed_client_cert = client_cert.serialize_pem_with_signer(&ca_cert).unwrap();
+    let client_key = client_cert.serialize_private_key_pem();
+
+    let client = zk::Client::builder()
+        .assume_tls()
+        .trust_ca_pem_certs(&ca_cert_pem)
+        .unwrap()
+        .use_client_pem_cert(&signed_client_cert, &client_key)
+        .unwrap()
+        .connect(&format!("tcp+tls://127.0.0.1:{}", zk_port))
+        .await
+        .unwrap();
+    let children = client.list_children("/").await.unwrap();
+    assert_that!(children).contains("zookeeper".to_owned());
 }
 
 #[allow(dead_code)]
