@@ -443,7 +443,7 @@ impl Session {
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let mut channel_closed = false;
         depot.start();
-        while !(channel_closed && depot.is_empty()) {
+        while !(channel_closed && depot.is_empty() && !conn.wants_write()) {
             select! {
                 _ = conn.readable() => {
                     self.read_connection(conn, buf)?;
