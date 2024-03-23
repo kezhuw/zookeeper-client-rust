@@ -149,13 +149,13 @@ async fn test_connect_nohosts() {
 #[test_log::test(tokio::test)]
 async fn test_connect_session_expired() {
     let server = Server::new();
-    let client = server.custom_client(None, |builder| builder.detach()).await.unwrap();
+    let client = server.custom_client(None, |connector| connector.detached()).await.unwrap();
     let timeout = client.session_timeout();
     let (id, password) = client.into_session();
 
     tokio::time::sleep(timeout * 2).await;
 
-    assert_that!(server.custom_client(None, |builder| builder.with_session(id, password)).await.unwrap_err())
+    assert_that!(server.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err())
         .is_equal_to(zk::Error::SessionExpired);
 }
 
@@ -322,52 +322,47 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         self.container.get_host_port(2181)
     }
 
-    pub fn url(&self) -> String {
-        let protocol = match (self.tls.is_some(), rand::random()) {
-            (true, _) => "tcp+tls://",
-            (false, true) => "tcp://",
-            (false, false) => "",
+    fn url(&self, chroot: Option<&str>) -> (String, bool) {
+        let (secure, explicit) = (rand::random(), rand::random());
+        let protocol = match (self.tls.is_some(), secure, explicit) {
+            (true, false, _) | (true, _, true) => "tcp+tls://",
+            (false, true, _) | (false, _, true) => "tcp://",
+            (_, _, _) => "",
         };
-        format!("{}127.0.0.1:{}", protocol, self.port())
+        (format!("{}127.0.0.1:{}{}", protocol, self.port(), chroot.unwrap_or("")), secure)
     }
 
-    pub fn builder(&self) -> zk::ClientBuilder {
+    pub fn connector(&self) -> zk::Connector {
+        let mut connector = zk::Client::connector();
         let Some(tls) = self.tls.as_ref() else {
-            return zk::Client::builder();
+            return connector;
         };
-        let mut builder = zk::Client::builder();
-        builder.trust_ca_pem_certs(&tls.ca).unwrap().use_client_pem_cert(&tls.cert, &tls.key).unwrap();
-        builder
+        let tls_options = zk::TlsOptions::default()
+            .with_pem_ca_certs(&tls.ca)
+            .unwrap()
+            .with_pem_identity(&tls.cert, &tls.key)
+            .unwrap();
+        connector.tls(tls_options);
+        connector
     }
 
     pub async fn client(&self, chroot: Option<&str>) -> zk::Client {
-        self.custom_client(chroot, |builder| builder).await.unwrap()
+        self.custom_client(chroot, |connector| connector).await.unwrap()
     }
 
     pub async fn custom_client(
         &self,
         chroot: Option<&str>,
-        custom: impl FnOnce(&mut zk::ClientBuilder) -> &mut zk::ClientBuilder,
+        custom: impl FnOnce(&mut zk::Connector) -> &mut zk::Connector,
     ) -> Result<zk::Client, zk::Error> {
-        let mut builder = self.builder();
-        custom(&mut builder);
-        let chroot = chroot.unwrap_or("");
-        let Some(tls) = self.tls.as_ref() else {
-            let url = self.url() + chroot;
-            return builder.connect(&url).await;
-        };
-        let assume_tls: bool = rand::random();
-        let protocol = if !assume_tls || rand::random() { "tcp+tls://" } else { "" };
-        if assume_tls {
-            builder.assume_tls();
+        let mut connector = self.connector();
+        custom(&mut connector);
+        let (url, secure) = self.url(chroot);
+        if secure {
+            connector.secure_connect(&url).await
+        } else {
+            connector.connect(&url).await
         }
-        builder
-            .trust_ca_pem_certs(&tls.ca)
-            .unwrap()
-            .use_client_pem_cert(&tls.cert, &tls.key)
-            .unwrap()
-            .connect(&format!("{}127.0.0.1:{}{}", protocol, self.port(), chroot))
-            .await
     }
 }
 
@@ -771,7 +766,7 @@ async fn test_create_container() {
 async fn test_zookeeper34() {
     let server = Server::with_options(ServerOptions { tls: Some(false), tag: "3.4", ..Default::default() });
 
-    let client = server.custom_client(None, |builder| builder.assume_server_version(3, 4, u32::MAX)).await.unwrap();
+    let client = server.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
     let (stat, _sequence) = client.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
     assert_that!(stat.is_invalid()).is_true();
 
@@ -989,7 +984,7 @@ async fn test_auth() {
     assert!(authed_users.contains(&authed_user));
 
     let authed_client =
-        server.custom_client(None, |builder| builder.with_auth(scheme.to_string(), auth.to_vec())).await.unwrap();
+        server.custom_client(None, |connector| connector.auth(scheme.to_string(), auth.to_vec())).await.unwrap();
 
     authed_client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
     let authed_users = client.list_auth_users().await.unwrap();
@@ -1574,19 +1569,19 @@ async fn test_client_drop() {
     let (id, password) = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    server.custom_client(None, |builder| builder.with_session(id, password)).await.unwrap_err();
+    server.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err();
 }
 
 #[test_log::test(tokio::test)]
 async fn test_client_detach() {
     let server = Server::new();
-    let client = server.custom_client(None, |builder| builder.detach()).await.unwrap();
+    let client = server.custom_client(None, |connector| connector.detached()).await.unwrap();
 
     let mut state_watcher = client.state_watcher();
     let (id, password) = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    server.custom_client(None, |builder| builder.with_session(id, password)).await.unwrap();
+    server.custom_client(None, |connector| connector.session(id, password)).await.unwrap();
 }
 
 fn generate_ca_cert() -> (Certificate, String) {
