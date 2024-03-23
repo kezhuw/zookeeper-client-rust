@@ -1598,6 +1598,18 @@ impl TlsOptions {
     fn take_roots(&mut self) -> RootCertStore {
         std::mem::replace(&mut self.ca_certs, RootCertStore::empty())
     }
+
+    fn into_config(mut self) -> Result<ClientConfig> {
+        let builder = ClientConfig::builder().with_root_certificates(self.take_roots());
+        if let Some((client_cert, client_key)) = self.identity.take() {
+            match builder.with_client_auth_cert(client_cert, client_key) {
+                Ok(config) => Ok(config),
+                Err(err) => Err(Error::other(format!("invalid client private key {err}"), err)),
+            }
+        } else {
+            Ok(builder.with_no_client_auth())
+        }
+    }
 }
 
 /// A builder for [Client].
@@ -1705,16 +1717,7 @@ impl Connector {
         } else if self.connection_timeout < Duration::ZERO {
             return Err(Error::BadArguments(&"connection timeout must not be negative"));
         }
-        let mut tls_options = self.tls.take().unwrap_or_default();
-        let tls_builder = ClientConfig::builder().with_root_certificates(tls_options.take_roots());
-        let tls_config = if let Some((client_cert, client_key)) = tls_options.identity.take() {
-            match tls_builder.with_client_auth_cert(client_cert, client_key) {
-                Ok(config) => config,
-                Err(err) => return Err(Error::other(format!("invalid client private key {err}"), err)),
-            }
-        } else {
-            tls_builder.with_no_client_auth()
-        };
+        let tls_config = self.tls.take().unwrap_or_default().into_config()?;
         let (mut session, state_receiver) = Session::new(
             self.session.take(),
             &self.authes,
