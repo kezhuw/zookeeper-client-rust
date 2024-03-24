@@ -22,6 +22,14 @@ static ZK_IMAGE_TAG: &'static str = "3.9.0";
 static PERSISTENT_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all());
 static CONTAINER_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all());
 
+fn env_toggle(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) if v == "true" => true,
+        Ok(v) if v == "false" => false,
+        _ => rand::random(),
+    }
+}
+
 fn random_data() -> Vec<u8> {
     let rng = rand::thread_rng();
     rng.sample_iter(Standard).take(32).collect()
@@ -163,6 +171,7 @@ struct Tls {
     ca: String,
     cert: String,
     key: String,
+    hostname_verification: bool,
 }
 
 struct Server {
@@ -221,16 +230,10 @@ impl Server {
     }
 
     pub fn with_options(options: ServerOptions<'_>) -> Self {
-        let tls = options.tls.unwrap_or_else(|| match std::env::var("ZK_TEST_TLS") {
-            Ok(v) if v == "true" => true,
-            Ok(v) if v == "false" => false,
-            _ => rand::random(),
-        });
+        let tls = options.tls.unwrap_or_else(|| env_toggle("ZK_TEST_TLS"));
         if tls {
-            println!("starting tls zookeeper server ...");
             Self::tls(options)
         } else {
-            println!("starting plaintext zookeeper server ...");
             Self::plaintext(options)
         }
     }
@@ -241,9 +244,14 @@ impl Server {
 
     fn tls(options: ServerOptions<'_>) -> Self {
         let dir = tempdir().unwrap();
+        let hostname_verification = env_toggle("ZK_TLS_HOSTNAME_VERIFICATION");
+        println!(
+            "starting tls zookeeper server with hostname verification {} ...",
+            if hostname_verification { "enabled" } else { "disabled" }
+        );
 
         let (ca_cert, ca_cert_pem) = generate_ca_cert();
-        let server_cert = generate_server_cert();
+        let server_cert = generate_server_cert(hostname_verification);
         let signed_server_cert = server_cert.serialize_pem_with_signer(&ca_cert).unwrap();
 
         // ZooKeeper needs a keystore with both key and signed cert.
@@ -304,7 +312,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         let container = unsafe { std::mem::transmute(docker.run(image)) };
 
         Self {
-            tls: Some(Tls { ca: ca_cert_pem, cert: signed_client_cert, key: client_key }),
+            tls: Some(Tls { ca: ca_cert_pem, cert: signed_client_cert, key: client_key, hostname_verification }),
             _dir: Some(dir),
             _docker: docker,
             container,
@@ -312,6 +320,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     }
 
     fn plaintext(options: ServerOptions<'_>) -> Self {
+        println!("starting plaintext zookeeper server ...");
         let docker = Box::new(DockerCli::default());
         let image = zookeeper_image(options.into());
         let container = unsafe { std::mem::transmute(docker.run(image)) };
@@ -337,11 +346,14 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         let Some(tls) = self.tls.as_ref() else {
             return connector;
         };
-        let tls_options = zk::TlsOptions::default()
+        let mut tls_options = zk::TlsOptions::default()
             .with_pem_ca_certs(&tls.ca)
             .unwrap()
             .with_pem_identity(&tls.cert, &tls.key)
             .unwrap();
+        if !tls.hostname_verification {
+            tls_options = unsafe { tls_options.with_no_hostname_verification() };
+        }
         connector.tls(tls_options);
         connector
     }
@@ -1595,8 +1607,9 @@ fn generate_ca_cert() -> (Certificate, String) {
     (Certificate::from_params(ca_cert_params).unwrap(), ca_cert_pem)
 }
 
-fn generate_server_cert() -> Certificate {
-    let mut params = CertificateParams::new(vec!["127.0.0.1".to_string()]);
+fn generate_server_cert(hostname_verification: bool) -> Certificate {
+    let san = if hostname_verification { vec!["127.0.0.1".to_string()] } else { vec![] };
+    let mut params = CertificateParams::new(san);
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature, rcgen::KeyUsagePurpose::KeyEncipherment];
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     params.distinguished_name.push(rcgen::DnType::CommonName, "server");

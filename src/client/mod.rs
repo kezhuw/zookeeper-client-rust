@@ -9,8 +9,6 @@ use std::time::Duration;
 use const_format::formatcp;
 use either::{Either, Left, Right};
 use ignore_result::Ignore;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::{ClientConfig, RootCertStore};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
@@ -46,9 +44,10 @@ pub use crate::proto::{EnsembleUpdate, Stat};
 use crate::record::{self, Record, StaticRecord};
 use crate::session::StateReceiver;
 pub use crate::session::{EventType, SessionId, SessionState, WatchedEvent};
+use crate::tls::TlsOptions;
 use crate::util::{self, Ref as _};
 
-type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// CreateMode specifies ZooKeeper znode type. It covers all znode types with help from
 /// [CreateOptions::with_ttl].
@@ -1532,85 +1531,6 @@ impl Drop for OwnedLockClient {
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub(crate) struct Version(u32, u32, u32);
-
-/// Options for tls connection.
-#[derive(Debug)]
-pub struct TlsOptions {
-    identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    ca_certs: RootCertStore,
-}
-
-impl Clone for TlsOptions {
-    fn clone(&self) -> Self {
-        Self {
-            identity: self.identity.as_ref().map(|id| (id.0.clone(), id.1.clone_key())),
-            ca_certs: self.ca_certs.clone(),
-        }
-    }
-}
-
-impl Default for TlsOptions {
-    /// Tls options with well-known ca roots.
-    fn default() -> Self {
-        let mut options = Self::no_ca();
-        options.ca_certs.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        options
-    }
-}
-
-impl TlsOptions {
-    /// Tls options with no ca certificates. Use [TlsOptions::default] if well-known ca roots is
-    /// desirable.
-    pub fn no_ca() -> Self {
-        Self { ca_certs: RootCertStore::empty(), identity: None }
-    }
-
-    /// Adds new ca certificates.
-    pub fn with_pem_ca_certs(mut self, certs: &str) -> Result<Self> {
-        for r in rustls_pemfile::certs(&mut certs.as_bytes()) {
-            let cert = match r {
-                Ok(cert) => cert,
-                Err(err) => return Err(Error::other(format!("fail to read cert {}", err), err)),
-            };
-            if let Err(err) = self.ca_certs.add(cert) {
-                return Err(Error::other(format!("fail to add cert {}", err), err));
-            }
-        }
-        Ok(self)
-    }
-
-    /// Specifies client identity for server to authenticate.
-    pub fn with_pem_identity(mut self, cert: &str, key: &str) -> Result<Self> {
-        let r: std::result::Result<Vec<_>, _> = rustls_pemfile::certs(&mut cert.as_bytes()).collect();
-        let certs = match r {
-            Err(err) => return Err(Error::other(format!("fail to read cert {}", err), err)),
-            Ok(certs) => certs,
-        };
-        let key = match rustls_pemfile::private_key(&mut key.as_bytes()) {
-            Err(err) => return Err(Error::other(format!("fail to read client private key {err}"), err)),
-            Ok(None) => return Err(Error::BadArguments(&"no client private key")),
-            Ok(Some(key)) => key,
-        };
-        self.identity = Some((certs, key));
-        Ok(self)
-    }
-
-    fn take_roots(&mut self) -> RootCertStore {
-        std::mem::replace(&mut self.ca_certs, RootCertStore::empty())
-    }
-
-    fn into_config(mut self) -> Result<ClientConfig> {
-        let builder = ClientConfig::builder().with_root_certificates(self.take_roots());
-        if let Some((client_cert, client_key)) = self.identity.take() {
-            match builder.with_client_auth_cert(client_cert, client_key) {
-                Ok(config) => Ok(config),
-                Err(err) => Err(Error::other(format!("invalid client private key {err}"), err)),
-            }
-        } else {
-            Ok(builder.with_no_client_auth())
-        }
-    }
-}
 
 /// A builder for [Client].
 #[derive(Clone, Debug)]
