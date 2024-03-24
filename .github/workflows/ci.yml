@@ -53,6 +53,7 @@ jobs:
     needs: [test]
     runs-on: ubuntu-latest
     env:
+      RUST_LOG: debug
       RUSTFLAGS: -Cinstrument-coverage
     steps:
     - uses: actions/checkout@v2
@@ -66,7 +67,7 @@ jobs:
     - run: cargo install grcov
     - run: cargo build --verbose
     - name: Run tests
-      run: LLVM_PROFILE_FILE="zookeeper-client-%p-%m.profraw" cargo test --verbose
+      run: LLVM_PROFILE_FILE="zookeeper-client-%p-%m.profraw" cargo test --verbose -- --nocapture
     - name: Generate coverage report
       run: grcov $(find . -name "zookeeper-*.profraw" -print) --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
     - name: Upload to codecov.io
