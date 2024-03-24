@@ -130,6 +130,10 @@ impl Error {
     pub(crate) fn other(message: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Other(OtherError { message: Arc::new(message.into()), source: Some(Arc::new(source)) })
     }
+
+    pub(crate) fn other_from(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Other(OtherError { message: Arc::new(source.to_string()), source: Some(Arc::new(source)) })
+    }
 }
 
 assert_impl_all!(Error: Send, Sync);

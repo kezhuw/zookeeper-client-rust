@@ -8,7 +8,6 @@ use super::connection::Connection;
 use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};
 use super::types::WatchMode;
 use super::xid::Xid;
-use super::SessionId;
 use crate::error::Error;
 use crate::proto::{OpCode, PredefinedXid, RemoveWatchesRequest};
 
@@ -205,14 +204,13 @@ impl Depot {
             .any(|mode| self.watching_paths.contains_key(&(path, mode)))
     }
 
-    pub fn write_operations(&mut self, conn: &mut Connection, session_id: SessionId) -> Result<(), Error> {
+    pub fn write_operations(&mut self, conn: &mut Connection) -> Result<(), Error> {
         if !self.has_pending_writes() {
             if let Err(err) = conn.flush() {
                 if err.kind() == io::ErrorKind::WouldBlock {
                     return Ok(());
                 }
-                log::debug!("ZooKeeper session {} write failed {}", session_id, err);
-                return Err(Error::ConnectionLoss);
+                return Err(Error::other_from(err));
             }
             return Ok(());
         }
@@ -222,8 +220,7 @@ impl Depot {
                 if err.kind() == io::ErrorKind::WouldBlock {
                     return Ok(());
                 }
-                log::debug!("ZooKeeper session {} write failed {}", session_id, err);
-                return Err(Error::ConnectionLoss);
+                return Err(Error::other_from(err));
             },
             Ok(written_bytes) => written_bytes,
         };

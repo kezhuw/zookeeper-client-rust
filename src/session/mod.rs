@@ -369,13 +369,11 @@ impl Session {
     fn read_connection(&mut self, conn: &mut Connection, buf: &mut Vec<u8>) -> Result<(), Error> {
         match conn.read_buf(buf) {
             Ok(0) => {
-                log::debug!("ZooKeeper session {} encounters server closed", self.session_id);
                 return Err(Error::ConnectionLoss);
             },
             Err(err) => {
                 if err.kind() != io::ErrorKind::WouldBlock {
-                    log::debug!("ZooKeeper session {} encounters read err {}", self.session_id, err);
-                    return Err(Error::ConnectionLoss);
+                    return Err(Error::other_from(err));
                 }
             },
             _ => {},
@@ -418,7 +416,7 @@ impl Session {
                     self.handle_recv_buf(buf, depot)?;
                 },
                 _ = conn.writable(), if depot.has_pending_writes() || conn.wants_write() => {
-                    depot.write_operations(conn, self.session_id)?;
+                    depot.write_operations(conn)?;
                     self.last_send = Instant::now();
                 },
                 now = tick.tick() => {
@@ -450,7 +448,7 @@ impl Session {
                     self.handle_recv_buf(buf, depot)?;
                 },
                 _ = conn.writable(), if depot.has_pending_writes() || conn.wants_write() => {
-                    depot.write_operations(conn, self.session_id)?;
+                    depot.write_operations(conn)?;
                     self.last_send = Instant::now();
                 },
                 r = requester.recv(), if !channel_closed => {
@@ -464,7 +462,7 @@ impl Session {
                         continue;
                     };
                     depot.push_session(operation);
-                    depot.write_operations(conn, self.session_id)?;
+                    depot.write_operations(conn)?;
                     self.last_send = Instant::now();
                 },
                 r = unwatch_requester.recv() => if let Some((watcher_id, responser)) = r {
@@ -476,7 +474,7 @@ impl Session {
                     }
                     if self.last_ping.is_none() && now >= self.last_send + self.ping_timeout {
                         self.send_ping(depot, now);
-                        depot.write_operations(conn, self.session_id)?;
+                        depot.write_operations(conn)?;
                     }
                 },
             }
