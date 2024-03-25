@@ -171,7 +171,27 @@ struct Tls {
     ca: String,
     cert: String,
     key: String,
+    cert_x: String,
+    key_x: String,
     hostname_verification: bool,
+}
+
+impl Tls {
+    fn options(&self) -> zk::TlsOptions {
+        let mut options = zk::TlsOptions::default()
+            .with_pem_ca_certs(&self.ca)
+            .unwrap()
+            .with_pem_identity(&self.cert, &self.key)
+            .unwrap();
+        if !self.hostname_verification {
+            options = unsafe { options.with_no_hostname_verification() };
+        }
+        options
+    }
+
+    fn options_x(&self) -> zk::TlsOptions {
+        self.options().with_pem_identity(&self.cert_x, &self.key_x).unwrap()
+    }
 }
 
 struct Server {
@@ -263,7 +283,7 @@ impl Server {
         let server_pem_file = dir.path().join("server.pem");
         fs::write(&server_pem_file, &server_pem).unwrap();
 
-        let client_cert = generate_client_cert();
+        let client_cert = generate_client_cert("client");
         let signed_client_cert = client_cert.serialize_pem_with_signer(&ca_cert).unwrap();
         let client_key = client_cert.serialize_private_key_pem();
         let client_pem = client_key.clone() + &signed_client_cert;
@@ -307,12 +327,23 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
             ],
         };
 
+        let client_cert_x = generate_client_cert("client_x");
+        let signed_client_cert_x = client_cert_x.serialize_pem_with_signer(&ca_cert).unwrap();
+        let client_key_x = client_cert_x.serialize_private_key_pem();
+
         let docker = Box::new(DockerCli::default());
         let image = zookeeper_image(options);
         let container = unsafe { std::mem::transmute(docker.run(image)) };
 
         Self {
-            tls: Some(Tls { ca: ca_cert_pem, cert: signed_client_cert, key: client_key, hostname_verification }),
+            tls: Some(Tls {
+                ca: ca_cert_pem,
+                cert: signed_client_cert,
+                key: client_key,
+                cert_x: signed_client_cert_x,
+                key_x: client_key_x,
+                hostname_verification,
+            }),
             _dir: Some(dir),
             _docker: docker,
             container,
@@ -346,20 +377,21 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         let Some(tls) = self.tls.as_ref() else {
             return connector;
         };
-        let mut tls_options = zk::TlsOptions::default()
-            .with_pem_ca_certs(&tls.ca)
-            .unwrap()
-            .with_pem_identity(&tls.cert, &tls.key)
-            .unwrap();
-        if !tls.hostname_verification {
-            tls_options = unsafe { tls_options.with_no_hostname_verification() };
-        }
-        connector.tls(tls_options);
+        connector.tls(tls.options());
         connector
     }
 
     pub async fn client(&self, chroot: Option<&str>) -> zk::Client {
         self.custom_client(chroot, |connector| connector).await.unwrap()
+    }
+
+    pub async fn client_x(&self, chroot: Option<&str>) -> zk::Client {
+        self.custom_client(chroot, |connector| match self.tls.as_ref().map(Tls::options_x) {
+            None => connector,
+            Some(options) => connector.tls(options),
+        })
+        .await
+        .unwrap()
     }
 
     pub async fn custom_client(
@@ -1616,9 +1648,9 @@ fn generate_server_cert(hostname_verification: bool) -> Certificate {
     Certificate::from_params(params).unwrap()
 }
 
-fn generate_client_cert() -> Certificate {
+fn generate_client_cert(cn: &str) -> Certificate {
     let mut params = CertificateParams::default();
-    params.distinguished_name.push(rcgen::DnType::CommonName, "client");
+    params.distinguished_name.push(rcgen::DnType::CommonName, cn);
     Certificate::from_params(params).unwrap()
 }
 
@@ -1628,6 +1660,13 @@ async fn test_tls() {
     let client = server.client(None).await;
     let children = client.list_children("/").await.unwrap();
     assert_that!(children).contains("zookeeper".to_owned());
+
+    client.create("/a", b"my_data", &zk::CreateMode::Persistent.with_acls(zk::Acls::creator_all())).await.unwrap();
+
+    let client1 = server.client(None).await;
+    let client2 = server.client_x(None).await;
+    assert_eq!(client1.get_data("/a").await.unwrap().0, b"my_data".to_vec());
+    assert_eq!(client2.get_data("/a").await.unwrap_err(), zk::Error::NoAuth);
 }
 
 #[allow(dead_code)]
