@@ -11,11 +11,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ignore_result::Ignore;
+use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant, Sleep};
+use tokio_rustls::TlsConnector;
 
 use self::connection::Connection;
 pub use self::depot::Depot;
@@ -60,7 +62,7 @@ pub struct Session {
     readonly: bool,
     detached: bool,
 
-    tls_config: Arc<ClientConfig>,
+    tls_connector: TlsConnector,
 
     configured_connection_timeout: Duration,
 
@@ -104,7 +106,7 @@ impl Session {
         let mut session = Session {
             readonly,
             detached,
-            tls_config: Arc::new(tls_config),
+            tls_connector: TlsConnector::from(Arc::new(tls_config)),
 
             configured_connection_timeout: connection_timeout,
 
@@ -367,7 +369,7 @@ impl Session {
     }
 
     fn read_connection(&mut self, conn: &mut Connection, buf: &mut Vec<u8>) -> Result<(), Error> {
-        match conn.read_buf(buf) {
+        match conn.try_read_buf(buf) {
             Ok(0) => {
                 return Err(Error::ConnectionLoss);
             },
@@ -505,7 +507,15 @@ impl Session {
                     },
                     Ok(sock) => {
                         let connection = if tls {
-                            Connection::new_tls(host, self.tls_config.clone(), sock)?
+                            let domain = ServerName::try_from(host).unwrap().to_owned();
+                            let stream = match self.tls_connector.connect(domain, sock).await {
+                                Err(err) => {
+                                    log::debug!("ZooKeeper fails to complete tls session to {}:{} due to {}", host, port, err);
+                                    return Err(Error::ConnectionLoss);
+                                },
+                                Ok(stream) => stream,
+                            };
+                            Connection::new_tls(stream)
                         } else {
                             Connection::new_raw(sock)
                         };

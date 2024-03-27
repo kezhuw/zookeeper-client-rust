@@ -1,128 +1,129 @@
-use std::io::{self, Read, Write};
-use std::sync::Arc;
+use std::io::{ErrorKind, IoSlice, Result};
+use std::pin::Pin;
+use std::ptr;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection};
+use bytes::buf::BufMut;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio_rustls::client::TlsStream;
 
-use crate::error::Error;
+const NOOP_VTABLE: RawWakerVTable =
+    RawWakerVTable::new(|_| RawWaker::new(ptr::null(), &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
+const NOOP_WAKER: RawWaker = RawWaker::new(ptr::null(), &NOOP_VTABLE);
 
-pub struct Connection {
-    tls: Option<ClientConnection>,
-    stream: TcpStream,
+pub enum Connection {
+    Tls(TlsStream<TcpStream>),
+    Raw(TcpStream),
 }
 
-struct WrappingStream<'a> {
-    stream: &'a TcpStream,
-}
-
-impl io::Read for WrappingStream<'_> {
-    fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
-        self.stream.try_read_buf(&mut buf)
+impl AsyncRead for Connection {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        match self.get_mut() {
+            Self::Raw(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
     }
 }
 
-impl io::Write for WrappingStream<'_> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.stream.try_write(buf)
+impl AsyncWrite for Connection {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        match self.get_mut() {
+            Self::Raw(stream) => Pin::new(stream).poll_write(cx, buf),
+            Self::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
+        }
     }
 
-    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.stream.try_write_vectored(bufs)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        match self.get_mut() {
+            Self::Raw(stream) => Pin::new(stream).poll_flush(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
+        }
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        match self.get_mut() {
+            Self::Raw(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
     }
 }
 
 impl Connection {
     pub fn new_raw(stream: TcpStream) -> Self {
-        Self { tls: None, stream }
+        Self::Raw(stream)
     }
 
-    pub fn new_tls(host: &str, config: Arc<ClientConfig>, stream: TcpStream) -> Result<Self, Error> {
-        let name = match ServerName::try_from(host) {
-            Err(_) => return Err(Error::BadArguments(&"invalid server dns name")),
-            Ok(name) => name.to_owned(),
-        };
-        let client = match ClientConnection::new(config, name) {
-            Err(err) => return Err(Error::other(format!("fail to create tls client for host({host}): {err}"), err)),
-            Ok(client) => client,
-        };
-        Ok(Self { tls: Some(client), stream })
+    pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
+        Self::Tls(stream)
     }
 
-    pub fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        let Some(client) = self.tls.as_mut() else {
-            return self.stream.try_write_vectored(bufs);
-        };
-        let n = client.writer().write_vectored(bufs)?;
-        let mut stream = WrappingStream { stream: &self.stream };
-        client.write_tls(&mut stream)?;
-        Ok(n)
-    }
-
-    pub fn read_buf(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        let Some(client) = self.tls.as_mut() else {
-            return self.stream.try_read_buf(buf);
-        };
-        let mut stream = WrappingStream { stream: &self.stream };
-        let mut read_bytes = 0;
-        loop {
-            match client.read_tls(&mut stream) {
-                // We may have plaintext to return though tcp stream has been closed.
-                // If not, read_bytes should be zero.
-                Ok(0) => break,
-                Ok(_) => {},
-                Err(err) => match err.kind() {
-                    // backpressure: tls buffer is full, let's process_new_packets.
-                    io::ErrorKind::Other => {},
-                    io::ErrorKind::WouldBlock if read_bytes == 0 => {
-                        return Err(err);
-                    },
-                    _ => break,
-                },
-            }
-            let state = client.process_new_packets().map_err(io::Error::other)?;
-            let n = state.plaintext_bytes_to_read();
-            buf.reserve(n);
-            let slice = unsafe { &mut std::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.len() + n)[buf.len()..] };
-            client.reader().read_exact(slice).unwrap();
-            unsafe { buf.set_len(buf.len() + n) };
-            read_bytes += n;
-        }
-        Ok(read_bytes)
-    }
-
-    pub async fn readable(&self) -> io::Result<()> {
-        let Some(client) = self.tls.as_ref() else {
-            return self.stream.readable().await;
-        };
-        if client.wants_read() {
-            self.stream.readable().await
-        } else {
-            // plaintext data are available for read
-            std::future::ready(Ok(())).await
+    pub fn try_write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize> {
+        let waker = unsafe { Waker::from_raw(NOOP_WAKER) };
+        let mut context = Context::from_waker(&waker);
+        match Pin::new(self).poll_write_vectored(&mut context, bufs) {
+            Poll::Pending => Err(ErrorKind::WouldBlock.into()),
+            Poll::Ready(result) => result,
         }
     }
 
-    pub async fn writable(&self) -> io::Result<()> {
-        self.stream.writable().await
+    pub fn try_read_buf(&mut self, buf: &mut impl BufMut) -> Result<usize> {
+        let waker = unsafe { Waker::from_raw(NOOP_WAKER) };
+        let mut context = Context::from_waker(&waker);
+        let chunk = buf.chunk_mut();
+        let mut read_buf = unsafe { ReadBuf::uninit(chunk.as_uninit_slice_mut()) };
+        match Pin::new(self).poll_read(&mut context, &mut read_buf) {
+            Poll::Pending => Err(ErrorKind::WouldBlock.into()),
+            Poll::Ready(Err(err)) => Err(err),
+            Poll::Ready(Ok(())) => {
+                let n = read_buf.filled().len();
+                unsafe { buf.advance_mut(n) };
+                Ok(n)
+            },
+        }
+    }
+
+    pub async fn readable(&self) -> Result<()> {
+        match self {
+            Self::Raw(stream) => stream.readable().await,
+            Self::Tls(stream) => {
+                let (stream, session) = stream.get_ref();
+                if session.wants_read() {
+                    stream.readable().await
+                } else {
+                    // plaintext data are available for read
+                    std::future::ready(Ok(())).await
+                }
+            },
+        }
+    }
+
+    pub async fn writable(&self) -> Result<()> {
+        match self {
+            Self::Raw(stream) => stream.writable().await,
+            Self::Tls(stream) => {
+                let (stream, _session) = stream.get_ref();
+                stream.writable().await
+            },
+        }
     }
 
     pub fn wants_write(&self) -> bool {
-        self.tls.as_ref().map(|tls| tls.wants_write()).unwrap_or(false)
+        match self {
+            Self::Raw(_) => false,
+            Self::Tls(stream) => {
+                let (_stream, session) = stream.get_ref();
+                session.wants_write()
+            },
+        }
     }
 
-    pub fn flush(&mut self) -> io::Result<()> {
-        let Some(client) = self.tls.as_mut() else {
-            return Ok(());
-        };
-        let mut stream = WrappingStream { stream: &self.stream };
-        while client.wants_write() {
-            client.write_tls(&mut stream)?;
+    pub fn try_flush(&mut self) -> Result<()> {
+        let waker = unsafe { Waker::from_raw(NOOP_WAKER) };
+        let mut context = Context::from_waker(&waker);
+        match Pin::new(self).poll_flush(&mut context) {
+            Poll::Pending => Err(ErrorKind::WouldBlock.into()),
+            Poll::Ready(result) => result,
         }
-        Ok(())
     }
 }

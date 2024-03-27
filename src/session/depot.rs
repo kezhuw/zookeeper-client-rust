@@ -206,7 +206,7 @@ impl Depot {
 
     pub fn write_operations(&mut self, conn: &mut Connection) -> Result<(), Error> {
         if !self.has_pending_writes() {
-            if let Err(err) = conn.flush() {
+            if let Err(err) = conn.try_flush() {
                 if err.kind() == io::ErrorKind::WouldBlock {
                     return Ok(());
                 }
@@ -214,7 +214,7 @@ impl Depot {
             }
             return Ok(());
         }
-        let result = conn.write_vectored(self.writing_slices.as_slice());
+        let result = conn.try_write_vectored(self.writing_slices.as_slice());
         let mut written_bytes = match result {
             Err(err) => {
                 if err.kind() == io::ErrorKind::WouldBlock {
