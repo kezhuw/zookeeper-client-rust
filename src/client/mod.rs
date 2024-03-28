@@ -16,6 +16,7 @@ pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver, PASSWORD_LEN};
 use crate::acl::{Acl, Acls, AuthUser};
 use crate::chroot::{Chroot, ChrootPath, OwnedChroot};
+use crate::endpoint::{self, IterableEndpoints};
 use crate::error::Error;
 use crate::proto::{
     self,
@@ -45,7 +46,7 @@ use crate::record::{self, Record, StaticRecord};
 use crate::session::StateReceiver;
 pub use crate::session::{EventType, SessionId, SessionState, WatchedEvent};
 use crate::tls::TlsOptions;
-use crate::util::{self, Ref as _};
+use crate::util;
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -1621,7 +1622,7 @@ impl Connector {
     }
 
     async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
-        let (hosts, chroot) = util::parse_connect_string(cluster, secure)?;
+        let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
         if let Some((id, password)) = &self.session {
             if id.0 == 0 {
                 return Err(Error::BadArguments(&"session id must not be 0"));
@@ -1647,16 +1648,15 @@ impl Connector {
             self.session_timeout,
             self.connection_timeout,
         );
-        let mut hosts_iter = hosts.iter().copied();
+        let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
         let mut buf = Vec::with_capacity(4096);
         let mut connecting_depot = Depot::for_connecting();
-        let conn = session.start(&mut hosts_iter, &mut buf, &mut connecting_depot).await?;
+        let conn = session.start(&mut endpoints, &mut buf, &mut connecting_depot).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
-        let servers = hosts.into_iter().map(|addr| addr.to_value()).collect();
         let session_info = (session.session_id, session.session_password.clone());
         let session_timeout = session.session_timeout;
         tokio::spawn(async move {
-            session.serve(servers, conn, buf, connecting_depot, receiver).await;
+            session.serve(endpoints, conn, buf, connecting_depot, receiver).await;
         });
         let client =
             Client::new(chroot.to_owned(), self.server_version, session_info, session_timeout, sender, state_receiver);

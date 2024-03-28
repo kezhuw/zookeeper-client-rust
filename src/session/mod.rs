@@ -34,10 +34,10 @@ pub use self::request::{
 pub use self::types::{EventType, SessionId, SessionState, WatchedEvent};
 pub use self::watch::{OneshotReceiver, PersistentReceiver, WatchReceiver};
 use self::watch::{WatchManager, WatcherId};
+use crate::endpoint::{EndpointRef, IterableEndpoints};
 use crate::error::Error;
 use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
 use crate::record;
-use crate::util::HostPort;
 
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
@@ -145,7 +145,7 @@ impl Session {
 
     pub async fn serve(
         &mut self,
-        servers: Vec<HostPort>,
+        mut endpoints: IterableEndpoints,
         conn: Connection,
         mut buf: Vec<u8>,
         mut connecting_trans: Depot,
@@ -153,12 +153,12 @@ impl Session {
     ) {
         let mut depot = Depot::for_serving();
         let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
+        endpoints.cycle();
         self.serve_once(conn, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
-            let mut hosts = servers.iter().cycle().map(|(host, port, tls)| (host.as_str(), *port, *tls));
-            let conn = match self.start(&mut hosts, &mut buf, &mut connecting_trans).await {
+            let conn = match self.start(&mut endpoints, &mut buf, &mut connecting_trans).await {
                 Err(err) => {
-                    log::warn!("fail to connect to cluster {:?} due to {}", servers, err);
+                    log::warn!("fail to connect to cluster {:?} due to {}", endpoints.endpoints(), err);
                     self.resolve_start_error(&err);
                     break;
                 },
@@ -484,43 +484,22 @@ impl Session {
         Err(Error::ClientClosed)
     }
 
-    async fn new_connection<'a>(
-        &mut self,
-        hosts: &mut impl Iterator<Item = (&'a str, u16, bool)>,
-        deadline: &mut Sleep,
-    ) -> Result<(Connection, (&'a str, u16, bool)), Error> {
-        let (host, port, tls) = match hosts.next() {
-            None => return Err(Error::NoHosts),
-            Some(addr) => addr,
-        };
+    async fn new_connection<'a>(&self, endpoint: EndpointRef<'a>, deadline: &mut Sleep) -> io::Result<Connection> {
         select! {
-            _ = unsafe { Pin::new_unchecked(deadline) } => Err(Error::Timeout),
-            _ = time::sleep(self.connection_timeout) => {
-                log::debug!("ZooKeeper fails to connect to {}:{} in {}ms", host, port, self.connection_timeout.as_millis());
-                Err(Error::ConnectionLoss)
-            },
-            r = TcpStream::connect((host, port)) => {
+            _ = unsafe { Pin::new_unchecked(deadline) } => Err(io::Error::new(io::ErrorKind::TimedOut, "deadline exceed")),
+            _ = time::sleep(self.connection_timeout) => Err(io::Error::new(io::ErrorKind::TimedOut, format!("connection timeout{:?} exceed", self.connection_timeout))),
+            r = TcpStream::connect((endpoint.host, endpoint.port)) => {
                 match r {
-                    Err(err) => {
-                        log::debug!("ZooKeeper fails to connect to {}:{} due to {}", host, port, err);
-                        Err(Error::ConnectionLoss)
-                    },
+                    Err(err) => Err(err),
                     Ok(sock) => {
-                        let connection = if tls {
-                            let domain = ServerName::try_from(host).unwrap().to_owned();
-                            let stream = match self.tls_connector.connect(domain, sock).await {
-                                Err(err) => {
-                                    log::debug!("ZooKeeper fails to complete tls session to {}:{} due to {}", host, port, err);
-                                    return Err(Error::ConnectionLoss);
-                                },
-                                Ok(stream) => stream,
-                            };
+                        let connection = if endpoint.tls {
+                            let domain = ServerName::try_from(endpoint.host).unwrap().to_owned();
+                            let stream = self.tls_connector.connect(domain, sock).await?;
                             Connection::new_tls(stream)
                         } else {
                             Connection::new_raw(sock)
                         };
-                        log::debug!("ZooKeeper succeeds in connecting to {}:{}", host, port);
-                        Ok((connection, (host, port, tls)))
+                        Ok(connection)
                     },
                 }
             },
@@ -556,12 +535,24 @@ impl Session {
 
     async fn start_once(
         &mut self,
-        hosts: &mut impl Iterator<Item = (&str, u16, bool)>,
+        endpoints: &mut IterableEndpoints,
         deadline: &mut Sleep,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<Connection, Error> {
-        let (mut conn, addr) = self.new_connection(hosts, deadline).await?;
+        let Some(endpoint) = endpoints.next() else {
+            return Err(Error::NoHosts);
+        };
+        let mut conn = match self.new_connection(endpoint, deadline).await {
+            Err(err) => {
+                log::debug!("ZooKeeper fails in connecting to {} due to {:?}", endpoint, err);
+                return Err(Error::ConnectionLoss);
+            },
+            Ok(conn) => {
+                log::debug!("ZooKeeper succeeds in connecting to {}", endpoint);
+                conn
+            },
+        };
         depot.clear();
         buf.clear();
         self.send_connect(depot);
@@ -573,11 +564,11 @@ impl Session {
         self.last_ping = None;
         match self.serve_connecting(&mut conn, buf, depot).await {
             Err(err) => {
-                log::warn!("ZooKeeper fails to establish session to {}:{} due to {}", addr.0, addr.1, err);
+                log::warn!("ZooKeeper fails to establish session to {} due to {}", endpoint, err);
                 Err(err)
             },
             _ => {
-                log::info!("ZooKeeper succeeds to establish session to {}:{}", addr.0, addr.1);
+                log::info!("ZooKeeper succeeds to establish session to {}", endpoint);
                 Ok(conn)
             },
         }
@@ -585,18 +576,21 @@ impl Session {
 
     pub async fn start(
         &mut self,
-        hosts: &mut impl Iterator<Item = (&str, u16, bool)>,
+        endpoints: &mut IterableEndpoints,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<Connection, Error> {
         let session_timeout = if self.session_id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
         let mut deadline = time::sleep_until(self.last_recv + session_timeout);
-        let mut last_error = match self.start_once(hosts, &mut deadline, buf, depot).await {
+        let mut last_error = match self.start_once(endpoints, &mut deadline, buf, depot).await {
             Err(err) => err,
             Ok(conn) => return Ok(conn),
         };
-        while last_error != Error::NoHosts && last_error != Error::Timeout && last_error != Error::SessionExpired {
-            match self.start_once(hosts, &mut deadline, buf, depot).await {
+        while last_error != Error::NoHosts && last_error != Error::SessionExpired {
+            if deadline.is_elapsed() {
+                return Err(Error::Timeout);
+            }
+            match self.start_once(endpoints, &mut deadline, buf, depot).await {
                 Err(err) => {
                     last_error = err;
                     continue;

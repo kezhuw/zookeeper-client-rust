@@ -1,6 +1,7 @@
 mod acl;
 mod chroot;
 mod client;
+mod endpoint;
 mod error;
 mod proto;
 mod record;
