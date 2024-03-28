@@ -44,7 +44,7 @@ impl<'a> From<(&'a str, u16, bool)> for EndpointRef<'a> {
 
 impl Display for EndpointRef<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let proto = if self.tls { "tcp" } else { "tcp+tls" };
+        let proto = if self.tls { "tcp+tls" } else { "tcp" };
         write!(f, "{}://{}:{}", proto, self.host, self.port)
     }
 }
@@ -286,5 +286,18 @@ mod tests {
         assert_eq!(endpoints.next(), Some(EndpointRef::new("host2", 2181, false)));
         assert_eq!(endpoints.next(), Some(EndpointRef::new("host3", 2182, true)));
         assert_eq!(endpoints.next(), Some(EndpointRef::new("host1", 2181, true)));
+    }
+
+    #[test]
+    fn test_endpoint_display() {
+        use super::{EndpointRef, Ref};
+
+        let endpoint = EndpointRef::new("host", 2181, false);
+        assert_eq!(endpoint.to_string(), "tcp://host:2181");
+        assert_eq!(endpoint.to_value().to_string(), "tcp://host:2181");
+
+        let endpoint = EndpointRef::new("host", 2182, true);
+        assert_eq!(endpoint.to_string(), "tcp+tls://host:2182");
+        assert_eq!(endpoint.to_value().to_string(), "tcp+tls://host:2182");
     }
 }
