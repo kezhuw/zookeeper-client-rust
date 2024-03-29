@@ -1,3 +1,4 @@
+use derive_where::derive_where;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use strum::EnumIter;
 
@@ -6,12 +7,46 @@ use crate::proto::AddWatchMode;
 use crate::util;
 
 /// Thin wrapper for zookeeper session id. It prints in hex format headed with 0x.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct SessionId(pub i64);
 
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:#x}", self.0)
+    }
+}
+
+impl std::fmt::Debug for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+/// ZooKeeper session info.
+#[derive(Clone)]
+#[derive_where(Debug)]
+pub struct SessionInfo {
+    pub(crate) id: SessionId,
+    #[derive_where(skip(Debug))]
+    pub(crate) password: Vec<u8>,
+    pub(crate) readonly: bool,
+}
+
+impl SessionInfo {
+    pub(crate) fn new(id: SessionId, password: Vec<u8>) -> Self {
+        Self { id, password, readonly: id.0 == 0 }
+    }
+
+    /// Session id.
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
+
+    /// Is this an readonly session ?
+    ///
+    /// Readonly sessions are local to connected server thus not eligible for session reestablishment.
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
     }
 }
 

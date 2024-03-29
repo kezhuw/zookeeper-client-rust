@@ -13,7 +13,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
-use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver, PASSWORD_LEN};
+use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver};
 use crate::acl::{Acl, Acls, AuthUser};
 use crate::chroot::{Chroot, ChrootPath, OwnedChroot};
 use crate::endpoint::{self, IterableEndpoints};
@@ -44,7 +44,7 @@ use crate::proto::{
 pub use crate::proto::{EnsembleUpdate, Stat};
 use crate::record::{self, Record, StaticRecord};
 use crate::session::StateReceiver;
-pub use crate::session::{EventType, SessionId, SessionState, WatchedEvent};
+pub use crate::session::{EventType, SessionId, SessionInfo, SessionState, WatchedEvent};
 use crate::tls::TlsOptions;
 use crate::util;
 
@@ -215,7 +215,7 @@ impl CreateSequence {
 pub struct Client {
     chroot: OwnedChroot,
     version: Version,
-    session: (SessionId, Vec<u8>),
+    session: SessionInfo,
     session_timeout: Duration,
     requester: mpsc::UnboundedSender<SessionOperation>,
     state_watcher: StateWatcher,
@@ -243,7 +243,7 @@ impl Client {
     pub(crate) fn new(
         chroot: OwnedChroot,
         version: Version,
-        session: (SessionId, Vec<u8>),
+        session: SessionInfo,
         timeout: Duration,
         requester: mpsc::UnboundedSender<SessionOperation>,
         state_receiver: watch::Receiver<SessionState>,
@@ -265,18 +265,18 @@ impl Client {
         self.chroot.path()
     }
 
-    /// ZooKeeper session id.
-    pub fn session_id(&self) -> SessionId {
-        self.session.0
+    /// ZooKeeper session info.
+    pub fn session(&self) -> &SessionInfo {
+        &self.session
     }
 
-    /// Session password.
-    pub fn session_password(&self) -> &[u8] {
-        self.session.1.as_slice()
+    /// ZooKeeper session id.
+    pub fn session_id(&self) -> SessionId {
+        self.session().id()
     }
 
     /// Consumes this instance into session info.
-    pub fn into_session(self) -> (SessionId, Vec<u8>) {
+    pub fn into_session(self) -> SessionInfo {
         self.session
     }
 
@@ -1538,7 +1538,7 @@ pub(crate) struct Version(u32, u32, u32);
 pub struct Connector {
     tls: Option<TlsOptions>,
     authes: Vec<AuthPacket>,
-    session: Option<(SessionId, Vec<u8>)>,
+    session: Option<SessionInfo>,
     readonly: bool,
     detached: bool,
     server_version: Version,
@@ -1590,8 +1590,8 @@ impl Connector {
     }
 
     /// Specifies session to reestablish.
-    pub fn session(&mut self, id: SessionId, password: Vec<u8>) -> &mut Self {
-        self.session = Some((id, password));
+    pub fn session(&mut self, session: SessionInfo) -> &mut Self {
+        self.session = Some(session);
         self
     }
 
@@ -1623,14 +1623,12 @@ impl Connector {
 
     async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
-        if let Some((id, password)) = &self.session {
-            if id.0 == 0 {
-                return Err(Error::BadArguments(&"session id must not be 0"));
-            } else if password.is_empty() {
-                return Err(Error::BadArguments(&formatcp!(
-                    "session password is empty, it should have length of {}",
-                    PASSWORD_LEN
-                )));
+        if let Some(session) = self.session.as_ref() {
+            if session.is_readonly() {
+                return Err(Error::new_other(
+                    format!("can't reestablish readonly and hence local session {}", session.id()),
+                    None,
+                ));
             }
         }
         if self.session_timeout < Duration::ZERO {
@@ -1653,7 +1651,7 @@ impl Connector {
         let mut connecting_depot = Depot::for_connecting();
         let conn = session.start(&mut endpoints, &mut buf, &mut connecting_depot).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
-        let session_info = (session.session_id, session.session_password.clone());
+        let session_info = session.session.clone();
         let session_timeout = session.session_timeout;
         tokio::spawn(async move {
             session.serve(endpoints, conn, buf, connecting_depot, receiver).await;
@@ -1726,12 +1724,6 @@ impl ClientBuilder {
     /// Specifies auth info for given authentication scheme.
     pub fn with_auth(&mut self, scheme: String, auth: Vec<u8>) -> &mut ClientBuilder {
         self.connector.auth(scheme, auth);
-        self
-    }
-
-    /// Specifies session to reestablish.
-    pub fn with_session(&mut self, id: SessionId, password: Vec<u8>) -> &mut Self {
-        self.connector.session(id, password);
         self
     }
 

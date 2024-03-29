@@ -127,12 +127,19 @@ impl Error {
         }
     }
 
+    pub(crate) fn new_other(
+        message: impl Into<Arc<String>>,
+        source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        Self::Other(OtherError { message: message.into(), source })
+    }
+
     pub(crate) fn other(message: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Other(OtherError { message: Arc::new(message.into()), source: Some(Arc::new(source)) })
+        Self::new_other(message.into(), Some(Arc::new(source)))
     }
 
     pub(crate) fn other_from(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Other(OtherError { message: Arc::new(source.to_string()), source: Some(Arc::new(source)) })
+        Self::new_other(source.to_string(), Some(Arc::new(source)))
     }
 }
 

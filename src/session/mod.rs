@@ -27,7 +27,7 @@ pub use self::request::{
     StateReceiver,
     StateResponser,
 };
-pub use self::types::{EventType, SessionId, SessionState, WatchedEvent};
+pub use self::types::{EventType, SessionId, SessionInfo, SessionState, WatchedEvent};
 pub use self::watch::{OneshotReceiver, PersistentReceiver, WatchReceiver};
 use self::watch::{WatchManager, WatcherId};
 use crate::deadline::Deadline;
@@ -71,11 +71,9 @@ pub struct Session {
     ping_timeout: Duration,
     session_expired_timeout: Duration,
 
-    pub session_id: SessionId,
+    pub session: SessionInfo,
     session_state: SessionState,
     pub session_timeout: Duration,
-    pub session_password: Vec<u8>,
-    session_readonly: bool,
 
     pub authes: Vec<MarshalledRequest>,
     state_sender: tokio::sync::watch::Sender<SessionState>,
@@ -86,7 +84,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(
-        session: Option<(SessionId, Vec<u8>)>,
+        session: Option<SessionInfo>,
         authes: &[AuthPacket],
         readonly: bool,
         detached: bool,
@@ -94,8 +92,7 @@ impl Session {
         session_timeout: Duration,
         connection_timeout: Duration,
     ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
-        let (session_id, session_password) =
-            session.unwrap_or_else(|| (SessionId(0), Vec::with_capacity(PASSWORD_LEN)));
+        let session = session.unwrap_or_else(|| SessionInfo::new(SessionId(0), Vec::with_capacity(PASSWORD_LEN)));
         let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
         let (watch_manager, unwatch_receiver) = WatchManager::new();
@@ -114,11 +111,9 @@ impl Session {
             session_expired_timeout: Duration::ZERO,
             connector: Connector::new(tls_config),
 
-            session_id,
+            session,
             session_timeout,
             session_state: SessionState::Disconnected,
-            session_password,
-            session_readonly: session_id.0 == 0,
 
             authes: authes.iter().map(|auth| MarshalledRequest::new(OpCode::Auth, auth)).collect(),
             state_sender,
@@ -132,7 +127,7 @@ impl Session {
 
     fn is_readonly_allowed(&self) -> bool {
         // Session downgrade is not allowed as partitioned session will expired finally by quorum.
-        self.readonly && self.session_readonly
+        self.readonly && self.session.readonly
     }
 
     async fn close_requester<T: RequestOperation>(mut requester: mpsc::UnboundedReceiver<T>, err: &Error) {
@@ -215,7 +210,7 @@ impl Session {
     ) {
         if let Err(err) = self.serve_session(endpoints, &mut conn, buf, depot, requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
-            log::info!("ZooKeeper session {} state {} error {}", self.session_id, self.session_state, err);
+            log::info!("ZooKeeper session {} state {} error {}", self.session.id, self.session_state, err);
             depot.error(&err);
         } else {
             self.change_state(SessionState::Disconnected);
@@ -301,7 +296,7 @@ impl Session {
             depot.pop_ping()?;
             if let Some(last_ping) = self.last_ping.take() {
                 let elapsed = Instant::now() - last_ping;
-                log::debug!("ZooKeeper session {} got ping response after {}ms", self.session_id, elapsed.as_millis());
+                log::debug!("ZooKeeper session {} got ping response after {}ms", self.session.id, elapsed.as_millis());
             }
             return Ok(());
         }
@@ -349,7 +344,7 @@ impl Session {
     }
 
     fn complete_connect(&mut self) {
-        let state = if self.session_readonly { SessionState::ConnectedReadOnly } else { SessionState::SyncConnected };
+        let state = if self.session.readonly { SessionState::ConnectedReadOnly } else { SessionState::SyncConnected };
         self.change_state(state);
     }
 
@@ -361,11 +356,11 @@ impl Session {
         } else if !self.is_readonly_allowed() && response.readonly {
             return Err(Error::ConnectionLoss);
         }
-        self.session_id = SessionId(response.session_id);
+        self.session.id = SessionId(response.session_id);
+        self.session.password.clear();
+        self.session.password.extend_from_slice(response.password);
+        self.session.readonly = response.readonly;
         self.reset_timeout(Duration::from_millis(response.session_timeout as u64));
-        self.session_password.clear();
-        self.session_password.extend_from_slice(response.password);
-        self.session_readonly = response.readonly;
         self.complete_connect();
         Ok(())
     }
@@ -450,7 +445,7 @@ impl Session {
         unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) -> Result<(), Error> {
         let mut seek_for_writable =
-            if self.session_readonly { Some(self.connector.clone().seek_for_writable(endpoints)) } else { None };
+            if self.session.readonly { Some(self.connector.clone().seek_for_writable(endpoints)) } else { None };
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let mut channel_closed = false;
@@ -519,8 +514,8 @@ impl Session {
             protocol_version: 0,
             last_zxid_seen: 0,
             timeout: self.session_timeout.as_millis() as i32,
-            session_id: if self.session_readonly { 0 } else { self.session_id.0 },
-            password: self.session_password.as_slice(),
+            session_id: if self.session.readonly { 0 } else { self.session.id.0 },
+            password: self.session.password.as_slice(),
             readonly: self.is_readonly_allowed(),
         };
         log::trace!("Sending connect request: {request:?}");
@@ -570,7 +565,7 @@ impl Session {
                 Err(err)
             },
             _ => {
-                log::info!("ZooKeeper succeeds to establish session({}) to {}", self.session_id, endpoint);
+                log::info!("ZooKeeper succeeds to establish session({}) to {}", self.session.id, endpoint);
                 Ok(conn)
             },
         }
@@ -582,7 +577,7 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<Connection, Error> {
-        let session_timeout = if self.session_id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
+        let session_timeout = if self.session.id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
         let mut deadline = Deadline::until(self.last_recv + session_timeout);
         let mut last_error = match self.start_once(endpoints, &mut deadline, buf, depot).await {
             Err(err) => err,

@@ -164,11 +164,11 @@ async fn test_connect_session_expired() {
     let cluster = Cluster::new().await;
     let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
     let timeout = client.session_timeout();
-    let (id, password) = client.into_session();
+    let session = client.into_session();
 
     tokio::time::sleep(timeout * 2).await;
 
-    assert_that!(cluster.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err())
+    assert_that!(cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err())
         .is_equal_to(zk::Error::SessionExpired);
 }
 
@@ -1701,10 +1701,10 @@ async fn test_client_drop() {
 
     let mut state_watcher = client.state_watcher();
     tokio::time::sleep(Duration::from_secs(20)).await;
-    let (id, password) = client.into_session();
+    let session = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    cluster.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err();
+    cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err();
 }
 
 #[test_log::test(tokio::test)]
@@ -1713,10 +1713,10 @@ async fn test_client_detach() {
     let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
 
     let mut state_watcher = client.state_watcher();
-    let (id, password) = client.into_session();
+    let session = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    cluster.custom_client(None, |connector| connector.session(id, password)).await.unwrap();
+    cluster.custom_client(None, |connector| connector.session(session)).await.unwrap();
 }
 
 fn generate_ca_cert() -> (Certificate, String) {
@@ -1820,6 +1820,11 @@ async fn test_readonly(tls: bool) {
         }
     };
     assert_that!(client.create("/y", b"", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NotReadOnly);
+
+    let session = client.session().clone();
+    assert_eq!(session.is_readonly(), true);
+    assert_that!(zk::Client::connector().session(session).connect("localhost:4001").await.unwrap_err().to_string())
+        .contains("readonly");
 
     let mut state_watcher = client.state_watcher();
     assert_eq!(state_watcher.state(), zk::SessionState::ConnectedReadOnly);
