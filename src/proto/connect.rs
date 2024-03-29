@@ -1,4 +1,5 @@
 use bytes::BufMut;
+use derive_where::derive_where;
 
 use crate::record::{
     DeserializableRecord,
@@ -10,11 +11,13 @@ use crate::record::{
     UnsafeBuf,
 };
 
+#[derive_where(Debug)]
 pub struct ConnectRequest<'a> {
     pub protocol_version: i32,
     pub last_zxid_seen: i64,
     pub timeout: i32,
     pub session_id: i64,
+    #[derive_where(skip(Debug))]
     pub password: &'a [u8],
     pub readonly: bool,
 }
@@ -36,11 +39,13 @@ impl DynamicRecord for ConnectRequest<'_> {
     }
 }
 
+#[derive_where(Debug)]
 pub struct ConnectResponse<'a> {
     #[allow(dead_code)]
     pub protocol_version: i32,
     pub session_timeout: i32,
     pub session_id: i64,
+    #[derive_where(skip(Debug))]
     pub password: &'a [u8],
     pub readonly: bool,
 }
@@ -49,7 +54,7 @@ impl<'a> DeserializableRecord<'a> for ConnectResponse<'a> {
     type Error = DeserializeError;
 
     fn deserialize(buf: &mut ReadingBuf<'a>) -> Result<Self, Self::Error> {
-        let min_record_len = 4 + 4 + 8 + 4 + 1;
+        let min_record_len = 4 + 4 + 8 + 4;
         if buf.len() < min_record_len {
             return Err(DeserializeError::InsufficientBuf);
         }
@@ -64,12 +69,12 @@ impl<'a> DeserializableRecord<'a> for ConnectResponse<'a> {
             )));
         }
         let len = unsafe { buf.get_unchecked_i32() };
-        if len <= 0 || len != (buf.len() - 1) as i32 {
+        if len <= 0 || len >= buf.len() as i32 {
             return Err(DeserializeError::UnmarshalError(format!("invalid session password length {len}")));
         }
         let len = len as usize;
         let password = unsafe { buf.get_unchecked(..len) };
-        let readonly = unsafe { *buf.get_unchecked(len) };
+        let readonly = if buf.is_empty() { 0 } else { unsafe { *buf.get_unchecked(len) } };
         if readonly != 0 && readonly != 1 {
             return Err(DeserializeError::UnmarshalError(format!("invalid session readonly value {readonly}")));
         }
