@@ -1541,6 +1541,7 @@ pub struct Connector {
     session: Option<SessionInfo>,
     readonly: bool,
     detached: bool,
+    fail_eagerly: bool,
     server_version: Version,
     session_timeout: Duration,
     connection_timeout: Duration,
@@ -1555,6 +1556,7 @@ impl Connector {
             session: None,
             readonly: false,
             detached: false,
+            fail_eagerly: false,
             server_version: Version(u32::MAX, u32::MAX, u32::MAX),
             session_timeout: Duration::ZERO,
             connection_timeout: Duration::ZERO,
@@ -1621,6 +1623,15 @@ impl Connector {
         self
     }
 
+    /// Fail session establishment eagerly with [Error::NoHosts] when all hosts has been tried.
+    ///
+    /// This permits fail-fast without wait up to [Self::session_timeout] in [Self::connect]. This
+    /// is not suitable for situations where ZooKeeper cluster is accessible via a single virtual IP.
+    pub fn fail_eagerly(&mut self) -> &mut Self {
+        self.fail_eagerly = true;
+        self
+    }
+
     async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
         if let Some(session) = self.session.as_ref() {
@@ -1647,6 +1658,9 @@ impl Connector {
             self.connection_timeout,
         );
         let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
+        if !self.fail_eagerly {
+            endpoints.cycle();
+        }
         let mut buf = Vec::with_capacity(4096);
         let mut connecting_depot = Depot::for_connecting();
         let conn = session.start(&mut endpoints, &mut buf, &mut connecting_depot).await?;
@@ -1677,8 +1691,9 @@ impl Connector {
     /// plaintext protocol, while `server3` uses tls encrypted protocol.
     ///
     /// # Notable errors
-    /// * [Error::NoHosts] if no host is available
+    /// * [Error::NoHosts] if no host is available and [Self::fail_eagerly] is turn on
     /// * [Error::SessionExpired] if specified session expired
+    /// * [Error::Timeout] if no session established with in approximate [Self::session_timeout]
     ///
     /// # Notable behaviors
     /// The state of this connector is undefined after connection attempt no matter whether it is

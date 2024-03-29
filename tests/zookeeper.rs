@@ -156,7 +156,23 @@ async fn connect(cluster: &Cluster, chroot: &str) -> zk::Client {
 
 #[test_log::test(tokio::test)]
 async fn test_connect_nohosts() {
-    assert_that!(zk::Client::connect("127.0.0.1:100,127.0.0.1:101").await.unwrap_err()).is_equal_to(zk::Error::NoHosts);
+    assert_that!(zk::Client::connector()
+        .session_timeout(Duration::from_secs(24 * 3600))
+        .fail_eagerly()
+        .connect("127.0.0.1:100,127.0.0.1:101")
+        .await
+        .unwrap_err())
+    .is_equal_to(zk::Error::NoHosts);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_connect_timeout() {
+    assert_that!(zk::Client::connector()
+        .session_timeout(Duration::from_secs(1))
+        .connect("127.0.0.1:100,127.0.0.1:101")
+        .await
+        .unwrap_err())
+    .is_equal_to(zk::Error::Timeout);
 }
 
 #[test_log::test(tokio::test)]
@@ -1807,18 +1823,12 @@ async fn test_readonly(tls: bool) {
 
     logs.wait_for_message("Read-only server started").unwrap();
 
-    // It takes time for the last server to serve request, so let's spin on connecting.
-    let mut timeout = tokio::time::sleep(Duration::from_secs(60));
-    let client = loop {
-        let mut connector = zk::Client::connector();
-        connector.session_timeout(Duration::from_secs(60)).readonly(true);
-        select! {
-            _ = unsafe { Pin::new_unchecked(&mut timeout) } => panic!("expect ConnectedReadOnly, but got no session"),
-            result = connector.connect("localhost:4001,localhost:4002,localhost:4003") => if let Ok(client) = result {
-                break client
-            },
-        }
-    };
+    let client = zk::Client::connector()
+        .readonly(true)
+        .session_timeout(Duration::from_secs(60))
+        .connect("localhost:4001,localhost:4002,localhost:4003")
+        .await
+        .unwrap();
     assert_that!(client.create("/y", b"", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NotReadOnly);
 
     let session = client.session().clone();
