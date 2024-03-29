@@ -1577,7 +1577,7 @@ impl Connector {
         self
     }
 
-    /// Specifies whether readonly server is allowed.
+    /// Specifies whether readonly session is allowed.
     pub fn readonly(&mut self, readonly: bool) -> &mut Self {
         self.readonly = readonly;
         self
@@ -1717,7 +1717,7 @@ impl ClientBuilder {
         self
     }
 
-    /// Specifies whether readonly server is allowed.
+    /// Specifies whether readonly session is allowed.
     pub fn with_readonly(&mut self, readonly: bool) -> &mut ClientBuilder {
         self.connector.readonly = readonly;
         self

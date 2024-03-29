@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, future};
 
@@ -13,7 +15,7 @@ use rcgen::{Certificate, CertificateParams};
 use tempfile::{tempdir, TempDir};
 use test_case::test_case;
 use testcontainers::clients::Cli as DockerCli;
-use testcontainers::core::{Container, Healthcheck, RunnableImage, WaitFor};
+use testcontainers::core::{Container, Healthcheck, LogStream, RunnableImage, WaitFor};
 use testcontainers::images::generic::GenericImage;
 use tokio::select;
 use zookeeper_client as zk;
@@ -54,12 +56,15 @@ fn zookeeper_image<'a>(options: ContainerOptions<'a>) -> RunnableImage<GenericIm
     for (dest, source) in options.volumes {
         image = image.with_volume((source.to_str().unwrap(), dest));
     }
+    if let Some(network) = options.network.as_ref() {
+        image = image.with_network(*network);
+    }
     image
 }
 
 async fn example() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let data = "path_data".as_bytes().to_vec();
@@ -128,8 +133,8 @@ async fn test_example() {
     tokio::spawn(async move { example().await }).await.unwrap()
 }
 
-async fn connect(server: &Server, chroot: &str) -> zk::Client {
-    let client = server.client(None).await;
+async fn connect(cluster: &Cluster, chroot: &str) -> zk::Client {
+    let client = cluster.client(None).await;
     if chroot.len() <= 1 {
         return client;
     }
@@ -156,120 +161,38 @@ async fn test_connect_nohosts() {
 
 #[test_log::test(tokio::test)]
 async fn test_connect_session_expired() {
-    let server = Server::new();
-    let client = server.custom_client(None, |connector| connector.detached()).await.unwrap();
+    let cluster = Cluster::new().await;
+    let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
     let timeout = client.session_timeout();
     let (id, password) = client.into_session();
 
     tokio::time::sleep(timeout * 2).await;
 
-    assert_that!(server.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err())
+    assert_that!(cluster.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err())
         .is_equal_to(zk::Error::SessionExpired);
 }
 
 struct Tls {
-    ca: String,
-    cert: String,
-    key: String,
-    cert_x: String,
-    key_x: String,
+    _dir: Arc<TempDir>,
+    _ca_cert: Certificate,
+    ca_cert_pem: String,
+    ca_cert_file: PathBuf,
+
+    server_identity_file: PathBuf,
+
+    client_cert_pem: String,
+    client_cert_key: String,
+    client_identity_file: PathBuf,
+
+    client_x_cert_pem: String,
+    client_x_cert_key: String,
+
     hostname_verification: bool,
 }
 
 impl Tls {
-    fn options(&self) -> zk::TlsOptions {
-        let mut options = zk::TlsOptions::default()
-            .with_pem_ca_certs(&self.ca)
-            .unwrap()
-            .with_pem_identity(&self.cert, &self.key)
-            .unwrap();
-        if !self.hostname_verification {
-            options = unsafe { options.with_no_hostname_verification() };
-        }
-        options
-    }
-
-    fn options_x(&self) -> zk::TlsOptions {
-        self.options().with_pem_identity(&self.cert_x, &self.key_x).unwrap()
-    }
-}
-
-struct Server {
-    tls: Option<Tls>,
-    _dir: Option<TempDir>,
-    _docker: Box<DockerCli>,
-    container: Container<'static, GenericImage>,
-}
-
-unsafe impl Send for Server {}
-unsafe impl Sync for Server {}
-
-struct ContainerOptions<'a> {
-    tag: &'a str,
-    volumes: HashMap<&'a str, &'a Path>,
-    properties: Vec<&'a str>,
-    healthcheck: Vec<&'a str>,
-}
-
-impl Default for ContainerOptions<'_> {
-    fn default() -> Self {
-        Self { tag: ZK_IMAGE_TAG, volumes: HashMap::new(), properties: vec![], healthcheck: vec![] }
-    }
-}
-
-impl<'a> From<ServerOptions<'a>> for ContainerOptions<'a> {
-    fn from(options: ServerOptions<'a>) -> Self {
-        Self {
-            tag: options.tag,
-            volumes: Default::default(),
-            properties: options.properties,
-            healthcheck: Default::default(),
-        }
-    }
-}
-
-struct ServerOptions<'a> {
-    tls: Option<bool>,
-    tag: &'a str,
-    properties: Vec<&'a str>,
-}
-
-impl Default for ServerOptions<'_> {
-    fn default() -> Self {
-        Self { tls: None, tag: ZK_IMAGE_TAG, properties: vec![] }
-    }
-}
-
-impl Server {
-    pub fn new() -> Self {
-        Self::with_options(Default::default())
-    }
-
-    pub fn with_properties(properties: Vec<&'_ str>) -> Self {
-        Self::with_options(ServerOptions { properties, ..Default::default() })
-    }
-
-    pub fn with_options(options: ServerOptions<'_>) -> Self {
-        let tls = options.tls.unwrap_or_else(|| env_toggle("ZK_TEST_TLS"));
-        if tls {
-            Self::tls(options)
-        } else {
-            Self::plaintext(options)
-        }
-    }
-
-    pub fn stop(&self) {
-        self.container.stop();
-    }
-
-    fn tls(options: ServerOptions<'_>) -> Self {
-        let dir = tempdir().unwrap();
+    fn new(dir: Arc<TempDir>) -> Self {
         let hostname_verification = env_toggle("ZK_TLS_HOSTNAME_VERIFICATION");
-        println!(
-            "starting tls zookeeper server with hostname verification {} ...",
-            if hostname_verification { "enabled" } else { "disabled" }
-        );
-
         let (ca_cert, ca_cert_pem) = generate_ca_cert();
         let server_cert = generate_server_cert(hostname_verification);
         let signed_server_cert = server_cert.serialize_pem_with_signer(&ca_cert).unwrap();
@@ -291,85 +214,251 @@ impl Server {
         let client_pem_file = dir.path().join("client.pem");
         fs::write(&client_pem_file, &client_pem).unwrap();
 
-        let config = r"
-dataDir=/data
-dataLogDir=/datalog
-tickTime=2000
-initLimit=5
-syncLimit=2
-autopurge.snapRetainCount=3
-autopurge.purgeInterval=0
-maxClientCnxns=60
-
-secureClientPort=2181
-ssl.clientAuth=need
-ssl.keyStore.location=/certs/server.pem
-ssl.trustStore.location=/certs/ca.cert.pem
-serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
-    ";
-        let config_file = dir.path().join("zoo.cfg");
-        fs::write(&config_file, &config).unwrap();
-
-        let options = ContainerOptions {
-            tag: options.tag,
-            volumes: HashMap::from([
-                ("/conf/zoo.cfg", config_file.as_path()),
-                ("/certs/client.pem", client_pem_file.as_path()),
-                ("/certs/server.pem", server_pem_file.as_path()),
-                ("/certs/ca.cert.pem", ca_cert_file.as_path()),
-            ]),
-            properties: options.properties,
-            healthcheck: vec![
-                "-Dzookeeper.clientCnxnSocket=org.apache.zookeeper.ClientCnxnSocketNetty",
-                "-Dzookeeper.ssl.trustStore.location=/certs/ca.cert.pem",
-                "-Dzookeeper.ssl.keyStore.location=/certs/client.pem",
-                "-Dzookeeper.client.secure=true",
-            ],
-        };
-
         let client_cert_x = generate_client_cert("client_x");
         let signed_client_cert_x = client_cert_x.serialize_pem_with_signer(&ca_cert).unwrap();
         let client_key_x = client_cert_x.serialize_private_key_pem();
 
-        let docker = Box::new(DockerCli::default());
-        let image = zookeeper_image(options);
-        let container = unsafe { std::mem::transmute(docker.run(image)) };
-
         Self {
-            tls: Some(Tls {
-                ca: ca_cert_pem,
-                cert: signed_client_cert,
-                key: client_key,
-                cert_x: signed_client_cert_x,
-                key_x: client_key_x,
-                hostname_verification,
-            }),
-            _dir: Some(dir),
-            _docker: docker,
-            container,
+            _dir: dir,
+            _ca_cert: ca_cert,
+            ca_cert_pem,
+            ca_cert_file,
+            server_identity_file: server_pem_file,
+            client_cert_pem: signed_client_cert,
+            client_cert_key: client_key,
+            client_identity_file: client_pem_file,
+            client_x_cert_pem: signed_client_cert_x,
+            client_x_cert_key: client_key_x,
+            hostname_verification,
         }
     }
 
-    fn plaintext(options: ServerOptions<'_>) -> Self {
-        println!("starting plaintext zookeeper server ...");
-        let docker = Box::new(DockerCli::default());
-        let image = zookeeper_image(options.into());
-        let container = unsafe { std::mem::transmute(docker.run(image)) };
-        Self { tls: None, _dir: None, _docker: docker, container }
+    fn options(&self) -> zk::TlsOptions {
+        let mut options = zk::TlsOptions::default()
+            .with_pem_ca_certs(&self.ca_cert_pem)
+            .unwrap()
+            .with_pem_identity(&self.client_cert_pem, &self.client_cert_key)
+            .unwrap();
+        if !self.hostname_verification {
+            options = unsafe { options.with_no_hostname_verification() };
+        }
+        options
     }
 
-    pub fn port(&self) -> u16 {
-        self.container.get_host_port(2181)
+    fn options_x(&self) -> zk::TlsOptions {
+        self.options().with_pem_identity(&self.client_x_cert_pem, &self.client_x_cert_key).unwrap()
+    }
+}
+
+struct Cluster {
+    tls: Option<Tls>,
+    containers: Vec<(u32, Container<'static, GenericImage>)>,
+    _docker: Arc<DockerCli>,
+    _dir: LazyTempDir,
+}
+
+unsafe impl Send for Cluster {}
+unsafe impl Sync for Cluster {}
+
+struct ContainerOptions<'a> {
+    tag: &'a str,
+    volumes: HashMap<&'a str, &'a Path>,
+    properties: Vec<&'a str>,
+    healthcheck: Vec<&'a str>,
+    network: Option<&'a str>,
+}
+
+impl Default for ContainerOptions<'_> {
+    fn default() -> Self {
+        Self { tag: ZK_IMAGE_TAG, volumes: HashMap::new(), properties: vec![], healthcheck: vec![], network: None }
+    }
+}
+
+impl<'a> From<ClusterOptions<'a>> for ContainerOptions<'a> {
+    fn from(options: ClusterOptions<'a>) -> Self {
+        Self {
+            tag: options.tag,
+            volumes: Default::default(),
+            properties: options.properties,
+            healthcheck: Default::default(),
+            network: None,
+        }
+    }
+}
+
+struct ClusterOptions<'a> {
+    tls: Option<bool>,
+    tag: &'a str,
+    network: Option<&'a str>,
+    properties: Vec<&'a str>,
+    configs: Vec<&'a str>,
+    servers: Vec<(u32, &'a [&'a str])>,
+}
+
+impl ClusterOptions<'_> {
+    fn is_standalone(&self) -> bool {
+        return self.servers.len() <= 1;
+    }
+
+    fn servers(&self) -> Vec<(u32, String)> {
+        let mut lines = String::new();
+        for config in self.configs.iter() {
+            write!(&mut lines, "{}\n", config).unwrap();
+        }
+        let mut servers = vec![];
+        for server in self.servers.iter() {
+            let mut lines = lines.clone();
+            lines += "initLimit=5\n";
+            lines += "syncLimit=2\n";
+            write!(&mut lines, "{}\n", server.1.join("\n")).unwrap();
+            servers.push((server.0, lines));
+        }
+        if servers.is_empty() {
+            return vec![(1, lines)];
+        }
+        servers
+    }
+}
+
+impl Default for ClusterOptions<'_> {
+    fn default() -> Self {
+        Self { tls: None, tag: ZK_IMAGE_TAG, network: None, properties: vec![], configs: vec![], servers: vec![] }
+    }
+}
+
+struct LazyTempDir {
+    dir: Option<Arc<TempDir>>,
+}
+
+impl LazyTempDir {
+    fn new() -> Self {
+        Self { dir: None }
+    }
+
+    fn tempdir(&mut self) -> &Arc<TempDir> {
+        self.dir.get_or_insert_with(|| Arc::new(tempdir().unwrap()))
+    }
+}
+
+impl Cluster {
+    pub async fn new() -> Self {
+        Self::with_options(Default::default()).await
+    }
+
+    pub async fn with_properties(properties: Vec<&'_ str>) -> Self {
+        Self::with_options(ClusterOptions { properties, ..Default::default() }).await
+    }
+
+    pub async fn with_options(options: ClusterOptions<'_>) -> Self {
+        let mut dir = LazyTempDir::new();
+        let tls = if options.tls.unwrap_or_else(|| env_toggle("ZK_TEST_TLS")) {
+            Some(Tls::new(dir.tempdir().clone()))
+        } else {
+            None
+        };
+        let docker = Arc::new(DockerCli::default());
+        let standalone = options.is_standalone();
+        let mut tasks = vec![];
+        for (id, mut configs) in options.servers() {
+            let mut options = ContainerOptions {
+                tag: options.tag,
+                properties: options.properties.clone(),
+                network: options.network,
+                ..Default::default()
+            };
+            match tls.as_ref() {
+                None => {},
+                Some(tls) => {
+                    configs += r"
+ssl.clientAuth=need
+ssl.keyStore.location=/certs/server.pem
+ssl.trustStore.location=/certs/ca.cert.pem
+serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
+";
+
+                    if standalone {
+                        configs += "secureClientPort=2181\n";
+                    }
+                    options.volumes = HashMap::from([
+                        ("/certs/client.pem", tls.client_identity_file.as_path()),
+                        ("/certs/server.pem", tls.server_identity_file.as_path()),
+                        ("/certs/ca.cert.pem", tls.ca_cert_file.as_path()),
+                    ]);
+                    options.healthcheck = vec![
+                        "-Dzookeeper.clientCnxnSocket=org.apache.zookeeper.ClientCnxnSocketNetty",
+                        "-Dzookeeper.ssl.trustStore.location=/certs/ca.cert.pem",
+                        "-Dzookeeper.ssl.keyStore.location=/certs/client.pem",
+                        "-Dzookeeper.client.secure=true",
+                    ];
+                },
+            };
+
+            let mut image = zookeeper_image(options);
+            if !configs.is_empty() {
+                configs += "dataDir=/data\n";
+                let cfg_path = dir.tempdir().path().join(format!("zoo{id}.cfg"));
+                fs::write(&cfg_path, &configs).unwrap();
+                image = image.with_volume((cfg_path.to_str().unwrap(), "/conf/zoo.cfg"));
+            }
+
+            if standalone {
+                let container = unsafe { std::mem::transmute(docker.run(image)) };
+                return Self { tls, containers: vec![(1, container)], _docker: docker, _dir: dir };
+            }
+
+            let data_dir = dir.tempdir().path().join(format!("zoo{id}.data"));
+            std::fs::create_dir_all(data_dir.as_path()).unwrap();
+            fs::write(&data_dir.as_path().join("myid"), format!("{id}\n")).unwrap();
+            image = image.with_volume((data_dir.to_str().unwrap(), "/data"));
+            // image = image.with_env_var(("ZOO_MY_ID", id.to_string()));
+
+            tasks.push((
+                id,
+                tokio::task::spawn_blocking({
+                    let docker = docker.clone();
+                    move || unsafe { std::mem::transmute::<_, Container<'static, GenericImage>>(docker.run(image)) }
+                }),
+            ));
+        }
+        let mut containers = vec![];
+        for task in tasks {
+            let id = task.0;
+            let container = task.1.await.unwrap();
+            containers.push((id, container));
+        }
+        Self { tls, containers, _docker: docker, _dir: dir }
+    }
+
+    pub fn stop(&self) {
+        self.containers.iter().for_each(|c| c.1.stop());
+    }
+
+    pub fn by_id(&self, id: u32) -> &Container<'static, GenericImage> {
+        self.containers.iter().find_map(|c| if c.0 == id { Some(&c.1) } else { None }).expect("container")
+    }
+
+    #[allow(dead_code)]
+    pub fn logs(&self, id: u32) -> LogStream {
+        let container = self.by_id(id);
+        container.stdout()
     }
 
     fn url(&self, chroot: Option<&str>) -> (String, bool) {
-        let (secure, explicit) = (rand::random(), rand::random());
-        let protocol = match (self.tls.is_some(), secure, explicit) {
-            (true, false, _) | (true, _, true) => "tcp+tls://",
-            (false, true, _) | (false, _, true) => "tcp://",
-            (_, _, _) => "",
-        };
-        (format!("{}127.0.0.1:{}{}", protocol, self.port(), chroot.unwrap_or("")), secure)
+        let secure = rand::random();
+        let endpoints: Vec<_> = self
+            .containers
+            .iter()
+            .map(|c| {
+                let explicit = rand::random();
+                let protocol = match (self.tls.is_some(), secure, explicit) {
+                    (true, false, _) | (true, _, true) => "tcp+tls://",
+                    (false, true, _) | (false, _, true) => "tcp://",
+                    (_, _, _) => "",
+                };
+                format!("{}127.0.0.1:{}", protocol, c.1.get_host_port(2181))
+            })
+            .collect();
+        (endpoints.join(",") + chroot.unwrap_or(""), secure)
     }
 
     pub fn connector(&self) -> zk::Connector {
@@ -415,8 +504,8 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 #[test_case("/x/y"; "chroot_x_y")]
 #[test_log::test(tokio::test)]
 async fn test_multi(chroot: &str) {
-    let server = Server::new();
-    let client = connect(&server, chroot).await;
+    let cluster = Cluster::new().await;
+    let client = connect(&cluster, chroot).await;
 
     let mut writer = client.new_multi_writer();
     assert_that!(writer.commit().await.unwrap()).is_empty();
@@ -516,8 +605,8 @@ async fn test_multi(chroot: &str) {
 
 #[test_log::test(tokio::test)]
 async fn test_multi_async_order() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     client.create("/a", "a0".as_bytes(), PERSISTENT_OPEN).await.unwrap();
 
@@ -541,8 +630,8 @@ async fn test_multi_async_order() {
 
 #[test_log::test(tokio::test)]
 async fn test_check_writer() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let mut check_writer = client.new_check_writer("/check", None).unwrap();
     check_writer.add_create("/a", Default::default(), PERSISTENT_OPEN).unwrap();
@@ -573,10 +662,10 @@ async fn test_check_writer() {
 #[test_case("/x/y"; "chroot_x_y")]
 #[test_log::test(tokio::test)]
 async fn test_lock_shared(chroot: &str) {
-    let server = Server::new();
+    let cluster = Cluster::new().await;
 
     test_lock_with_path(
-        &server,
+        &cluster,
         chroot,
         zk::LockPrefix::new_shared("/locks/shared/n-").unwrap(),
         zk::LockPrefix::new_shared("/locks/shared/n-").unwrap(),
@@ -588,36 +677,36 @@ async fn test_lock_shared(chroot: &str) {
 #[test_case("/x/y"; "chroot_x_y")]
 #[test_log::test(tokio::test)]
 async fn test_lock_custom(chroot: &str) {
-    let server = Server::new();
+    let cluster = Cluster::new().await;
 
     let lock1_prefix = zk::LockPrefix::new_custom("/locks/custom/n-abc-".to_string(), "n-").unwrap();
     let lock2_prefix = zk::LockPrefix::new_custom("/locks/custom/n-def-".to_string(), "n-").unwrap();
-    test_lock_with_path(&server, chroot, lock1_prefix, lock2_prefix).await;
+    test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
 }
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
 #[test_log::test(tokio::test)]
 async fn test_lock_curator(chroot: &str) {
-    let server = Server::new();
+    let cluster = Cluster::new().await;
 
     let lock1_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
     let lock2_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
-    test_lock_with_path(&server, chroot, lock1_prefix, lock2_prefix).await;
+    test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
 }
 
 #[test_log::test(tokio::test)]
 async fn test_lock_no_node() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
     let prefix = zk::LockPrefix::new_curator("/a/locks", "latch-").unwrap();
     assert_eq!(client.lock(prefix, b"", zk::Acls::anyone_all()).await.unwrap_err(), zk::Error::NoNode);
 }
 
 #[test_log::test(tokio::test)]
 async fn test_lock_curator_filter() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
     let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
 
     let latch_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
@@ -629,13 +718,13 @@ async fn test_lock_curator_filter() {
 
 #[allow(unused_must_use)] // semi-asynchronous future
 async fn test_lock_with_path(
-    server: &Server,
+    cluster: &Cluster,
     chroot: &str,
     lock1_prefix: zk::LockPrefix<'static>,
     lock2_prefix: zk::LockPrefix<'static>,
 ) {
-    let client1 = connect(server, chroot).await;
-    let client2 = connect(server, chroot).await;
+    let client1 = connect(cluster, chroot).await;
+    let client2 = connect(cluster, chroot).await;
 
     let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
 
@@ -676,8 +765,8 @@ async fn test_lock_with_path(
 
 #[test_log::test(tokio::test)]
 async fn test_no_node() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     assert_eq!(client.check_stat("/nonexistent").await.unwrap(), None);
     assert_eq!(client.get_data("/nonexistent").await.unwrap_err(), zk::Error::NoNode);
@@ -694,8 +783,8 @@ async fn test_no_node() {
 
 #[test_log::test(tokio::test)]
 async fn test_request_order() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -722,8 +811,8 @@ async fn test_request_order() {
 
 #[test_log::test(tokio::test)]
 async fn test_data_node() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let data = random_data();
@@ -741,8 +830,8 @@ async fn test_data_node() {
 
 #[test_log::test(tokio::test)]
 async fn test_create_root() {
-    let server = Server::new();
-    let client = server.client(None).await.chroot("/a").unwrap();
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await.chroot("/a").unwrap();
     assert_that!(client.create("/", &vec![], PERSISTENT_OPEN).await.unwrap_err())
         .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
     assert_that!(client.mkdir("/", PERSISTENT_OPEN).await.unwrap_err())
@@ -751,8 +840,8 @@ async fn test_create_root() {
 
 #[test_log::test(tokio::test)]
 async fn test_create_sequential() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let prefix = "/PREFIX-";
     let data = random_data();
@@ -775,11 +864,12 @@ async fn test_create_sequential() {
 
 #[test_log::test(tokio::test)]
 async fn test_create_ttl() {
-    let server = Server::with_properties(vec![
+    let cluster = Cluster::with_properties(vec![
         "-Dzookeeper.extendedTypesEnabled=true",
         "-Dznode.container.checkIntervalMs=1000",
-    ]);
-    let client = server.client(None).await;
+    ])
+    .await;
+    let client = cluster.client(None).await;
 
     let ttl_options = PERSISTENT_OPEN.clone().with_ttl(Duration::from_millis(500));
     client.create("/ttl", &vec![], &ttl_options).await.unwrap();
@@ -792,11 +882,12 @@ async fn test_create_ttl() {
 
 #[test_log::test(tokio::test)]
 async fn test_create_container() {
-    let server = Server::with_properties(vec![
+    let cluster = Cluster::with_properties(vec![
         "-Dzookeeper.extendedTypesEnabled=true",
         "-Dznode.container.checkIntervalMs=1000",
-    ]);
-    let client = server.client(None).await;
+    ])
+    .await;
+    let client = cluster.client(None).await;
 
     client.create("/container", &vec![], &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all())).await.unwrap();
     client.create("/container/child", &vec![], PERSISTENT_OPEN).await.unwrap();
@@ -808,9 +899,9 @@ async fn test_create_container() {
 
 #[test_log::test(tokio::test)]
 async fn test_zookeeper34() {
-    let server = Server::with_options(ServerOptions { tls: Some(false), tag: "3.4", ..Default::default() });
+    let cluster = Cluster::with_options(ClusterOptions { tls: Some(false), tag: "3.4", ..Default::default() }).await;
 
-    let client = server.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
+    let client = cluster.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
     let (stat, _sequence) = client.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
     assert_that!(stat.is_invalid()).is_true();
 
@@ -844,8 +935,8 @@ async fn test_zookeeper34() {
 
 #[test_log::test(tokio::test)]
 async fn test_mkdir() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     client.mkdir("/a/b/c/d", PERSISTENT_OPEN).await.unwrap();
     let _stat = client.check_stat("/a/b/c/d").await.unwrap().unwrap();
@@ -860,8 +951,8 @@ async fn test_mkdir() {
 
 #[test_log::test(tokio::test)]
 async fn test_descendants_number() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -908,8 +999,8 @@ where
 
 #[test_log::test(tokio::test)]
 async fn test_ephemerals() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -970,8 +1061,8 @@ async fn test_ephemerals() {
 
 #[test_log::test(tokio::test)]
 async fn test_chroot() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     assert_eq!(client.path(), "/");
     let client = client.chroot("abc").unwrap_err();
@@ -1015,8 +1106,8 @@ async fn test_chroot() {
 
 #[test_log::test(tokio::test)]
 async fn test_auth() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let scheme = "digest";
     let user = "bob";
@@ -1028,7 +1119,7 @@ async fn test_auth() {
     assert!(authed_users.contains(&authed_user));
 
     let authed_client =
-        server.custom_client(None, |connector| connector.auth(scheme.to_string(), auth.to_vec())).await.unwrap();
+        cluster.custom_client(None, |connector| connector.auth(scheme.to_string(), auth.to_vec())).await.unwrap();
 
     authed_client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
     let authed_users = client.list_auth_users().await.unwrap();
@@ -1037,8 +1128,8 @@ async fn test_auth() {
 
 #[test_log::test(tokio::test)]
 async fn test_no_auth() {
-    let server = Server::with_options(ServerOptions { tls: Some(false), ..Default::default() });
-    let client = server.client(None).await;
+    let cluster = Cluster::with_options(ClusterOptions { tls: Some(false), ..Default::default() }).await;
+    let client = cluster.client(None).await;
 
     let scheme = "digest";
     let auth = b"bob:xyz";
@@ -1050,7 +1141,7 @@ async fn test_no_auth() {
         .unwrap();
     assert_eq!(client.get_data("/acl_test").await.unwrap().0, b"my_data".to_vec());
 
-    let no_auth_client = server.client(None).await;
+    let no_auth_client = cluster.client(None).await;
     assert_eq!(no_auth_client.get_data("/acl_test").await.unwrap_err(), zk::Error::NoAuth);
     assert_eq!(no_auth_client.set_data("/acl_test", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
 
@@ -1067,8 +1158,8 @@ async fn test_no_auth() {
 
 #[test_log::test(tokio::test)]
 async fn test_delete() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let (stat, _) = client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
@@ -1085,8 +1176,8 @@ async fn test_delete() {
 
 #[test_log::test(tokio::test)]
 async fn test_oneshot_watcher() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -1257,12 +1348,12 @@ async fn test_oneshot_watcher() {
 
 #[test_log::test(tokio::test)]
 async fn test_config_watch() {
-    let server = Server::new();
+    let cluster = Cluster::new().await;
 
-    let client1 = server.client(Some("/root")).await;
+    let client1 = cluster.client(Some("/root")).await;
     let (config_bytes, stat, watcher) = client1.get_and_watch_config().await.unwrap();
 
-    let client2 = server.client(None).await;
+    let client2 = cluster.client(None).await;
     client2.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
     client2.set_data("/zookeeper/config", &config_bytes, Some(stat.version)).await.unwrap();
 
@@ -1273,8 +1364,8 @@ async fn test_config_watch() {
 
 #[test_log::test(tokio::test)]
 async fn test_persistent_watcher_passive_remove() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -1307,8 +1398,8 @@ async fn test_persistent_watcher_passive_remove() {
 
 #[test_log::test(tokio::test)]
 async fn test_fail_watch_with_multiple_unwatching() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let (_, exist_watcher1) = client.check_and_watch_stat("/a1").await.unwrap();
     let (_, exist_watcher2) = client.check_and_watch_stat("/a2").await.unwrap();
@@ -1332,8 +1423,8 @@ async fn test_fail_watch_with_multiple_unwatching() {
 
 #[test_log::test(tokio::test)]
 async fn test_fail_watch_with_concurrent_passive_remove() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let recursive_watcher = client.watch("/a", zk::AddWatchMode::PersistentRecursive).await.unwrap();
     let data_watching = client.get_and_watch_data("/a");
@@ -1352,8 +1443,8 @@ async fn test_fail_watch_with_concurrent_passive_remove() {
 
 #[test_log::test(tokio::test)]
 async fn test_persistent_watcher() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let path = "/abc";
     let child_path = "/abc/efg";
@@ -1472,8 +1563,8 @@ async fn test_persistent_watcher() {
 
 #[test_log::test(tokio::test)]
 async fn test_watcher_coexist_on_same_path() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
     let mut persistent_watcher = client.watch("/a", zk::AddWatchMode::Persistent).await.unwrap();
@@ -1531,8 +1622,8 @@ async fn test_watcher_coexist_on_same_path() {
 // Use "current_thread" explicitly.
 #[test_log::test(tokio::test(flavor = "current_thread"))]
 async fn test_remove_no_watcher() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
     let create = client.create("/a", &vec![], PERSISTENT_OPEN);
@@ -1554,8 +1645,8 @@ async fn test_remove_no_watcher() {
 
 #[test_log::test(tokio::test)]
 async fn test_session_event() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let (_, oneshot_watcher1) = client.check_and_watch_stat("/").await.unwrap();
     let (_, _, oneshot_watcher2) = client.get_and_watch_data("/").await.unwrap();
@@ -1564,7 +1655,7 @@ async fn test_session_event() {
 
     let mut persistent_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
 
-    server.stop();
+    cluster.stop();
 
     let event = persistent_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::Session);
@@ -1585,8 +1676,8 @@ async fn test_session_event() {
 
 #[test_log::test(tokio::test)]
 async fn test_state_watcher() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
     let mut state_watcher = client.state_watcher();
     select! {
         biased;
@@ -1605,27 +1696,27 @@ async fn test_state_watcher() {
 
 #[test_log::test(tokio::test)]
 async fn test_client_drop() {
-    let server = Server::new();
-    let client = server.client(None).await;
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
 
     let mut state_watcher = client.state_watcher();
     tokio::time::sleep(Duration::from_secs(20)).await;
     let (id, password) = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    server.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err();
+    cluster.custom_client(None, |connector| connector.session(id, password)).await.unwrap_err();
 }
 
 #[test_log::test(tokio::test)]
 async fn test_client_detach() {
-    let server = Server::new();
-    let client = server.custom_client(None, |connector| connector.detached()).await.unwrap();
+    let cluster = Cluster::new().await;
+    let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
 
     let mut state_watcher = client.state_watcher();
     let (id, password) = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    server.custom_client(None, |connector| connector.session(id, password)).await.unwrap();
+    cluster.custom_client(None, |connector| connector.session(id, password)).await.unwrap();
 }
 
 fn generate_ca_cert() -> (Certificate, String) {
@@ -1656,40 +1747,99 @@ fn generate_client_cert(cn: &str) -> Certificate {
 
 #[test_log::test(tokio::test)]
 async fn test_tls() {
-    let server = Server::with_options(ServerOptions { tls: Some(true), ..Default::default() });
-    let client = server.client(None).await;
+    let cluster = Cluster::with_options(ClusterOptions { tls: Some(true), ..Default::default() }).await;
+    let client = cluster.client(None).await;
     let children = client.list_children("/").await.unwrap();
     assert_that!(children).contains("zookeeper".to_owned());
 
     client.create("/a", b"my_data", &zk::CreateMode::Persistent.with_acls(zk::Acls::creator_all())).await.unwrap();
 
-    let client1 = server.client(None).await;
-    let client2 = server.client_x(None).await;
+    let client1 = cluster.client(None).await;
+    let client2 = cluster.client_x(None).await;
     assert_eq!(client1.get_data("/a").await.unwrap().0, b"my_data".to_vec());
     assert_eq!(client2.get_data("/a").await.unwrap_err(), zk::Error::NoAuth);
 }
 
-#[allow(dead_code)]
-fn zookeeper_quorum_image(server_id: u8, dir: &TempDir, servers: &[&str]) -> RunnableImage<GenericImage> {
-    let options = r"dataDir=/data
-dataLogDir=/datalog
-tickTime=2000
-initLimit=5
-syncLimit=2
-autopurge.snapRetainCount=3
-autopurge.purgeInterval=0
-maxClientCnxns=60
-standaloneEnabled=false
-reconfigEnabled=true
-admin.enableServer=true";
-    let cfg_path = dir.path().join(format!("zoo{server_id}.cfg"));
-    let myid_path = dir.path().join(format!("zoo{server_id}.myid"));
-    fs::write(&cfg_path, format!("{options}\n{}\n", servers.join("\n"))).unwrap();
-    fs::write(&myid_path, format!("{server_id}\n")).unwrap();
-    RunnableImage::from(zookeeper_image(Default::default()))
-        .with_network("host")
-        .with_volume((cfg_path.as_path().to_str().unwrap(), "/conf/zoo.cfg"))
-        .with_volume((myid_path.as_path().to_str().unwrap(), "/data/myid"))
+#[cfg(target_os = "linux")]
+#[test_case(true; "tls")]
+#[test_case(false; "plaintext")]
+#[test_log::test(tokio::test)]
+#[serial_test::serial(network_host)]
+async fn test_readonly(tls: bool) {
+    let servers = vec![
+        "server.1=localhost:2001:3001:participant;localhost:4001",
+        "server.2=localhost:2002:3002:participant;localhost:4002",
+        "server.3=localhost:2003:3003:participant;localhost:4003",
+    ];
+    let cluster = Cluster::with_options(ClusterOptions {
+        tls: Some(tls),
+        network: Some("host"),
+        configs: vec!["localSessionsEnabled=true"],
+        properties: vec!["-Dreadonlymode.enabled=true"],
+        servers: vec![(1, &servers), (2, &servers), (3, &servers)],
+        ..Default::default()
+    })
+    .await;
+
+    let client =
+        zk::Client::connector().readonly(true).connect("localhost:4001,localhost:4002,localhost:4003").await.unwrap();
+
+    client.create("/x", b"", PERSISTENT_OPEN).await.unwrap();
+
+    let mut state_watcher = client.state_watcher();
+    assert_eq!(state_watcher.state(), zk::SessionState::SyncConnected);
+
+    let logs = cluster.logs(3);
+
+    cluster.by_id(1).stop();
+    cluster.by_id(2).stop();
+
+    // Quorum session will expire finally.
+    let mut timeout = tokio::time::sleep(2 * client.session_timeout());
+    loop {
+        select! {
+            state = state_watcher.changed() => if state == zk::SessionState::Expired {
+                break
+            },
+            _ = unsafe { Pin::new_unchecked(&mut timeout) } => panic!("expect Expired, but got {}", state_watcher.state()),
+        }
+    }
+
+    logs.wait_for_message("Read-only server started").unwrap();
+
+    // It takes time for the last server to serve request, so let's spin on connecting.
+    let mut timeout = tokio::time::sleep(Duration::from_secs(60));
+    let client = loop {
+        let mut connector = zk::Client::connector();
+        connector.session_timeout(Duration::from_secs(60)).readonly(true);
+        select! {
+            _ = unsafe { Pin::new_unchecked(&mut timeout) } => panic!("expect ConnectedReadOnly, but got no session"),
+            result = connector.connect("localhost:4001,localhost:4002,localhost:4003") => if let Ok(client) = result {
+                break client
+            },
+        }
+    };
+    assert_that!(client.create("/y", b"", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NotReadOnly);
+
+    let mut state_watcher = client.state_watcher();
+    assert_eq!(state_watcher.state(), zk::SessionState::ConnectedReadOnly);
+
+    cluster.by_id(1).start();
+    cluster.by_id(2).start();
+
+    let mut timeout = tokio::time::sleep(Duration::from_secs(60));
+    loop {
+        select! {
+            state = state_watcher.changed() => match state {
+                zk::SessionState::SyncConnected => break,
+                zk::SessionState::Disconnected | zk::SessionState::ConnectedReadOnly => continue,
+                state => panic!("expect SyncConnected, but got {}", state),
+            },
+            _ = unsafe { Pin::new_unchecked(&mut timeout) } => panic!("expect SyncConnected, but got {}", state_watcher.state()),
+        }
+    }
+
+    client.create("/z", b"", PERSISTENT_OPEN).await.unwrap();
 }
 
 /// Ideally, we can use user-defiend bridge network or `--link` to connect containers. But
@@ -1699,20 +1849,26 @@ admin.enableServer=true";
 /// * https://docs.docker.com/network/drivers/bridge/
 /// * https://docs.docker.com/network/links/
 #[cfg(target_os = "linux")]
+#[serial_test::serial(network_host)]
 #[test_log::test(tokio::test)]
 async fn test_update_ensemble() {
-    let dir = tempdir().unwrap();
-    let docker = DockerCli::default();
-    let _zoo1 =
-        docker.run(zookeeper_quorum_image(1, &dir, &vec!["server.1=localhost:2001:3001:participant;localhost:4001"]));
-    let _zoo2 = docker.run(zookeeper_quorum_image(2, &dir, &vec![
-        "server.1=localhost:2001:3001:participant;localhost:4001",
-        "server.2=localhost:2002:3002:observer;localhost:4002",
-    ]));
-    let _zoo3 = docker.run(zookeeper_quorum_image(3, &dir, &vec![
-        "server.1=localhost:2001:3001:participant;localhost:4001",
-        "server.3=localhost:2003:3003:observer;localhost:4003",
-    ]));
+    let _cluster = Cluster::with_options(ClusterOptions {
+        network: Some("host"),
+        configs: vec!["reconfigEnabled=true", "standaloneEnabled=false"],
+        servers: vec![
+            (1, &vec!["server.1=localhost:2001:3001:participant;localhost:4001"]),
+            (2, &vec![
+                "server.1=localhost:2001:3001:participant;localhost:4001",
+                "server.2=localhost:2002:3002:observer;localhost:4002",
+            ]),
+            (3, &vec![
+                "server.1=localhost:2001:3001:participant;localhost:4001",
+                "server.3=localhost:2003:3003:observer;localhost:4003",
+            ]),
+        ],
+        ..Default::default()
+    })
+    .await;
 
     let zoo1_client = zk::Client::connect("localhost:4001").await.unwrap();
     let zoo2_client = zk::Client::connect("localhost:4002").await.unwrap();

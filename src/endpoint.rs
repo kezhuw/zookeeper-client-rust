@@ -165,6 +165,10 @@ impl IterableEndpoints {
         Self { cycle: false, next: 0, endpoints: endpoints.into() }
     }
 
+    pub fn len(&self) -> usize {
+        self.endpoints.len()
+    }
+
     pub fn endpoints(&self) -> &[Endpoint] {
         &self.endpoints
     }
@@ -191,6 +195,14 @@ impl IterableEndpoints {
         if self.cycle && self.next >= self.endpoints.len() {
             self.next = 0;
         }
+    }
+
+    pub fn peek(&self) -> Option<EndpointRef<'_>> {
+        let next = self.next;
+        if next >= self.endpoints.len() {
+            return None;
+        }
+        Some(self.endpoints[next].to_ref())
     }
 }
 

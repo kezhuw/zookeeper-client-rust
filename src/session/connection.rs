@@ -1,12 +1,22 @@
-use std::io::{ErrorKind, IoSlice, Result};
+use std::io::{Error, ErrorKind, IoSlice, Result};
 use std::pin::Pin;
 use std::ptr;
+use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::time::Duration;
 
 use bytes::buf::BufMut;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use ignore_result::Ignore;
+use rustls::pki_types::ServerName;
+use rustls::ClientConfig;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::{select, time};
 use tokio_rustls::client::TlsStream;
+use tokio_rustls::TlsConnector;
+
+use crate::deadline::Deadline;
+use crate::endpoint::{EndpointRef, IterableEndpoints};
 
 const NOOP_VTABLE: RawWakerVTable =
     RawWakerVTable::new(|_| RawWaker::new(ptr::null(), &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
@@ -125,5 +135,91 @@ impl Connection {
             Poll::Pending => Err(ErrorKind::WouldBlock.into()),
             Poll::Ready(result) => result,
         }
+    }
+
+    pub async fn command(self, cmd: &str) -> Result<String> {
+        let mut stream = BufStream::new(self);
+        stream.write_all(cmd.as_bytes()).await?;
+        stream.flush().await?;
+        let mut line = String::new();
+        stream.read_line(&mut line).await?;
+        stream.shutdown().await.ignore();
+        Ok(line)
+    }
+
+    pub async fn command_isro(self) -> Result<bool> {
+        let r = self.command("isro").await?;
+        if r == "rw" {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Connector {
+    tls: TlsConnector,
+    timeout: Duration,
+}
+
+impl Connector {
+    pub fn new(config: impl Into<Arc<ClientConfig>>) -> Self {
+        Self { tls: TlsConnector::from(config.into()), timeout: Duration::from_secs(10) }
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
+    pub async fn connect(&self, endpoint: EndpointRef<'_>, deadline: &mut Deadline) -> Result<Connection> {
+        select! {
+            _ = unsafe { Pin::new_unchecked(deadline) } => Err(Error::new(ErrorKind::TimedOut, "deadline exceed")),
+            _ = time::sleep(self.timeout) => Err(Error::new(ErrorKind::TimedOut, format!("connection timeout{:?} exceed", self.timeout))),
+            r = TcpStream::connect((endpoint.host, endpoint.port)) => {
+                match r {
+                    Err(err) => Err(err),
+                    Ok(sock) => {
+                        let connection = if endpoint.tls {
+                            let domain = ServerName::try_from(endpoint.host).unwrap().to_owned();
+                            let stream = self.tls.connect(domain, sock).await?;
+                            Connection::new_tls(stream)
+                        } else {
+                            Connection::new_raw(sock)
+                        };
+                        Ok(connection)
+                    },
+                }
+            },
+        }
+    }
+
+    pub async fn seek_for_writable(self, endpoints: &mut IterableEndpoints) -> Option<EndpointRef<'_>> {
+        let n = endpoints.len();
+        let max_timeout = Duration::from_secs(60);
+        let mut i = 0;
+        let mut timeout = Duration::from_millis(100);
+        let mut deadline = Deadline::never();
+        while let Some(endpoint) = endpoints.peek() {
+            i += 1;
+            if let Ok(conn) = self.connect(endpoint, &mut deadline).await {
+                if let Ok(true) = conn.command_isro().await {
+                    return Some(unsafe { std::mem::transmute(endpoint) });
+                }
+            }
+            endpoints.step();
+            if i % n == 0 {
+                log::debug!("ZooKeeper fails to contact writable server from endpoints {:?}", endpoints.endpoints());
+                time::sleep(timeout).await;
+                timeout = max_timeout.min(timeout * 2);
+            } else {
+                time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        None
     }
 }
