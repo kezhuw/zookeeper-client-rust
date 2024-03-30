@@ -5,14 +5,14 @@ use crate::chroot::Chroot;
 use crate::error::Error;
 use crate::util::{Ref, ToRef};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub host: String,
     pub port: u16,
     pub tls: bool,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct EndpointRef<'a> {
     pub host: &'a str,
     pub port: u16,
@@ -37,6 +37,12 @@ impl Display for Endpoint {
     }
 }
 
+impl fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 impl<'a> From<(&'a str, u16, bool)> for EndpointRef<'a> {
     fn from(v: (&'a str, u16, bool)) -> Self {
         Self::new(v.0, v.1, v.2)
@@ -47,6 +53,12 @@ impl Display for EndpointRef<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let proto = if self.tls { "tcp+tls" } else { "tcp" };
         write!(f, "{}://{}:{}", proto, self.host, self.port)
+    }
+}
+
+impl fmt::Debug for EndpointRef<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -380,9 +392,13 @@ mod tests {
         let endpoint = EndpointRef::new("host", 2181, false);
         assert_eq!(endpoint.to_string(), "tcp://host:2181");
         assert_eq!(endpoint.to_value().to_string(), "tcp://host:2181");
+        assert_eq!(format!("{:?}", endpoint), "tcp://host:2181");
+        assert_eq!(format!("{:?}", endpoint.to_value()), "tcp://host:2181");
 
         let endpoint = EndpointRef::new("host", 2182, true);
         assert_eq!(endpoint.to_string(), "tcp+tls://host:2182");
         assert_eq!(endpoint.to_value().to_string(), "tcp+tls://host:2182");
+        assert_eq!(format!("{:?}", endpoint), "tcp+tls://host:2182");
+        assert_eq!(format!("{:?}", endpoint.to_value()), "tcp+tls://host:2182");
     }
 }
