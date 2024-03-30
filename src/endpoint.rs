@@ -1,4 +1,5 @@
 use std::fmt::{self, Display, Formatter};
+use std::time::Duration;
 
 use crate::chroot::Chroot;
 use crate::error::Error;
@@ -157,12 +158,19 @@ pub fn parse_connect_string(s: &str, tls: bool) -> Result<(Vec<EndpointRef<'_>>,
 pub struct IterableEndpoints {
     cycle: bool,
     next: usize,
+    start: usize,
     endpoints: Vec<Endpoint>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Index {
+    offset: usize,
+    cycles: usize,
 }
 
 impl IterableEndpoints {
     pub fn new(endpoints: impl Into<Vec<Endpoint>>) -> Self {
-        Self { cycle: false, next: 0, endpoints: endpoints.into() }
+        Self { cycle: false, start: 0, next: 0, endpoints: endpoints.into() }
     }
 
     pub fn len(&self) -> usize {
@@ -174,35 +182,68 @@ impl IterableEndpoints {
     }
 
     pub fn cycle(&mut self) {
-        if self.next >= self.endpoints.len() {
-            self.next = 0;
-        }
         self.cycle = true;
     }
 
-    pub fn next(&mut self) -> Option<EndpointRef<'_>> {
-        let next = self.next;
-        if next >= self.endpoints.len() {
+    /// Resets all counters and shuffles endpoints for future iterations.
+    pub fn reset(&mut self) {
+        self.next = 0;
+        self.start = 0;
+        fastrand::shuffle(&mut self.endpoints);
+    }
+
+    /// Starts an new iteration at where `peek` stopped.
+    pub fn start(&mut self) {
+        self.start = self.next;
+    }
+
+    pub async fn next(&mut self) -> Option<EndpointRef<'_>> {
+        let index = self.index()?;
+        self.delay(index).await;
+        self.step();
+        Some(self.endpoints[index.offset].to_ref())
+    }
+
+    async fn delay(&self, index: Index) {
+        let timeout = Self::timeout(index, self.endpoints.len());
+        if timeout != Duration::ZERO {
+            tokio::time::sleep(timeout).await;
+        }
+    }
+
+    fn timeout(index: Index, size: usize) -> Duration {
+        if index.cycles == 0 {
+            return Duration::ZERO;
+        }
+        let unit = Duration::from_millis(100);
+        if index.offset == 0 {
+            let jitter = Duration::from_millis(fastrand::u32(0..100).into());
+            let base = Duration::from_millis(1000).min(unit * size as u32);
+            base * 2u32.pow(index.cycles as u32 - 1) + jitter
+        } else {
+            let jitter = Duration::from_millis(fastrand::u32(0..50).into());
+            (unit * (index.offset as u32)) / 2 + jitter
+        }
+    }
+
+    /// Index for `next` and `peek`.
+    fn index(&self) -> Option<Index> {
+        let i = self.next - self.start;
+        let n = self.endpoints.len();
+        if i >= n && !self.cycle {
             return None;
         }
-        self.step();
-        let host = &self.endpoints[next];
-        Some(host.to_ref())
+        let offset = i % self.endpoints.len();
+        let cycles = i / self.endpoints.len();
+        Some(Index { offset, cycles })
     }
 
     pub fn step(&mut self) {
         self.next += 1;
-        if self.cycle && self.next >= self.endpoints.len() {
-            self.next = 0;
-        }
     }
 
     pub fn peek(&self) -> Option<EndpointRef<'_>> {
-        let next = self.next;
-        if next >= self.endpoints.len() {
-            return None;
-        }
-        Some(self.endpoints[next].to_ref())
+        self.index().map(|index| self.endpoints[index.offset].to_ref())
     }
 }
 
@@ -283,21 +324,53 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_iterable_endpoints_next() {
+        use assertor::*;
+
+        use super::{parse_connect_string, EndpointRef, Index, IterableEndpoints};
+        let (endpoints, _) = parse_connect_string("host1:2181,tcp://host2,tcp+tls://host3:2182", true).unwrap();
+        let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host1", 2181, true)));
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host2", 2181, false)));
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host3", 2182, true)));
+        assert_eq!(endpoints.next().await, None);
+
+        endpoints.cycle();
+        let start = std::time::Instant::now();
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host1", 2181, true)));
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host2", 2181, false)));
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host3", 2182, true)));
+        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host1", 2181, true)));
+        let delay = IterableEndpoints::timeout(Index { offset: 0, cycles: 1 }, 3)
+            + IterableEndpoints::timeout(Index { offset: 1, cycles: 1 }, 3);
+        let now = std::time::Instant::now();
+        assert_that!(now).is_greater_than(start + delay);
+    }
+
     #[test]
-    fn test_iterable_endpoints() {
+    fn test_iterable_endpoints_peek() {
         use super::{parse_connect_string, EndpointRef, IterableEndpoints};
         let (endpoints, _) = parse_connect_string("host1:2181,tcp://host2,tcp+tls://host3:2182", true).unwrap();
         let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host1", 2181, true)));
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host2", 2181, false)));
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host3", 2182, true)));
-        assert_eq!(endpoints.next(), None);
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host1", 2181, true)));
+        // Successive `peek` without `step` doesn't advance.
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host1", 2181, true)));
+        endpoints.step();
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host2", 2181, false)));
+        endpoints.step();
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host3", 2182, true)));
+        endpoints.step();
+        assert_eq!(endpoints.peek(), None);
 
         endpoints.cycle();
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host1", 2181, true)));
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host2", 2181, false)));
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host3", 2182, true)));
-        assert_eq!(endpoints.next(), Some(EndpointRef::new("host1", 2181, true)));
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host1", 2181, true)));
+        endpoints.step();
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host2", 2181, false)));
+        endpoints.step();
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host3", 2182, true)));
+        endpoints.step();
+        assert_eq!(endpoints.peek(), Some(EndpointRef::new("host1", 2181, true)));
     }
 
     #[test]

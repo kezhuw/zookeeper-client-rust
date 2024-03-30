@@ -159,6 +159,7 @@ impl Session {
                 },
                 Ok(conn) => conn,
             };
+            endpoints.reset();
             self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         }
         let err = self.state_error();
@@ -537,7 +538,7 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<Connection, Error> {
-        let Some(endpoint) = endpoints.next() else {
+        let Some(endpoint) = endpoints.next().await else {
             return Err(Error::NoHosts);
         };
         let mut conn = match self.connector.connect(endpoint, deadline).await {
@@ -577,6 +578,7 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<Connection, Error> {
+        endpoints.start();
         let session_timeout = if self.session.id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
         let mut deadline = Deadline::until(self.last_recv + session_timeout);
         let mut last_error = match self.start_once(endpoints, &mut deadline, buf, depot).await {
