@@ -277,15 +277,15 @@ impl Session {
     }
 
     fn handle_reply(&mut self, header: ReplyHeader, body: &[u8], depot: &mut Depot) -> Result<(), Error> {
-        if header.err == ErrorCode::SessionExpired.into() {
+        if header.err == ErrorCode::SessionExpired as i32 {
             return Err(Error::SessionExpired);
-        } else if header.err == ErrorCode::AuthFailed.into() {
+        } else if header.err == ErrorCode::AuthFailed as i32 {
             return Err(Error::AuthFailed);
         }
-        if header.xid == PredefinedXid::Notification.into() {
+        if header.xid == PredefinedXid::Notification as i32 {
             self.handle_notification(header.zxid, body, depot)?;
             return Ok(());
-        } else if header.xid == PredefinedXid::Ping.into() {
+        } else if header.xid == PredefinedXid::Ping as i32 {
             depot.pop_ping()?;
             if let Some(last_ping) = self.last_ping.take() {
                 let elapsed = Instant::now() - last_ping;
@@ -510,7 +510,7 @@ impl Session {
     fn send_connect(&self, depot: &mut Depot) {
         let request = ConnectRequest {
             protocol_version: 0,
-            last_zxid_seen: 0,
+            last_zxid_seen: self.last_zxid,
             timeout: self.session_timeout.as_millis() as i32,
             session_id: self.session_id.0,
             password: self.session_password.as_slice(),
