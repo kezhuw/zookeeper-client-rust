@@ -34,6 +34,7 @@ rustls-pemfile = "2"
 webpki-roots = "0.26.1"
 derive-where = "1.2.7"
 tokio-rustls = "0.26.0"
+fastrand = "2.0.2"
 
 [dev-dependencies]
 test-log = "0.2.12"

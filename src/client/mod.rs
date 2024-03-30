@@ -1658,6 +1658,7 @@ impl Connector {
             self.connection_timeout,
         );
         let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
+        endpoints.reset();
         if !self.fail_eagerly {
             endpoints.cycle();
         }
