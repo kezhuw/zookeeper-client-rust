@@ -149,6 +149,7 @@ impl Session {
         let mut depot = Depot::for_serving();
         let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
         endpoints.cycle();
+        endpoints.reset();
         self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
             let conn = match self.start(&mut endpoints, &mut buf, &mut connecting_trans).await {
@@ -538,7 +539,7 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<Connection, Error> {
-        let Some(endpoint) = endpoints.next().await else {
+        let Some(endpoint) = endpoints.next(deadline.timeout()).await else {
             return Err(Error::NoHosts);
         };
         let mut conn = match self.connector.connect(endpoint, deadline).await {

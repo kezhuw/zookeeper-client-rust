@@ -209,15 +209,15 @@ impl IterableEndpoints {
         self.start = self.next;
     }
 
-    pub async fn next(&mut self) -> Option<EndpointRef<'_>> {
+    pub async fn next(&mut self, max_delay: Duration) -> Option<EndpointRef<'_>> {
         let index = self.index()?;
-        self.delay(index).await;
+        self.delay(index, max_delay).await;
         self.step();
         Some(self.endpoints[index.offset].to_ref())
     }
 
-    async fn delay(&self, index: Index) {
-        let timeout = Self::timeout(index, self.endpoints.len());
+    async fn delay(&self, index: Index, max_delay: Duration) {
+        let timeout = max_delay.min(Self::timeout(index, self.endpoints.len()));
         if timeout != Duration::ZERO {
             tokio::time::sleep(timeout).await;
         }
@@ -338,22 +338,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_iterable_endpoints_next() {
+        use std::time::Duration;
+
         use assertor::*;
 
         use super::{parse_connect_string, EndpointRef, Index, IterableEndpoints};
         let (endpoints, _) = parse_connect_string("host1:2181,tcp://host2,tcp+tls://host3:2182", true).unwrap();
         let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host1", 2181, true)));
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host2", 2181, false)));
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host3", 2182, true)));
-        assert_eq!(endpoints.next().await, None);
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host1", 2181, true)));
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host2", 2181, false)));
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host3", 2182, true)));
+        assert_eq!(endpoints.next(Duration::MAX).await, None);
 
         endpoints.cycle();
         let start = std::time::Instant::now();
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host1", 2181, true)));
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host2", 2181, false)));
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host3", 2182, true)));
-        assert_eq!(endpoints.next().await, Some(EndpointRef::new("host1", 2181, true)));
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host1", 2181, true)));
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host2", 2181, false)));
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host3", 2182, true)));
+        assert_eq!(endpoints.next(Duration::MAX).await, Some(EndpointRef::new("host1", 2181, true)));
         let delay = IterableEndpoints::timeout(Index { offset: 0, cycles: 1 }, 3)
             + IterableEndpoints::timeout(Index { offset: 1, cycles: 1 }, 3);
         let now = std::time::Instant::now();

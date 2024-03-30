@@ -1776,6 +1776,29 @@ async fn test_tls() {
     assert_eq!(client2.get_data("/a").await.unwrap_err(), zk::Error::NoAuth);
 }
 
+trait StateWaiter {
+    async fn wait(&mut self, expected: zk::SessionState, timeout: Option<Duration>);
+}
+
+impl StateWaiter for zk::StateWatcher {
+    async fn wait(&mut self, expected: zk::SessionState, timeout: Option<Duration>) {
+        let timeout = timeout.unwrap_or_else(|| Duration::from_secs(60));
+        let mut sleep = tokio::time::sleep(timeout);
+        let mut got = self.state();
+        loop {
+            if got == expected {
+                break;
+            } else if got.is_terminated() {
+                panic!("expect {expected}, but got terminal state {got}")
+            }
+            select! {
+                state = self.changed() => got = state,
+                _ = unsafe { Pin::new_unchecked(&mut sleep) } => panic!("expect {expected}, but still {got} after {}s", timeout.as_secs()),
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test_case(true; "tls")]
 #[test_case(false; "plaintext")]
@@ -1811,15 +1834,7 @@ async fn test_readonly(tls: bool) {
     cluster.by_id(2).stop();
 
     // Quorum session will expire finally.
-    let mut timeout = tokio::time::sleep(2 * client.session_timeout());
-    loop {
-        select! {
-            state = state_watcher.changed() => if state == zk::SessionState::Expired {
-                break
-            },
-            _ = unsafe { Pin::new_unchecked(&mut timeout) } => panic!("expect Expired, but got {}", state_watcher.state()),
-        }
-    }
+    state_watcher.wait(zk::SessionState::Expired, Some(2 * client.session_timeout())).await;
 
     logs.wait_for_message("Read-only server started").unwrap();
 
@@ -1842,18 +1857,7 @@ async fn test_readonly(tls: bool) {
     cluster.by_id(1).start();
     cluster.by_id(2).start();
 
-    let mut timeout = tokio::time::sleep(Duration::from_secs(60));
-    loop {
-        select! {
-            state = state_watcher.changed() => match state {
-                zk::SessionState::SyncConnected => break,
-                zk::SessionState::Disconnected | zk::SessionState::ConnectedReadOnly => continue,
-                state => panic!("expect SyncConnected, but got {}", state),
-            },
-            _ = unsafe { Pin::new_unchecked(&mut timeout) } => panic!("expect SyncConnected, but got {}", state_watcher.state()),
-        }
-    }
-
+    state_watcher.wait(zk::SessionState::SyncConnected, None).await;
     client.create("/z", b"", PERSISTENT_OPEN).await.unwrap();
 }
 

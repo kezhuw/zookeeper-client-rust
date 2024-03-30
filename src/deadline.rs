@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use tokio::time::{self, Instant, Sleep};
 
@@ -19,6 +20,14 @@ impl Deadline {
 
     pub fn elapsed(&self) -> bool {
         self.sleep.as_ref().map(|f| f.is_elapsed()).unwrap_or(false)
+    }
+
+    /// Remaining timeout.
+    pub fn timeout(&self) -> Duration {
+        match self.sleep.as_ref() {
+            None => Duration::MAX,
+            Some(sleep) => sleep.deadline().saturating_duration_since(Instant::now()),
+        }
     }
 }
 
