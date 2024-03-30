@@ -30,11 +30,18 @@ pub struct SessionInfo {
     #[derive_where(skip(Debug))]
     pub(crate) password: Vec<u8>,
     pub(crate) readonly: bool,
+    /// Only set through test otherwise 0.
+    ///
+    /// I thought to carry [Session::last_zxid] from [Client::session] to [Connector::session].
+    /// This way session reestablishment API has not major difference with internal reconnection.
+    /// But I think it is a ZooKeeper tradition to [Client::sync] after session reestablishment.
+    /// We probably should not challenge this.
+    pub(crate) last_zxid: i64,
 }
 
 impl SessionInfo {
     pub(crate) fn new(id: SessionId, password: Vec<u8>) -> Self {
-        Self { id, password, readonly: id.0 == 0 }
+        Self { id, password, readonly: id.0 == 0, last_zxid: 0 }
     }
 
     /// Session id.

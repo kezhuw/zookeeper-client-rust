@@ -2257,4 +2257,36 @@ mod tests {
             .unwrap_err())
         .is_equal_to(Error::BadArguments(&"directory node must not be sequential"));
     }
+
+    #[test_log::test(tokio::test)]
+    async fn session_last_zxid_seen() {
+        use testcontainers::clients::Cli as DockerCli;
+        use testcontainers::core::{Healthcheck, WaitFor};
+        use testcontainers::images::generic::GenericImage;
+
+        let healthcheck = Healthcheck::default()
+            .with_cmd(["./bin/zkServer.sh", "status"].iter())
+            .with_interval(Duration::from_secs(2))
+            .with_retries(60);
+        let image =
+            GenericImage::new("zookeeper", "3.9.0").with_healthcheck(healthcheck).with_wait_for(WaitFor::Healthcheck);
+        let docker = DockerCli::default();
+        let container = docker.run(image);
+        let endpoint = format!("127.0.0.1:{}", container.get_host_port(2181));
+
+        let client1 = Client::connector().detached().connect(&endpoint).await.unwrap();
+        client1.create("/n1", b"", &CreateMode::Persistent.with_acls(Acls::anyone_all())).await.unwrap();
+
+        let mut session = client1.into_session();
+
+        // Fail to connect with large zxid.
+        session.last_zxid = i64::MAX;
+        assert_that!(Client::connector().fail_eagerly().session(session.clone()).connect(&endpoint).await.unwrap_err())
+            .is_equal_to(Error::NoHosts);
+
+        // Succeed to connect with small zxid.
+        session.last_zxid = 0;
+        let client2 = Client::connector().fail_eagerly().session(session.clone()).connect(&endpoint).await.unwrap();
+        client2.create("/n2", b"", &CreateMode::Persistent.with_acls(Acls::anyone_all())).await.unwrap();
+    }
 }
