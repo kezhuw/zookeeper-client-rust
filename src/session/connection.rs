@@ -14,6 +14,7 @@ use tokio::net::TcpStream;
 use tokio::{select, time};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
+use tracing::{debug, trace};
 
 use crate::deadline::Deadline;
 use crate::endpoint::{EndpointRef, IterableEndpoints};
@@ -206,14 +207,21 @@ impl Connector {
         let mut deadline = Deadline::never();
         while let Some(endpoint) = endpoints.peek() {
             i += 1;
-            if let Ok(conn) = self.connect(endpoint, &mut deadline).await {
-                if let Ok(true) = conn.command_isro().await {
-                    return Some(unsafe { std::mem::transmute(endpoint) });
-                }
+            match self.connect(endpoint, &mut deadline).await {
+                Ok(conn) => match conn.command_isro().await {
+                    Ok(true) => return Some(unsafe { std::mem::transmute(endpoint) }),
+                    Ok(false) => trace!("succeeds to contact readonly {}", endpoint),
+                    Err(err) => trace!(%err, r#"fails to complete "isro" to {}"#, endpoint),
+                },
+                Err(err) => trace!(%err, "fails to contact {}", endpoint),
             }
             endpoints.step();
             if i % n == 0 {
-                log::debug!("ZooKeeper fails to contact writable server from endpoints {:?}", endpoints.endpoints());
+                debug!(
+                    sleep = timeout.as_millis(),
+                    "fails to contact writable server from endpoints {:?}",
+                    endpoints.endpoints()
+                );
                 time::sleep(timeout).await;
                 timeout = max_timeout.min(timeout * 2);
             } else {

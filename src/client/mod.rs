@@ -11,6 +11,8 @@ use either::{Either, Left, Right};
 use ignore_result::Ignore;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
+use tracing::field::display;
+use tracing::{instrument, Span};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver};
@@ -1632,6 +1634,7 @@ impl Connector {
         self
     }
 
+    #[instrument(name = "connect", skip_all, fields(session))]
     async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
         if let Some(session) = self.session.as_ref() {
@@ -1641,6 +1644,7 @@ impl Connector {
                     None,
                 ));
             }
+            Span::current().record("session", display(session.id()));
         }
         if self.session_timeout < Duration::ZERO {
             return Err(Error::BadArguments(&"session timeout must not be negative"));
