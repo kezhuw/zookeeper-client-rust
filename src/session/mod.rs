@@ -215,7 +215,7 @@ impl Session {
     ) {
         if let Err(err) = self.serve_session(endpoints, &mut conn, buf, depot, requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
-            info!("enter state {} due to error {}", self.session_state, err);
+            info!("enter state {} due to {}", self.session_state, err);
             depot.error(&err);
         } else {
             self.change_state(SessionState::Disconnected);
@@ -356,12 +356,15 @@ impl Session {
     fn handle_connect_response(&mut self, mut body: &[u8]) -> Result<(), Error> {
         let response = record::unmarshal::<ConnectResponse>(&mut body)?;
         debug!("received connect response: {response:?}");
-        if response.session_id == 0 {
+        let session_id = SessionId(response.session_id);
+        if session_id.0 == 0 {
             return Err(Error::SessionExpired);
         } else if !self.is_readonly_allowed() && response.readonly {
-            return Err(Error::ConnectionLoss);
+            return Err(Error::UnexpectedError(format!(
+                "get readonly session {}, while is not allowed since readonly={}, old session readonly={}",
+                session_id, self.readonly, self.session.readonly
+            )));
         }
-        let session_id = SessionId(response.session_id);
         if self.session.id != session_id {
             self.session.id = session_id;
             info!(
@@ -434,7 +437,7 @@ impl Session {
                 },
                 now = tick.tick() => {
                     if now >= self.last_recv + self.connector.timeout() {
-                        return Err(Error::ConnectionLoss);
+                        return Err(Error::new_other(format!("no response from connection in {}ms", self.connector.timeout().as_millis()), None));
                     }
                 },
             }
@@ -462,14 +465,14 @@ impl Session {
             if self.session.readonly { Some(self.connector.clone().seek_for_writable(endpoints)) } else { None };
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-        let mut channel_closed = false;
+        let mut err = None;
         let mut channel_halted = false;
         depot.start();
         while !(channel_halted && depot.is_empty() && !conn.wants_write()) {
             select! {
                 Some(endpoint) = Self::poll(&mut seek_for_writable), if seek_for_writable.is_some() => {
                     seek_for_writable = None;
-                    debug!("succeeds to contact writable server {}", endpoint);
+                    err = Some(Error::new_other(format!("encounter writable server {}", endpoint), None));
                     channel_halted = true;
                 },
                 _ = conn.readable() => {
@@ -488,7 +491,6 @@ impl Session {
                             depot.push_session(SessionOperation::new_without_body(OpCode::CloseSession));
                         }
                         channel_halted = true;
-                        channel_closed = true;
                         continue;
                     };
                     depot.push_session(operation);
@@ -500,7 +502,7 @@ impl Session {
                 },
                 now = tick.tick() => {
                     if now >= self.last_recv + self.connector.timeout() {
-                        return Err(Error::ConnectionLoss);
+                        return Err(Error::new_other(format!("no response from connection in {}ms", self.connector.timeout().as_millis()), None));
                     }
                     if self.last_ping.is_none() && now >= self.last_send + self.ping_timeout {
                         self.send_ping(depot, now);
@@ -509,11 +511,7 @@ impl Session {
                 },
             }
         }
-        if channel_closed {
-            Err(Error::ClientClosed)
-        } else {
-            Err(Error::ConnectionLoss)
-        }
+        Err(err.unwrap_or(Error::ClientClosed))
     }
 
     fn send_ping(&mut self, depot: &mut Depot, now: Instant) {
