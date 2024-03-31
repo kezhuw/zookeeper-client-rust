@@ -14,6 +14,8 @@ use rustls::ClientConfig;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
+use tracing::field::display;
+use tracing::{debug, info, instrument, warn, Span};
 
 use self::connection::{Connection, Connector};
 pub use self::depot::Depot;
@@ -138,6 +140,7 @@ impl Session {
         }
     }
 
+    #[instrument(name = "serve", skip_all, fields(session = display(self.session.id)))]
     pub async fn serve(
         &mut self,
         mut endpoints: IterableEndpoints,
@@ -154,7 +157,7 @@ impl Session {
         while !self.session_state.is_terminated() {
             let conn = match self.start(&mut endpoints, &mut buf, &mut connecting_trans).await {
                 Err(err) => {
-                    log::warn!("fail to connect to cluster {:?} due to {}", endpoints.endpoints(), err);
+                    warn!("fail to connect to cluster {:?} due to {}", endpoints.endpoints(), err);
                     self.resolve_start_error(&err);
                     break;
                 },
@@ -212,7 +215,7 @@ impl Session {
     ) {
         if let Err(err) = self.serve_session(endpoints, &mut conn, buf, depot, requester, unwatch_requester).await {
             self.resolve_serve_error(&err);
-            log::info!("ZooKeeper session {} state {} error {}", self.session.id, self.session_state, err);
+            info!("enter state {} due to error {}", self.session_state, err);
             depot.error(&err);
         } else {
             self.change_state(SessionState::Disconnected);
@@ -229,7 +232,7 @@ impl Session {
     fn handle_session_failure(&mut self, operation: SessionOperation, err: Error, depot: &mut Depot) {
         let SessionOperation { responser, request, .. } = operation;
         let info = request.get_operation_info();
-        log::debug!("ZooKeeper operation unknown failure: {:?}, {:?}", info, err);
+        debug!("unknown operation failure: {:?}, {:?}", info, err);
         match info {
             (op_code, OpStat::Watch { path, mode }) if op_code != OpCode::RemoveWatches => depot.fail_watch(path, mode),
             _ => {},
@@ -244,7 +247,7 @@ impl Session {
         depot: &mut Depot,
     ) -> (OpCode, WatchReceiver) {
         let info = request.get_operation_info();
-        log::debug!("ZooKeeper operation get reply: {:?}, {:?}", info, error_code);
+        debug!("operation get reply: {:?}, {:?}", info, error_code);
         let (op_code, path, mode) = match info {
             (op_code, OpStat::Watch { path, mode }) if op_code != OpCode::RemoveWatches => (op_code, path, mode),
             (op_code, _) => return (op_code, WatchReceiver::None),
@@ -298,7 +301,7 @@ impl Session {
             depot.pop_ping()?;
             if let Some(last_ping) = self.last_ping.take() {
                 let elapsed = Instant::now() - last_ping;
-                log::debug!("ZooKeeper session {} got ping response after {}ms", self.session.id, elapsed.as_millis());
+                debug!("got ping response after {}ms", elapsed.as_millis());
             }
             return Ok(());
         }
@@ -352,13 +355,22 @@ impl Session {
 
     fn handle_connect_response(&mut self, mut body: &[u8]) -> Result<(), Error> {
         let response = record::unmarshal::<ConnectResponse>(&mut body)?;
-        log::trace!("Received connect response: {response:?}");
+        debug!("received connect response: {response:?}");
         if response.session_id == 0 {
             return Err(Error::SessionExpired);
         } else if !self.is_readonly_allowed() && response.readonly {
             return Err(Error::ConnectionLoss);
         }
-        self.session.id = SessionId(response.session_id);
+        let session_id = SessionId(response.session_id);
+        if self.session.id != session_id {
+            self.session.id = session_id;
+            info!(
+                "new session established: {} readonly={}, timeout={}ms",
+                session_id, response.readonly as bool, response.session_timeout
+            );
+            let span = Span::current();
+            span.record("session", display(session_id));
+        }
         self.session.password.clear();
         self.session.password.extend_from_slice(response.password);
         self.session.readonly = response.readonly;
@@ -457,7 +469,7 @@ impl Session {
             select! {
                 Some(endpoint) = Self::poll(&mut seek_for_writable), if seek_for_writable.is_some() => {
                     seek_for_writable = None;
-                    log::debug!("ZooKeeper succeeds to contact writable server {}", endpoint);
+                    debug!("succeeds to contact writable server {}", endpoint);
                     channel_halted = true;
                 },
                 _ = conn.readable() => {
@@ -520,7 +532,7 @@ impl Session {
             password: self.session.password.as_slice(),
             readonly: self.is_readonly_allowed(),
         };
-        log::trace!("Sending connect request: {request:?}");
+        debug!("sending connect request: {request:?}");
         let operation = ConnectOperation::new(&request);
         depot.push_operation(Operation::Connect(operation));
     }
@@ -544,11 +556,11 @@ impl Session {
         };
         let mut conn = match self.connector.connect(endpoint, deadline).await {
             Err(err) => {
-                log::debug!("ZooKeeper fails in connecting to {} due to {:?}", endpoint, err);
+                debug!("fails in connecting to {} due to {:?}", endpoint, err);
                 return Err(Error::ConnectionLoss);
             },
             Ok(conn) => {
-                log::debug!("ZooKeeper succeeds in connecting to {}", endpoint);
+                debug!("succeeds in connecting to {}", endpoint);
                 conn
             },
         };
@@ -563,11 +575,11 @@ impl Session {
         self.last_ping = None;
         match self.serve_connecting(&mut conn, buf, depot).await {
             Err(err) => {
-                log::warn!("ZooKeeper fails to establish session to {} due to {}", endpoint, err);
+                warn!("fails to establish session to {} due to {}", endpoint, err);
                 Err(err)
             },
             _ => {
-                log::info!("ZooKeeper succeeds to establish session({}) to {}", self.session.id, endpoint);
+                info!("succeeds to establish session to {}", endpoint);
                 Ok(conn)
             },
         }
@@ -581,6 +593,12 @@ impl Session {
     ) -> Result<Connection, Error> {
         endpoints.start();
         let session_timeout = if self.session.id.0 == 0 { self.session_timeout } else { self.session_expired_timeout };
+        debug!(
+            session_timeout = session_timeout.as_millis(),
+            connection_timeout = self.connector.timeout().as_millis(),
+            "attempts new connections to {:?}",
+            endpoints.endpoints()
+        );
         let mut deadline = Deadline::until(self.last_recv + session_timeout);
         let mut last_error = match self.start_once(endpoints, &mut deadline, buf, depot).await {
             Err(err) => err,

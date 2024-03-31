@@ -3,6 +3,7 @@ use std::io::{self, IoSlice};
 
 use hashbrown::HashMap;
 use strum::IntoEnumIterator;
+use tracing::debug;
 
 use super::connection::Connection;
 use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};
@@ -172,7 +173,7 @@ impl Depot {
 
     pub fn push_session(&mut self, operation: SessionOperation) {
         let info = operation.request.get_operation_info();
-        log::debug!("ZooKeeper operation request: {:?}", info);
+        debug!("sending request: {:?}", info);
         if let (op_code, OpStat::Watch { path, mode }) = info {
             let path = unsafe { std::mem::transmute::<&str, &'_ str>(path) };
             if op_code == OpCode::RemoveWatches {
