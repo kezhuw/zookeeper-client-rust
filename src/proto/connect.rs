@@ -64,12 +64,12 @@ impl<'a> DeserializableRecord<'a> for ConnectResponse<'a> {
             )));
         }
         let len = unsafe { buf.get_unchecked_i32() };
-        if len <= 0 || len != (buf.len() - 1) as i32 {
+        if len <= 0 || len > buf.len() as i32 {
             return Err(DeserializeError::UnmarshalError(format!("invalid session password length {len}")));
         }
         let len = len as usize;
         let password = unsafe { buf.get_unchecked(..len) };
-        let readonly = unsafe { *buf.get_unchecked(len) };
+        let readonly = if len == buf.len() { 0 } else { unsafe { *buf.get_unchecked(len) } };
         if readonly != 0 && readonly != 1 {
             return Err(DeserializeError::UnmarshalError(format!("invalid session readonly value {readonly}")));
         }

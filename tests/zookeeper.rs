@@ -45,8 +45,8 @@ fn zookeeper_image() -> GenericImage {
     zookeeper_image_with_properties(Vec::default())
 }
 
-fn zookeeper34_image() -> GenericImage {
-    zookeeper_image_with_version_and_properties("3.4", Vec::default())
+fn zookeeper_image_with_version<'a>(version: &'a str) -> GenericImage {
+    zookeeper_image_with_version_and_properties(version, Vec::default())
 }
 
 async fn example() {
@@ -621,10 +621,12 @@ async fn test_create_container() {
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
+#[test_case("3.3"; "3.3")]
+#[test_case("3.4"; "3.4")]
 #[test_log::test(tokio::test)]
-async fn test_zookeeper34() {
+async fn test_zookeeper_old_server(version: &'static str) {
     let docker = DockerCli::default();
-    let zookeeper = docker.run(zookeeper34_image());
+    let zookeeper = docker.run(zookeeper_image_with_version(version));
     let zk_port = zookeeper.get_host_port(2181);
     let cluster = format!("127.0.0.1:{}", zk_port);
     let client = zk::Client::builder().assume_server_version(3, 4, u32::MAX).connect(&cluster).await.unwrap();
