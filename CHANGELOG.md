@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2024-04-01
+### Changed
+- fix: can not connect to ZooKeeper 3.3 ([c031d8e](https://github.com/kezhuw/zookeeper-client-rust/commit/c031d8ee7663a4eecdbba059ae59e9d5f72d1243))
+
 ## [0.7.0] - 2024-03-31
 ### Added
 - feat: add TLS support ([#25](https://github.com/kezhuw/zookeeper-client-rust/pull/25)) ([#31](https://github.com/kezhuw/zookeeper-client-rust/pull/31))
@@ -50,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix!: forbid creation of root node "/" just like delete of it ([7e11a31](https://github.com/kezhuw/zookeeper-client-rust/commit/7e11a316eb65c5a5755abe1c46660393570c65db))
 - fix: unwatching revived by failed watch could remove ongoing watching ([d20c161](https://github.com/kezhuw/zookeeper-client-rust/commit/d20c1614c44d6e8115f4f855e6fed9759c64ac0b))
 
+[0.7.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.0...v0.7.0
 [0.6.3]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.1...v0.6.2
