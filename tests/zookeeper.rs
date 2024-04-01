@@ -368,8 +368,15 @@ impl Cluster {
     pub async fn with_options(options: ClusterOptions<'_>) -> Self {
         let mut dir = LazyTempDir::new();
         let tls = if options.tls.unwrap_or_else(|| env_toggle("ZK_TEST_TLS")) {
-            Some(Tls::new(dir.tempdir().clone()))
+            let tls = Tls::new(dir.tempdir().clone());
+            println!(
+                "starting tls zookeeper server {} {} hostname verification ...",
+                options.tag,
+                if tls.hostname_verification { "with" } else { "without" }
+            );
+            Some(tls)
         } else {
+            println!("starting plaintext zookeeper server {} ...", options.tag);
             None
         };
         let docker = Arc::new(DockerCli::default());
@@ -913,9 +920,11 @@ async fn test_create_container() {
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
+#[test_case("3.3"; "3.3")]
+#[test_case("3.4"; "3.4")]
 #[test_log::test(tokio::test)]
-async fn test_zookeeper34() {
-    let cluster = Cluster::with_options(ClusterOptions { tls: Some(false), tag: "3.4", ..Default::default() }).await;
+async fn test_zookeeper_old_server(tag: &'static str) {
+    let cluster = Cluster::with_options(ClusterOptions { tls: Some(false), tag, ..Default::default() }).await;
 
     let client = cluster.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
     let (stat, _sequence) = client.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
