@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - fix: `last_zxid_seen` in `ConnectRequest` is not set ([#39](https://github.com/kezhuw/zookeeper-client-rust/pull/39))
 
+## [0.6.4] - 2024-04-01
+### Fixed
+- fix: `last_zxid_seen` in `ConnectRequest` is not set ([#39](https://github.com/kezhuw/zookeeper-client-rust/pull/39))
+- fix: can not connect to ZooKeeper 3.3 ([7ae9cbe](https://github.com/kezhuw/zookeeper-client-rust/commit/7ae9cbe9eb6fb33866f4405ea838d6efcc4aa7d3))
+
 ## [0.6.3] - 2024-03-12
 ### Fixed
 - fix: session disconnected due to unblock multiple unwatching ([#24](https://github.com/kezhuw/zookeeper-client-rust/pull/24))
@@ -56,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.7.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.0...v0.7.0
+[0.6.4]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.0...v0.6.1
