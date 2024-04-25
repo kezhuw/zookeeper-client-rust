@@ -100,6 +100,10 @@ pub struct OtherError {
 }
 
 impl Error {
+    pub(crate) fn is_terminated(&self) -> bool {
+        matches!(self, Self::NoHosts | Self::SessionExpired | Self::AuthFailed | Self::ClientClosed)
+    }
+
     pub(crate) fn has_no_data_change(&self) -> bool {
         match self {
             Self::NoNode

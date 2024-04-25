@@ -10,7 +10,7 @@ use const_format::formatcp;
 use either::{Either, Left, Right};
 use ignore_result::Ignore;
 use thiserror::Error;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tracing::field::display;
 use tracing::{instrument, Span};
 
@@ -248,9 +248,8 @@ impl Client {
         session: SessionInfo,
         timeout: Duration,
         requester: mpsc::UnboundedSender<SessionOperation>,
-        state_receiver: watch::Receiver<SessionState>,
+        state_watcher: StateWatcher,
     ) -> Client {
-        let state_watcher = StateWatcher::new(state_receiver);
         Client { chroot, version, session, session_timeout: timeout, requester, state_watcher }
     }
 
@@ -1672,11 +1671,14 @@ impl Connector {
         let (sender, receiver) = mpsc::unbounded_channel();
         let session_info = session.session.clone();
         let session_timeout = session.session_timeout;
+        let mut state_watcher = StateWatcher::new(state_receiver);
+        // Consume all state changes so far.
+        state_watcher.state();
         tokio::spawn(async move {
             session.serve(endpoints, conn, buf, connecting_depot, receiver).await;
         });
         let client =
-            Client::new(chroot.to_owned(), self.server_version, session_info, session_timeout, sender, state_receiver);
+            Client::new(chroot.to_owned(), self.server_version, session_info, session_timeout, sender, state_watcher);
         Ok(client)
     }
 

@@ -390,7 +390,13 @@ impl Cluster {
                 ..Default::default()
             };
             match tls.as_ref() {
-                None => {},
+                None => {
+                    if standalone && !configs.is_empty() {
+                        configs += "clientPort=2181\n";
+                        configs += "initLimit=5\n";
+                        configs += "syncLimit=2\n";
+                    }
+                },
                 Some(tls) => {
                     configs += r"
 ssl.clientAuth=need
@@ -1179,6 +1185,22 @@ async fn test_no_auth() {
 
     assert_eq!(no_auth_client.get_data("/acl_test_2").await.unwrap().0, b"my_data".to_vec());
     assert_eq!(no_auth_client.set_data("/acl_test_2", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
+}
+
+#[test_log::test(tokio::test)]
+#[should_panic(expected = "AuthFailed")]
+async fn test_auth_failed() {
+    let cluster = Cluster::with_options(ClusterOptions {
+        configs: vec![
+            "authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider",
+            "enforce.auth.enabled=true",
+            "enforce.auth.schemes=sasl",
+            "sessionRequireClientSASLAuth=true",
+        ],
+        ..Default::default()
+    })
+    .await;
+    cluster.client(None).await;
 }
 
 #[test_log::test(tokio::test)]

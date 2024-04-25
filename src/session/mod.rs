@@ -291,7 +291,9 @@ impl Session {
     fn handle_reply(&mut self, header: ReplyHeader, body: &[u8], depot: &mut Depot) -> Result<(), Error> {
         if header.err == ErrorCode::SessionExpired as i32 {
             return Err(Error::SessionExpired);
-        } else if header.err == ErrorCode::AuthFailed as i32 {
+        } else if header.err == ErrorCode::AuthFailed as i32
+            || header.err == ErrorCode::SessionClosedRequireSaslAuth as i32
+        {
             return Err(Error::AuthFailed);
         }
         if header.xid == PredefinedXid::Notification as i32 {
@@ -423,6 +425,7 @@ impl Session {
         buf: &mut Vec<u8>,
         depot: &mut Depot,
     ) -> Result<(), Error> {
+        let mut pinged = false;
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         while !(self.session_state.is_connected() && depot.is_empty()) {
@@ -440,6 +443,13 @@ impl Session {
                         return Err(Error::new_other(format!("no response from connection in {}ms", self.connector.timeout().as_millis()), None));
                     }
                 },
+            }
+            if self.session_state.is_connected() && !pinged {
+                // Send opcode other than `auth` and `sasl` to get possible AuthFailed if
+                // "zookeeper.enforce.auth.enabled".
+                pinged = true;
+                self.send_ping(depot, Instant::now());
+                depot.write_operations(conn)?;
             }
         }
         Ok(())
@@ -571,6 +581,7 @@ impl Session {
         self.last_send = Instant::now();
         self.last_recv = self.last_send;
         self.last_ping = None;
+        self.change_state(SessionState::Disconnected);
         match self.serve_connecting(&mut conn, buf, depot).await {
             Err(err) => {
                 warn!("fails to establish session to {} due to {}", endpoint, err);
@@ -602,7 +613,7 @@ impl Session {
             Err(err) => err,
             Ok(conn) => return Ok(conn),
         };
-        while last_error != Error::NoHosts && last_error != Error::SessionExpired {
+        while !last_error.is_terminated() {
             if deadline.elapsed() {
                 return Err(Error::Timeout);
             }
