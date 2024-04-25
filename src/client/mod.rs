@@ -45,6 +45,8 @@ use crate::proto::{
 };
 pub use crate::proto::{EnsembleUpdate, Stat};
 use crate::record::{self, Record, StaticRecord};
+#[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+use crate::sasl::SaslOptions;
 use crate::session::StateReceiver;
 pub use crate::session::{EventType, SessionId, SessionInfo, SessionState, WatchedEvent};
 use crate::tls::TlsOptions;
@@ -1538,6 +1540,8 @@ pub(crate) struct Version(u32, u32, u32);
 #[derive(Clone, Debug)]
 pub struct Connector {
     tls: Option<TlsOptions>,
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    sasl: Option<SaslOptions>,
     authes: Vec<AuthPacket>,
     session: Option<SessionInfo>,
     readonly: bool,
@@ -1553,6 +1557,8 @@ impl Connector {
     fn new() -> Self {
         Self {
             tls: None,
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            sasl: None,
             authes: Default::default(),
             session: None,
             readonly: false,
@@ -1624,6 +1630,13 @@ impl Connector {
         self
     }
 
+    /// Specifies SASL options.
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    pub fn sasl(&mut self, options: impl Into<SaslOptions>) -> &mut Self {
+        self.sasl = Some(options.into());
+        self
+    }
+
     /// Fail session establishment eagerly with [Error::NoHosts] when all hosts has been tried.
     ///
     /// This permits fail-fast without wait up to [Self::session_timeout] in [Self::connect]. This
@@ -1657,6 +1670,8 @@ impl Connector {
             self.readonly,
             self.detached,
             tls_config,
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            self.sasl.take(),
             self.session_timeout,
             self.connection_timeout,
         );

@@ -14,6 +14,12 @@ rust-version = "1.65"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+sasl = ["sasl-gssapi", "sasl-digest-md5"]
+sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
+sasl-gssapi = ["rsasl/gssapi"]
+
 [dependencies]
 bytes = "1.1.0"
 tokio = {version = "1.15.0", features = ["full"]}
@@ -35,6 +41,10 @@ derive-where = "1.2.7"
 tokio-rustls = "0.26.0"
 fastrand = "2.0.2"
 tracing = "0.1.40"
+rsasl = { version = "2.0.1", default-features = false, features = ["provider", "config_builder", "registry_static", "std"], optional = true }
+md5 = { version = "0.7.0", optional = true }
+hex = { version = "0.4.3", optional = true }
+linkme = { version = "0.2", optional = true }
 
 [dev-dependencies]
 test-log = { version = "0.2.15", features = ["log", "trace"] }

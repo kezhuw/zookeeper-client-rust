@@ -22,6 +22,9 @@ pub struct Depot {
     writing_operations: VecDeque<Operation>,
     written_operations: HashMap<i32, SessionOperation>,
 
+    sasl: bool,
+    pending_operations: VecDeque<SessionOperation>,
+
     watching_paths: HashMap<(&'static str, WatchMode), usize>,
     unwatching_paths: HashMap<(&'static str, WatchMode), SessionOperation>,
 }
@@ -31,10 +34,12 @@ impl Depot {
         let writing_capacity = 128usize;
         Depot {
             xid: Default::default(),
+            sasl: false,
             pending_authes: Vec::with_capacity(5),
             writing_slices: Vec::with_capacity(writing_capacity),
             writing_operations: VecDeque::with_capacity(writing_capacity),
             written_operations: HashMap::with_capacity(128),
+            pending_operations: Default::default(),
             watching_paths: HashMap::with_capacity(32),
             unwatching_paths: HashMap::with_capacity(32),
         }
@@ -43,10 +48,12 @@ impl Depot {
     pub fn for_connecting() -> Depot {
         Depot {
             xid: Default::default(),
+            sasl: false,
             pending_authes: Default::default(),
             writing_slices: Vec::with_capacity(10),
             writing_operations: VecDeque::with_capacity(10),
             written_operations: HashMap::with_capacity(10),
+            pending_operations: VecDeque::with_capacity(10),
             watching_paths: HashMap::new(),
             unwatching_paths: HashMap::new(),
         }
@@ -54,12 +61,17 @@ impl Depot {
 
     /// Clear all buffered operations from previous run.
     pub fn clear(&mut self) {
+        self.xid = Default::default();
+        self.sasl = false;
         self.pending_authes.clear();
         self.writing_slices.clear();
         self.watching_paths.clear();
         self.unwatching_paths.clear();
         self.writing_operations.clear();
         self.written_operations.clear();
+        self.pending_operations.clear();
+        self.watching_paths.clear();
+        self.unwatching_paths.clear();
     }
 
     /// Error out ongoing operations except authes.
@@ -97,7 +109,7 @@ impl Depot {
 
     /// Check whether there is any ongoing operations.
     pub fn is_empty(&self) -> bool {
-        self.writing_operations.is_empty() && self.written_operations.is_empty()
+        self.writing_operations.is_empty() && self.written_operations.is_empty() && self.pending_operations.is_empty()
     }
 
     pub fn pop_request(&mut self, xid: i32) -> Result<SessionOperation, Error> {
@@ -107,9 +119,19 @@ impl Depot {
         }
     }
 
-    fn push_request(&mut self, mut operation: SessionOperation) {
-        operation.request.set_xid(self.xid.next());
+    fn write_session(&mut self, mut operation: SessionOperation) {
+        if operation.request.get_xid() == 0 {
+            operation.request.set_xid(self.xid.next());
+        }
         self.push_operation(Operation::Session(operation));
+    }
+
+    fn push_request(&mut self, operation: SessionOperation) {
+        if self.sasl {
+            self.pending_operations.push_back(operation);
+            return;
+        }
+        self.write_session(operation);
     }
 
     pub fn pop_ping(&mut self) -> Result<(), Error> {
@@ -120,6 +142,21 @@ impl Depot {
         let buf = unsafe { std::mem::transmute::<&[u8], &'_ [u8]>(operation.get_data()) };
         self.writing_operations.push_back(operation);
         self.writing_slices.push(IoSlice::new(buf));
+    }
+
+    #[allow(dead_code)]
+    pub fn push_sasl(&mut self, token: &[u8]) {
+        let operation = SessionOperation::new(OpCode::Sasl, &Some(token));
+        self.write_session(operation);
+        self.sasl = true;
+    }
+
+    #[allow(dead_code)]
+    pub fn complete_sasl(&mut self) {
+        self.sasl = false;
+        while let Some(operation) = self.pending_operations.pop_front() {
+            self.write_session(operation);
+        }
     }
 
     pub fn has_pending_writes(&self) -> bool {

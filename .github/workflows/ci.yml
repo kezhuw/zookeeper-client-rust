@@ -31,8 +31,11 @@ jobs:
       with:
           toolchain: stable
           override: true
+    - name: Install krb5
+      run: |
+        sudo apt install -y libkrb5-dev
     - name: Build code
-      run: cargo build
+      run: cargo build --all-features
   test:
     needs: [build]
     runs-on: ubuntu-latest
@@ -46,8 +49,11 @@ jobs:
       with:
           toolchain: stable
           override: true
+    - name: Install krb5
+      run: |
+        sudo apt install -y libkrb5-dev
     - name: Test code
-      run: cargo test -- --nocapture
+      run: cargo test --all-features -- --nocapture
   coverage:
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'master')
     needs: [test]
@@ -65,9 +71,12 @@ jobs:
           override: true
           components: llvm-tools-preview
     - run: cargo install grcov
-    - run: cargo build --verbose
+    - name: Install krb5
+      run: |
+        sudo apt install -y libkrb5-dev
+    - run: cargo build --all-features --verbose
     - name: Run tests
-      run: LLVM_PROFILE_FILE="zookeeper-client-%p-%m.profraw" cargo test --verbose -- --nocapture
+      run: LLVM_PROFILE_FILE="zookeeper-client-%p-%m.profraw" cargo test --all-features --verbose -- --nocapture
     - name: Generate coverage report
       run: grcov $(find . -name "zookeeper-*.profraw" -print) --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
     - name: Upload to codecov.io
@@ -86,8 +95,11 @@ jobs:
           toolchain: stable
           override: true
           components: clippy
+    - name: Install krb5
+      run: |
+        sudo apt install -y libkrb5-dev
     - name: Lint code
-      run: cargo clippy --no-deps -- -D clippy::all
+      run: cargo clippy --all-features --no-deps -- -D clippy::all
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: [build, test, lint]
@@ -95,6 +107,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - uses: Swatinem/rust-cache@v1
+    - name: Install krb5
+      run: |
+        sudo apt install -y libkrb5-dev
     - name: publish crate
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

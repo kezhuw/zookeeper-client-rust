@@ -37,6 +37,8 @@ use crate::endpoint::IterableEndpoints;
 use crate::error::Error;
 use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
 use crate::record;
+#[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
 
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
@@ -77,6 +79,11 @@ pub struct Session {
     session_state: SessionState,
     pub session_timeout: Duration,
 
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    sasl_options: Option<SaslOptions>,
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    sasl_session: Option<SaslSession>,
+
     pub authes: Vec<MarshalledRequest>,
     state_sender: tokio::sync::watch::Sender<SessionState>,
 
@@ -85,12 +92,14 @@ pub struct Session {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: Option<SessionInfo>,
         authes: &[AuthPacket],
         readonly: bool,
         detached: bool,
         tls_config: ClientConfig,
+        #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))] sasl_options: Option<SaslOptions>,
         session_timeout: Duration,
         connection_timeout: Duration,
     ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
@@ -112,6 +121,10 @@ impl Session {
             ping_timeout: Duration::ZERO,
             session_expired_timeout: Duration::ZERO,
             connector: Connector::new(tls_config),
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            sasl_options,
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            sasl_session: None,
 
             session,
             session_timeout,
@@ -261,12 +274,18 @@ impl Session {
         (op_code, watcher)
     }
 
-    fn handle_session_reply(&mut self, operation: SessionOperation, rc: i32, body: &[u8], depot: &mut Depot) {
+    fn handle_session_reply(
+        &mut self,
+        operation: SessionOperation,
+        rc: i32,
+        #[allow(unused_mut)] mut body: &[u8],
+        #[allow(unused_mut)] depot: &mut Depot,
+    ) -> Result<(), Error> {
         let error_code = match ErrorCode::try_from(rc) {
             Ok(error_code) => error_code,
             Err(err) => {
                 self.handle_session_failure(operation, Error::from(err), depot);
-                return;
+                return Ok(());
             },
         };
         let SessionOperation { responser, request, .. } = operation;
@@ -276,7 +295,21 @@ impl Session {
                 if responser.send_empty() {
                     self.authes.push(request);
                 }
-                return;
+                return Ok(());
+            }
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            if op_code == OpCode::Sasl {
+                let Some(sasl) = self.sasl_session.as_mut() else {
+                    return Err(Error::UnexpectedError("got sasl response while no client sasl session".to_string()));
+                };
+                match record::deserialize::<Option<&[u8]>>(&mut body)? {
+                    None => depot.complete_sasl(),
+                    Some(challenge) => match sasl.step(challenge)? {
+                        None => depot.complete_sasl(),
+                        Some(response) => depot.push_sasl(response),
+                    },
+                }
+                return Ok(());
             }
             let mut buf = request.0;
             buf.clear();
@@ -286,6 +319,7 @@ impl Session {
             assert!(watcher.is_none());
             responser.send(Err(Error::from(error_code)));
         }
+        Ok(())
     }
 
     fn handle_reply(&mut self, header: ReplyHeader, body: &[u8], depot: &mut Depot) -> Result<(), Error> {
@@ -308,8 +342,7 @@ impl Session {
             return Ok(());
         }
         let operation = depot.pop_request(header.xid)?;
-        self.handle_session_reply(operation, header.err, body, depot);
-        Ok(())
+        self.handle_session_reply(operation, header.err, body, depot)
     }
 
     fn calc_tick_timeout(&self, session_timeout: Duration) -> Duration {
@@ -471,6 +504,8 @@ impl Session {
         requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
         unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) -> Result<(), Error> {
+        #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+        self.sasl_session.take();
         let mut seek_for_writable =
             if self.session.readonly { Some(self.connector.clone().seek_for_writable(endpoints)) } else { None };
         let mut tick = time::interval(self.tick_timeout);
@@ -526,7 +561,7 @@ impl Session {
 
     fn send_ping(&mut self, depot: &mut Depot, now: Instant) {
         let operation = SessionOperation::new_without_body(OpCode::Ping);
-        depot.push_operation(Operation::Session(operation));
+        depot.push_session(operation);
         self.last_send = now;
         self.last_ping = Some(self.last_send);
     }
@@ -543,6 +578,20 @@ impl Session {
         debug!("sending connect request: {request:?}");
         let operation = ConnectOperation::new(&request);
         depot.push_operation(Operation::Connect(operation));
+    }
+
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    fn send_sasl(&mut self, depot: &mut Depot, host: &str) -> Result<(), Error> {
+        self.sasl_session = None;
+        let Some(options) = self.sasl_options.as_ref() else {
+            return Ok(());
+        };
+        let session = options.new_session(host).inspect_err(|e| {
+            warn!("fail to open sasl session for {host}: {e}");
+        })?;
+        depot.push_sasl(session.initial());
+        self.sasl_session = Some(session);
+        Ok(())
     }
 
     fn send_authes(&self, depot: &mut Depot) {
@@ -575,7 +624,8 @@ impl Session {
         depot.clear();
         buf.clear();
         self.send_connect(depot);
-        // TODO: Sasl
+        #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+        self.send_sasl(depot, endpoint.host)?;
         self.send_authes(depot);
         self.watch_manager.resend_watches(self.last_zxid, depot);
         self.last_send = Instant::now();

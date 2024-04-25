@@ -422,16 +422,44 @@ impl<'a> DeserializableRecord<'a> for &'a [u8] {
     type Error = InsufficientBuf;
 
     fn deserialize(buf: &mut ReadingBuf<'a>) -> Result<&'a [u8], Self::Error> {
+        Option::<&[u8]>::deserialize(buf).map(|opt| opt.unwrap_or_default())
+    }
+}
+
+impl SerializableRecord for Option<&[u8]> {
+    fn serialize(&self, buf: &mut dyn BufMut) {
+        match self {
+            None => buf.put_i32(-1),
+            Some(bytes) => bytes.serialize(buf),
+        }
+    }
+}
+
+impl DynamicRecord for Option<&[u8]> {
+    fn serialized_len(&self) -> usize {
+        match self {
+            None => 4,
+            Some(bytes) => 4 + bytes.len(),
+        }
+    }
+}
+
+impl<'a> DeserializableRecord<'a> for Option<&'a [u8]> {
+    type Error = InsufficientBuf;
+
+    fn deserialize(buf: &mut ReadingBuf<'a>) -> Result<Option<&'a [u8]>, Self::Error> {
         let n = i32::deserialize(buf)?;
-        if n <= 0 {
-            return Ok(Default::default());
+        if n < 0 {
+            return Ok(None);
+        } else if n == 0 {
+            return Ok(Some(Default::default()));
         } else if n > buf.len() as i32 {
             return Err(InsufficientBuf);
         }
         let n = n as usize;
         let bytes = unsafe { buf.get_unchecked(..n) };
         unsafe { *buf = buf.get_unchecked(n..) };
-        Ok(bytes)
+        Ok(Some(bytes))
     }
 }
 
