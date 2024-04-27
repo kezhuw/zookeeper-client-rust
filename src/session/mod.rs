@@ -38,6 +38,7 @@ use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCod
 use crate::record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
+#[cfg(feature = "tls")]
 use crate::tls::TlsOptions;
 
 pub const PASSWORD_LEN: usize = 16;
@@ -61,6 +62,7 @@ impl RequestOperation for (WatcherId, StateResponser) {
 
 #[derive(Default)]
 pub struct Builder {
+    #[cfg(feature = "tls")]
     tls: Option<TlsOptions>,
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
     sasl: Option<SaslOptions>,
@@ -73,6 +75,7 @@ pub struct Builder {
 }
 
 impl Builder {
+    #[cfg(feature = "tls")]
     pub fn with_tls(self, tls: Option<TlsOptions>) -> Self {
         Self { tls, ..self }
     }
@@ -125,7 +128,10 @@ impl Builder {
         } else if self.connection_timeout < Duration::ZERO {
             return Err(Error::BadArguments(&"connection timeout must not be negative"));
         }
-        let tls_config = self.tls.unwrap_or_default().into_config()?;
+        #[cfg(feature = "tls")]
+        let connector = Connector::with_tls(self.tls.unwrap_or_default().into_config()?);
+        #[cfg(not(feature = "tls"))]
+        let connector = Connector::new();
         let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
         let (watch_manager, unwatch_receiver) = WatchManager::new();
@@ -142,7 +148,7 @@ impl Builder {
             tick_timeout: Duration::ZERO,
             ping_timeout: Duration::ZERO,
             session_expired_timeout: Duration::ZERO,
-            connector: Connector::new(tls_config),
+            connector,
             #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
             sasl_options: self.sasl,
             #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
