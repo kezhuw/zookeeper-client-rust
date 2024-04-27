@@ -24,6 +24,7 @@ static ZK_IMAGE_TAG: &'static str = "3.9.0";
 static PERSISTENT_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all());
 static CONTAINER_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all());
 
+#[allow(dead_code)]
 fn env_toggle(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) if v == "true" => true,
@@ -188,6 +189,14 @@ async fn test_connect_session_expired() {
         .is_equal_to(zk::Error::SessionExpired);
 }
 
+#[derive(Copy, Clone)]
+enum Encryption {
+    Raw,
+    #[cfg(feature = "tls")]
+    Tls,
+}
+
+#[allow(dead_code)]
 struct Tls {
     _dir: Arc<TempDir>,
     _ca_cert: Certificate,
@@ -206,6 +215,7 @@ struct Tls {
     hostname_verification: bool,
 }
 
+#[cfg(feature = "tls")]
 impl Tls {
     fn new(dir: Arc<TempDir>) -> Self {
         let hostname_verification = env_toggle("ZK_TLS_HOSTNAME_VERIFICATION");
@@ -267,10 +277,11 @@ impl Tls {
 }
 
 struct Cluster {
+    #[cfg(feature = "tls")]
     tls: Option<Tls>,
     containers: Vec<(u32, Container<'static, GenericImage>)>,
-    _docker: Arc<DockerCli>,
-    _dir: LazyTempDir,
+    docker: Arc<DockerCli>,
+    dir: LazyTempDir,
 }
 
 unsafe impl Send for Cluster {}
@@ -303,7 +314,6 @@ impl<'a> From<ClusterOptions<'a>> for ContainerOptions<'a> {
 }
 
 struct ClusterOptions<'a> {
-    tls: Option<bool>,
     tag: &'a str,
     network: Option<&'a str>,
     volumes: HashMap<&'a str, &'a str>,
@@ -340,7 +350,6 @@ impl ClusterOptions<'_> {
 impl Default for ClusterOptions<'_> {
     fn default() -> Self {
         Self {
-            tls: None,
             tag: ZK_IMAGE_TAG,
             network: None,
             volumes: Default::default(),
@@ -367,46 +376,77 @@ impl LazyTempDir {
 
 impl Cluster {
     pub async fn new() -> Self {
-        Self::with_options(Default::default()).await
+        Self::with_options(Default::default(), None).await
     }
 
     pub async fn with_properties(properties: Vec<&'_ str>) -> Self {
-        Self::with_options(ClusterOptions { properties, ..Default::default() }).await
+        Self::with_options(ClusterOptions { properties, ..Default::default() }, None).await
     }
 
-    pub async fn with_options(options: ClusterOptions<'_>) -> Self {
-        let mut dir = LazyTempDir::new();
-        let tls = if options.tls.unwrap_or_else(|| env_toggle("ZK_TEST_TLS")) {
-            let tls = Tls::new(dir.tempdir().clone());
-            println!(
-                "starting tls zookeeper server {} {} hostname verification ...",
-                options.tag,
-                if tls.hostname_verification { "with" } else { "without" }
-            );
-            Some(tls)
-        } else {
-            println!("starting plaintext zookeeper server {} ...", options.tag);
-            None
-        };
+    pub async fn with_options(options: ClusterOptions<'_>, encryption: Option<Encryption>) -> Self {
+        let encryption = encryption.unwrap_or_else(|| {
+            #[cfg(feature = "tls")]
+            return if env_toggle("ZK_TEST_TLS") { Encryption::Tls } else { Encryption::Raw };
+            #[cfg(not(feature = "tls"))]
+            Encryption::Raw
+        });
         let docker = Arc::new(DockerCli::default());
+        let mut cluster = match encryption {
+            #[cfg(not(feature = "tls"))]
+            Encryption::Raw => {
+                println!("starting plaintext zookeeper server {} ...", options.tag);
+                Self { containers: vec![], docker, dir: LazyTempDir::new() }
+            },
+            #[cfg(feature = "tls")]
+            Encryption::Raw => {
+                println!("starting plaintext zookeeper server {} ...", options.tag);
+                Self { tls: None, containers: vec![], docker, dir: LazyTempDir::new() }
+            },
+            #[cfg(feature = "tls")]
+            Encryption::Tls => {
+                let mut dir = LazyTempDir::new();
+                let tls = Tls::new(dir.tempdir().clone());
+                println!(
+                    "starting tls zookeeper server {} {} hostname verification ...",
+                    options.tag,
+                    if tls.hostname_verification { "with" } else { "without" }
+                );
+                Self { tls: Some(tls), containers: vec![], docker, dir }
+            },
+        };
+        cluster.boot(options).await;
+        cluster
+    }
+
+    pub async fn boot(&mut self, options: ClusterOptions<'_>) {
         let standalone = options.is_standalone();
         let mut tasks = vec![];
         for (id, mut configs) in options.servers() {
+            #[allow(unused_mut)]
             let mut container_options = ContainerOptions {
                 tag: options.tag,
                 properties: options.properties.clone(),
                 network: options.network,
                 ..Default::default()
             };
-            match tls.as_ref() {
-                None => {
+            #[cfg(feature = "tls")]
+            let tls = self.tls.is_some();
+            #[cfg(not(feature = "tls"))]
+            let tls = false;
+
+            match tls {
+                false => {
                     if standalone && !configs.is_empty() {
                         configs += "clientPort=2181\n";
                         configs += "initLimit=5\n";
                         configs += "syncLimit=2\n";
                     }
                 },
-                Some(tls) => {
+                #[cfg(not(feature = "tls"))]
+                true => {},
+                #[cfg(feature = "tls")]
+                true => {
+                    let tls = self.tls.as_ref().unwrap();
                     configs += r"
 ssl.clientAuth=need
 ssl.keyStore.location=/certs/server.pem
@@ -434,7 +474,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
             let mut image = zookeeper_image(container_options);
 
             for (path, content) in options.volumes.iter() {
-                let file_path = dir.tempdir().path().join(Path::new(path).strip_prefix("/").unwrap());
+                let file_path = self.dir.tempdir().path().join(Path::new(path).strip_prefix("/").unwrap());
                 let parent_path = file_path.parent().unwrap();
                 fs::create_dir_all(parent_path).unwrap();
                 fs::write(&file_path, content).unwrap();
@@ -443,17 +483,18 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 
             if !configs.is_empty() {
                 configs += "dataDir=/data\n";
-                let cfg_path = dir.tempdir().path().join(format!("zoo{id}.cfg"));
+                let cfg_path = self.dir.tempdir().path().join(format!("zoo{id}.cfg"));
                 fs::write(&cfg_path, &configs).unwrap();
                 image = image.with_volume((cfg_path.to_str().unwrap(), "/conf/zoo.cfg"));
             }
 
             if standalone {
-                let container = unsafe { std::mem::transmute(docker.run(image)) };
-                return Self { tls, containers: vec![(1, container)], _docker: docker, _dir: dir };
+                let container = unsafe { std::mem::transmute(self.docker.run(image)) };
+                self.containers.push((1, container));
+                return;
             }
 
-            let data_dir = dir.tempdir().path().join(format!("zoo{id}.data"));
+            let data_dir = self.dir.tempdir().path().join(format!("zoo{id}.data"));
             std::fs::create_dir_all(data_dir.as_path()).unwrap();
             fs::write(&data_dir.as_path().join("myid"), format!("{id}\n")).unwrap();
             image = image.with_volume((data_dir.to_str().unwrap(), "/data"));
@@ -462,18 +503,16 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
             tasks.push((
                 id,
                 tokio::task::spawn_blocking({
-                    let docker = docker.clone();
+                    let docker = self.docker.clone();
                     move || unsafe { std::mem::transmute::<_, Container<'static, GenericImage>>(docker.run(image)) }
                 }),
             ));
         }
-        let mut containers = vec![];
         for task in tasks {
             let id = task.0;
             let container = task.1.await.unwrap();
-            containers.push((id, container));
+            self.containers.push((id, container));
         }
-        Self { tls, containers, _docker: docker, _dir: dir }
     }
 
     pub fn stop(&self) {
@@ -491,13 +530,20 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     }
 
     fn url(&self, chroot: Option<&str>) -> (String, bool) {
+        #[cfg(feature = "tls")]
+        let tls = self.tls.is_some();
+        #[cfg(not(feature = "tls"))]
+        let tls = false;
+        #[cfg(feature = "tls")]
         let secure = rand::random();
+        #[cfg(not(feature = "tls"))]
+        let secure = false;
         let endpoints: Vec<_> = self
             .containers
             .iter()
             .map(|c| {
                 let explicit = rand::random();
-                let protocol = match (self.tls.is_some(), secure, explicit) {
+                let protocol = match (tls, secure, explicit) {
                     (true, false, _) | (true, _, true) => "tcp+tls://",
                     (false, true, _) | (false, _, true) => "tcp://",
                     (_, _, _) => "",
@@ -508,6 +554,12 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         (endpoints.join(",") + chroot.unwrap_or(""), secure)
     }
 
+    #[cfg(not(feature = "tls"))]
+    pub fn connector(&self) -> zk::Connector {
+        zk::Client::connector()
+    }
+
+    #[cfg(feature = "tls")]
     pub fn connector(&self) -> zk::Connector {
         let mut connector = zk::Client::connector();
         let Some(tls) = self.tls.as_ref() else {
@@ -521,6 +573,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         self.custom_client(chroot, |connector| connector).await.unwrap()
     }
 
+    #[cfg(feature = "tls")]
     pub async fn client_x(&self, chroot: Option<&str>) -> zk::Client {
         self.custom_client(chroot, |connector| match self.tls.as_ref().map(Tls::options_x) {
             None => connector,
@@ -538,10 +591,12 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         let mut connector = self.connector();
         custom(&mut connector);
         let (url, secure) = self.url(chroot);
-        if secure {
-            connector.secure_connect(&url).await
-        } else {
-            connector.connect(&url).await
+        match secure {
+            #[cfg(feature = "tls")]
+            true => connector.secure_connect(&url).await,
+            #[cfg(not(feature = "tls"))]
+            true => unreachable!("no tls support"),
+            false => connector.connect(&url).await,
         }
     }
 }
@@ -948,7 +1003,7 @@ async fn test_create_container() {
 #[test_case("3.4"; "3.4")]
 #[test_log::test(tokio::test)]
 async fn test_zookeeper_old_server(tag: &'static str) {
-    let cluster = Cluster::with_options(ClusterOptions { tls: Some(false), tag, ..Default::default() }).await;
+    let cluster = Cluster::with_options(ClusterOptions { tag, ..Default::default() }, Some(Encryption::Raw)).await;
 
     let client = cluster.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
     let (stat, _sequence) = client.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
@@ -1177,7 +1232,7 @@ async fn test_auth() {
 
 #[test_log::test(tokio::test)]
 async fn test_no_auth() {
-    let cluster = Cluster::with_options(ClusterOptions { tls: Some(false), ..Default::default() }).await;
+    let cluster = Cluster::with_options(Default::default(), Some(Encryption::Raw)).await;
     let client = cluster.client(None).await;
 
     let scheme = "digest";
@@ -1208,15 +1263,18 @@ async fn test_no_auth() {
 #[test_log::test(tokio::test)]
 #[should_panic(expected = "AuthFailed")]
 async fn test_auth_failed() {
-    let cluster = Cluster::with_options(ClusterOptions {
-        configs: vec![
-            "authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider",
-            "enforce.auth.enabled=true",
-            "enforce.auth.schemes=sasl",
-            "sessionRequireClientSASLAuth=true",
-        ],
-        ..Default::default()
-    })
+    let cluster = Cluster::with_options(
+        ClusterOptions {
+            configs: vec![
+                "authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider",
+                "enforce.auth.enabled=true",
+                "enforce.auth.schemes=sasl",
+                "sessionRequireClientSASLAuth=true",
+            ],
+            ..Default::default()
+        },
+        None,
+    )
     .await;
     cluster.client(None).await;
 }
@@ -1787,26 +1845,29 @@ async fn test_client_detach() {
 #[cfg(feature = "sasl-digest-md5")]
 #[test_log::test(tokio::test)]
 async fn test_sasl_digest_md5() {
-    let cluster = Cluster::with_options(ClusterOptions {
-        volumes: HashMap::from([(
-            "/conf/jaas.conf",
-            r#"
+    let cluster = Cluster::with_options(
+        ClusterOptions {
+            volumes: HashMap::from([(
+                "/conf/jaas.conf",
+                r#"
 Server {
     org.apache.zookeeper.server.auth.DigestLoginModule required
     user_client1="password1"
     user_client2="password2";
 };
-                               "#,
-        )]),
-        configs: vec![
-            "authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider",
-            "enforce.auth.enabled=true",
-            "enforce.auth.schemes=sasl",
-            "sessionRequireClientSASLAuth=true",
-        ],
-        properties: vec!["-Djava.security.auth.login.config=/conf/jaas.conf"],
-        ..Default::default()
-    })
+"#,
+            )]),
+            configs: vec![
+                "authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider",
+                "enforce.auth.enabled=true",
+                "enforce.auth.schemes=sasl",
+                "sessionRequireClientSASLAuth=true",
+            ],
+            properties: vec!["-Djava.security.auth.login.config=/conf/jaas.conf"],
+            ..Default::default()
+        },
+        None,
+    )
     .await;
     cluster
         .custom_client(None, |connector| {
@@ -1832,6 +1893,7 @@ Server {
     assert_eq!(err, zk::Error::AuthFailed);
 }
 
+#[allow(dead_code)]
 fn generate_ca_cert() -> (Certificate, String) {
     let mut params = CertificateParams::default();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -1843,6 +1905,7 @@ fn generate_ca_cert() -> (Certificate, String) {
     (Certificate::from_params(ca_cert_params).unwrap(), ca_cert_pem)
 }
 
+#[allow(dead_code)]
 fn generate_server_cert(hostname_verification: bool) -> Certificate {
     let san = if hostname_verification { vec!["127.0.0.1".to_string()] } else { vec![] };
     let mut params = CertificateParams::new(san);
@@ -1852,15 +1915,17 @@ fn generate_server_cert(hostname_verification: bool) -> Certificate {
     Certificate::from_params(params).unwrap()
 }
 
+#[allow(dead_code)]
 fn generate_client_cert(cn: &str) -> Certificate {
     let mut params = CertificateParams::default();
     params.distinguished_name.push(rcgen::DnType::CommonName, cn);
     Certificate::from_params(params).unwrap()
 }
 
+#[cfg(feature = "tls")]
 #[test_log::test(tokio::test)]
 async fn test_tls() {
-    let cluster = Cluster::with_options(ClusterOptions { tls: Some(true), ..Default::default() }).await;
+    let cluster = Cluster::with_options(Default::default(), Some(Encryption::Tls)).await;
     let client = cluster.client(None).await;
     let children = client.list_children("/").await.unwrap();
     assert_that!(children).contains("zookeeper".to_owned());
@@ -1897,24 +1962,37 @@ impl StateWaiter for zk::StateWatcher {
 }
 
 #[cfg(target_os = "linux")]
-#[test_case(true; "tls")]
-#[test_case(false; "plaintext")]
 #[test_log::test(tokio::test)]
 #[serial_test::serial(network_host)]
-async fn test_readonly(tls: bool) {
+async fn test_readonly_plaintext() {
+    test_readonly(Encryption::Raw).await
+}
+
+#[cfg(feature = "tls")]
+#[cfg(target_os = "linux")]
+#[test_log::test(tokio::test)]
+#[serial_test::serial(network_host)]
+async fn test_readonly_tls() {
+    test_readonly(Encryption::Tls).await
+}
+
+#[cfg(target_os = "linux")]
+async fn test_readonly(encryption: Encryption) {
     let servers = vec![
         "server.1=localhost:2001:3001:participant;localhost:4001",
         "server.2=localhost:2002:3002:participant;localhost:4002",
         "server.3=localhost:2003:3003:participant;localhost:4003",
     ];
-    let cluster = Cluster::with_options(ClusterOptions {
-        tls: Some(tls),
-        network: Some("host"),
-        configs: vec!["localSessionsEnabled=true"],
-        properties: vec!["-Dreadonlymode.enabled=true"],
-        servers: vec![(1, &servers), (2, &servers), (3, &servers)],
-        ..Default::default()
-    })
+    let cluster = Cluster::with_options(
+        ClusterOptions {
+            network: Some("host"),
+            configs: vec!["localSessionsEnabled=true"],
+            properties: vec!["-Dreadonlymode.enabled=true"],
+            servers: vec![(1, &servers), (2, &servers), (3, &servers)],
+            ..Default::default()
+        },
+        Some(encryption),
+    )
     .await;
 
     let client =
@@ -1968,22 +2046,25 @@ async fn test_readonly(tls: bool) {
 #[serial_test::serial(network_host)]
 #[test_log::test(tokio::test)]
 async fn test_update_ensemble() {
-    let _cluster = Cluster::with_options(ClusterOptions {
-        network: Some("host"),
-        configs: vec!["reconfigEnabled=true", "standaloneEnabled=false"],
-        servers: vec![
-            (1, &vec!["server.1=localhost:2001:3001:participant;localhost:4001"]),
-            (2, &vec![
-                "server.1=localhost:2001:3001:participant;localhost:4001",
-                "server.2=localhost:2002:3002:observer;localhost:4002",
-            ]),
-            (3, &vec![
-                "server.1=localhost:2001:3001:participant;localhost:4001",
-                "server.3=localhost:2003:3003:observer;localhost:4003",
-            ]),
-        ],
-        ..Default::default()
-    })
+    let _cluster = Cluster::with_options(
+        ClusterOptions {
+            network: Some("host"),
+            configs: vec!["reconfigEnabled=true", "standaloneEnabled=false"],
+            servers: vec![
+                (1, &vec!["server.1=localhost:2001:3001:participant;localhost:4001"]),
+                (2, &vec![
+                    "server.1=localhost:2001:3001:participant;localhost:4001",
+                    "server.2=localhost:2002:3002:observer;localhost:4002",
+                ]),
+                (3, &vec![
+                    "server.1=localhost:2001:3001:participant;localhost:4001",
+                    "server.3=localhost:2003:3003:observer;localhost:4003",
+                ]),
+            ],
+            ..Default::default()
+        },
+        None,
+    )
     .await;
 
     let zoo1_client = zk::Client::connect("localhost:4001").await.unwrap();

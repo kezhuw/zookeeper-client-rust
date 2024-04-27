@@ -138,6 +138,7 @@ impl Error {
         Self::Other(OtherError { message: message.into(), source })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn other(message: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::new_other(message.into(), Some(Arc::new(source)))
     }

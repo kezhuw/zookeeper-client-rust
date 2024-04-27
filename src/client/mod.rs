@@ -48,6 +48,7 @@ use crate::record::{self, Record, StaticRecord};
 use crate::sasl::SaslOptions;
 use crate::session::StateReceiver;
 pub use crate::session::{EventType, SessionId, SessionInfo, SessionState, WatchedEvent};
+#[cfg(feature = "tls")]
 use crate::tls::TlsOptions;
 use crate::util;
 
@@ -1538,6 +1539,7 @@ pub(crate) struct Version(u32, u32, u32);
 /// A builder for [Client].
 #[derive(Clone, Debug)]
 pub struct Connector {
+    #[cfg(feature = "tls")]
     tls: Option<TlsOptions>,
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
     sasl: Option<SaslOptions>,
@@ -1555,6 +1557,7 @@ pub struct Connector {
 impl Connector {
     fn new() -> Self {
         Self {
+            #[cfg(feature = "tls")]
             tls: None,
             #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
             sasl: None,
@@ -1624,6 +1627,7 @@ impl Connector {
     }
 
     /// Specifies tls options for connections to ZooKeeper.
+    #[cfg(feature = "tls")]
     pub fn tls(&mut self, options: TlsOptions) -> &mut Self {
         self.tls = Some(options);
         self
@@ -1649,13 +1653,14 @@ impl Connector {
     async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
         let builder = Session::builder()
-            .with_tls(self.tls.take())
             .with_session(self.session.take())
             .with_authes(&self.authes)
             .with_readonly(self.readonly)
             .with_detached(self.detached)
             .with_session_timeout(self.session_timeout)
             .with_connection_timeout(self.connection_timeout);
+        #[cfg(feature = "tls")]
+        let builder = builder.with_tls(self.tls.take());
         #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
         let builder = builder.with_sasl(self.sasl.take());
         let (mut session, state_receiver) = builder.build()?;
@@ -1685,6 +1690,7 @@ impl Connector {
     ///
     /// Same to [Self::connect] except that `server1` will use tls encrypted protocol given
     /// the connection string `server1,tcp://server2,tcp+tls://server3`.
+    #[cfg(feature = "tls")]
     pub async fn secure_connect(&mut self, cluster: &str) -> Result<Client> {
         self.connect_internally(true, cluster).await
     }
