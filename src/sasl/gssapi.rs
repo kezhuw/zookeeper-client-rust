@@ -14,6 +14,8 @@ impl From<GssapiSaslOptions> for SaslOptions {
 }
 
 /// GSSAPI SASL options.
+///
+/// Uses [SaslOptions::gssapi] to construct one.
 #[derive(Clone, Debug)]
 pub struct GssapiSaslOptions {
     username: Cow<'static, str>,

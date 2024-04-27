@@ -1536,7 +1536,9 @@ impl Drop for OwnedLockClient {
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub(crate) struct Version(u32, u32, u32);
 
-/// A builder for [Client].
+/// A builder for [Client] with more options than [Client::connect].
+///
+/// Uses [Client::connector] to construct one.
 #[derive(Clone, Debug)]
 pub struct Connector {
     #[cfg(feature = "tls")]
@@ -1553,7 +1555,6 @@ pub struct Connector {
     connection_timeout: Duration,
 }
 
-/// Builder for [Client] with more options than [Client::connect].
 impl Connector {
     fn new() -> Self {
         Self {

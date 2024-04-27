@@ -1,4 +1,4 @@
-check: check_fmt lint
+check: check_fmt lint doc
 
 verify: check build test
 
@@ -16,3 +16,6 @@ build:
 
 test:
 	cargo test --all-features
+
+doc:
+	cargo doc --all-features
