@@ -10,7 +10,6 @@ use std::io;
 use std::time::Duration;
 
 use ignore_result::Ignore;
-use rustls::ClientConfig;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
@@ -39,6 +38,7 @@ use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCod
 use crate::record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
+use crate::tls::TlsOptions;
 
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
@@ -56,6 +56,110 @@ impl RequestOperation for SessionOperation {
 impl RequestOperation for (WatcherId, StateResponser) {
     fn into_responser(self) -> StateResponser {
         self.1
+    }
+}
+
+#[derive(Default)]
+pub struct Builder {
+    tls: Option<TlsOptions>,
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    sasl: Option<SaslOptions>,
+    authes: Vec<MarshalledRequest>,
+    readonly: bool,
+    detached: bool,
+    session: Option<SessionInfo>,
+    session_timeout: Duration,
+    connection_timeout: Duration,
+}
+
+impl Builder {
+    pub fn with_tls(self, tls: Option<TlsOptions>) -> Self {
+        Self { tls, ..self }
+    }
+
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    pub fn with_sasl(self, sasl: Option<SaslOptions>) -> Self {
+        Self { sasl, ..self }
+    }
+
+    pub fn with_authes(self, authes: &[AuthPacket]) -> Self {
+        Self { authes: authes.iter().map(|auth| MarshalledRequest::new(OpCode::Auth, auth)).collect(), ..self }
+    }
+
+    pub fn with_readonly(self, readonly: bool) -> Self {
+        Self { readonly, ..self }
+    }
+
+    pub fn with_detached(self, detached: bool) -> Self {
+        Self { detached, ..self }
+    }
+
+    pub fn with_session(self, session: Option<SessionInfo>) -> Self {
+        Self { session, ..self }
+    }
+
+    pub fn with_session_timeout(self, session_timeout: Duration) -> Self {
+        Self { session_timeout, ..self }
+    }
+
+    pub fn with_connection_timeout(self, connection_timeout: Duration) -> Self {
+        Self { connection_timeout, ..self }
+    }
+
+    pub fn build(self) -> Result<(Session, tokio::sync::watch::Receiver<SessionState>), Error> {
+        let session = match self.session {
+            Some(session) => {
+                if session.is_readonly() {
+                    return Err(Error::new_other(
+                        format!("can't reestablish readonly and hence local session {}", session.id()),
+                        None,
+                    ));
+                }
+                Span::current().record("session", display(session.id()));
+                session
+            },
+            None => SessionInfo::new(SessionId(0), Vec::with_capacity(PASSWORD_LEN)),
+        };
+        if self.session_timeout < Duration::ZERO {
+            return Err(Error::BadArguments(&"session timeout must not be negative"));
+        } else if self.connection_timeout < Duration::ZERO {
+            return Err(Error::BadArguments(&"connection timeout must not be negative"));
+        }
+        let tls_config = self.tls.unwrap_or_default().into_config()?;
+        let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
+        let now = Instant::now();
+        let (watch_manager, unwatch_receiver) = WatchManager::new();
+        let mut session = Session {
+            readonly: self.readonly,
+            detached: self.detached,
+
+            configured_connection_timeout: self.connection_timeout,
+
+            last_zxid: session.last_zxid,
+            last_recv: now,
+            last_send: now,
+            last_ping: None,
+            tick_timeout: Duration::ZERO,
+            ping_timeout: Duration::ZERO,
+            session_expired_timeout: Duration::ZERO,
+            connector: Connector::new(tls_config),
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            sasl_options: self.sasl,
+            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+            sasl_session: None,
+
+            session,
+            session_timeout: self.session_timeout,
+            session_state: SessionState::Disconnected,
+
+            authes: self.authes,
+            state_sender,
+            watch_manager,
+            unwatch_receiver: Some(unwatch_receiver),
+        };
+        let timeout = if self.session_timeout.is_zero() { DEFAULT_SESSION_TIMEOUT } else { self.session_timeout };
+        session.reset_timeout(timeout);
+        Ok((session, state_receiver))
     }
 }
 
@@ -92,52 +196,8 @@ pub struct Session {
 }
 
 impl Session {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        session: Option<SessionInfo>,
-        authes: &[AuthPacket],
-        readonly: bool,
-        detached: bool,
-        tls_config: ClientConfig,
-        #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))] sasl_options: Option<SaslOptions>,
-        session_timeout: Duration,
-        connection_timeout: Duration,
-    ) -> (Session, tokio::sync::watch::Receiver<SessionState>) {
-        let session = session.unwrap_or_else(|| SessionInfo::new(SessionId(0), Vec::with_capacity(PASSWORD_LEN)));
-        let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
-        let now = Instant::now();
-        let (watch_manager, unwatch_receiver) = WatchManager::new();
-        let mut session = Session {
-            readonly,
-            detached,
-
-            configured_connection_timeout: connection_timeout,
-
-            last_zxid: session.last_zxid,
-            last_recv: now,
-            last_send: now,
-            last_ping: None,
-            tick_timeout: Duration::ZERO,
-            ping_timeout: Duration::ZERO,
-            session_expired_timeout: Duration::ZERO,
-            connector: Connector::new(tls_config),
-            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
-            sasl_options,
-            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
-            sasl_session: None,
-
-            session,
-            session_timeout,
-            session_state: SessionState::Disconnected,
-
-            authes: authes.iter().map(|auth| MarshalledRequest::new(OpCode::Auth, auth)).collect(),
-            state_sender,
-            watch_manager,
-            unwatch_receiver: Some(unwatch_receiver),
-        };
-        let timeout = if session_timeout.is_zero() { DEFAULT_SESSION_TIMEOUT } else { session_timeout };
-        session.reset_timeout(timeout);
-        (session, state_receiver)
+    pub fn builder() -> Builder {
+        Builder::default()
     }
 
     fn is_readonly_allowed(&self) -> bool {

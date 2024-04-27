@@ -11,8 +11,7 @@ use either::{Either, Left, Right};
 use ignore_result::Ignore;
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::field::display;
-use tracing::{instrument, Span};
+use tracing::instrument;
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver};
@@ -1649,32 +1648,17 @@ impl Connector {
     #[instrument(name = "connect", skip_all, fields(session))]
     async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
-        if let Some(session) = self.session.as_ref() {
-            if session.is_readonly() {
-                return Err(Error::new_other(
-                    format!("can't reestablish readonly and hence local session {}", session.id()),
-                    None,
-                ));
-            }
-            Span::current().record("session", display(session.id()));
-        }
-        if self.session_timeout < Duration::ZERO {
-            return Err(Error::BadArguments(&"session timeout must not be negative"));
-        } else if self.connection_timeout < Duration::ZERO {
-            return Err(Error::BadArguments(&"connection timeout must not be negative"));
-        }
-        let tls_config = self.tls.take().unwrap_or_default().into_config()?;
-        let (mut session, state_receiver) = Session::new(
-            self.session.take(),
-            &self.authes,
-            self.readonly,
-            self.detached,
-            tls_config,
-            #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
-            self.sasl.take(),
-            self.session_timeout,
-            self.connection_timeout,
-        );
+        let builder = Session::builder()
+            .with_tls(self.tls.take())
+            .with_session(self.session.take())
+            .with_authes(&self.authes)
+            .with_readonly(self.readonly)
+            .with_detached(self.detached)
+            .with_session_timeout(self.session_timeout)
+            .with_connection_timeout(self.connection_timeout);
+        #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+        let builder = builder.with_sasl(self.sasl.take());
+        let (mut session, state_receiver) = builder.build()?;
         let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
         endpoints.reset();
         if !self.fail_eagerly {
