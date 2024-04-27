@@ -6,6 +6,7 @@ use rsasl::property::{AuthId, Password, Realm};
 
 use super::{Result, SaslInitiator, SaslInnerOptions, SaslOptions, SaslSession};
 
+/// DIGEST-MD5 SASL options.
 #[derive(Clone, Debug)]
 pub struct DigestMd5SaslOptions {
     realm: Option<Cow<'static, str>>,
