@@ -79,9 +79,6 @@ latch.create("/app/data", b"data", &zk::CreateMode::Ephemeral.with_acls(zk::Acls
 
 For more examples, see [zookeeper.rs](tests/zookeeper.rs).
 
-## TODO
-* [ ] Sasl authentication
-
 ## License
 The MIT License (MIT). See [LICENSE](LICENSE) for the full license text.
 

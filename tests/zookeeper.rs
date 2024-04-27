@@ -306,6 +306,7 @@ struct ClusterOptions<'a> {
     tls: Option<bool>,
     tag: &'a str,
     network: Option<&'a str>,
+    volumes: HashMap<&'a str, &'a str>,
     properties: Vec<&'a str>,
     configs: Vec<&'a str>,
     servers: Vec<(u32, &'a [&'a str])>,
@@ -338,7 +339,15 @@ impl ClusterOptions<'_> {
 
 impl Default for ClusterOptions<'_> {
     fn default() -> Self {
-        Self { tls: None, tag: ZK_IMAGE_TAG, network: None, properties: vec![], configs: vec![], servers: vec![] }
+        Self {
+            tls: None,
+            tag: ZK_IMAGE_TAG,
+            network: None,
+            volumes: Default::default(),
+            properties: vec![],
+            configs: vec![],
+            servers: vec![],
+        }
     }
 }
 
@@ -383,7 +392,7 @@ impl Cluster {
         let standalone = options.is_standalone();
         let mut tasks = vec![];
         for (id, mut configs) in options.servers() {
-            let mut options = ContainerOptions {
+            let mut container_options = ContainerOptions {
                 tag: options.tag,
                 properties: options.properties.clone(),
                 network: options.network,
@@ -408,12 +417,12 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
                     if standalone {
                         configs += "secureClientPort=2181\n";
                     }
-                    options.volumes = HashMap::from([
+                    container_options.volumes = HashMap::from([
                         ("/certs/client.pem", tls.client_identity_file.as_path()),
                         ("/certs/server.pem", tls.server_identity_file.as_path()),
                         ("/certs/ca.cert.pem", tls.ca_cert_file.as_path()),
                     ]);
-                    options.healthcheck = vec![
+                    container_options.healthcheck = vec![
                         "-Dzookeeper.clientCnxnSocket=org.apache.zookeeper.ClientCnxnSocketNetty",
                         "-Dzookeeper.ssl.trustStore.location=/certs/ca.cert.pem",
                         "-Dzookeeper.ssl.keyStore.location=/certs/client.pem",
@@ -422,7 +431,16 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
                 },
             };
 
-            let mut image = zookeeper_image(options);
+            let mut image = zookeeper_image(container_options);
+
+            for (path, content) in options.volumes.iter() {
+                let file_path = dir.tempdir().path().join(Path::new(path).strip_prefix("/").unwrap());
+                let parent_path = file_path.parent().unwrap();
+                fs::create_dir_all(parent_path).unwrap();
+                fs::write(&file_path, content).unwrap();
+                image = image.with_volume((file_path.to_str().unwrap(), *path));
+            }
+
             if !configs.is_empty() {
                 configs += "dataDir=/data\n";
                 let cfg_path = dir.tempdir().path().join(format!("zoo{id}.cfg"));
@@ -1764,6 +1782,54 @@ async fn test_client_detach() {
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
     cluster.custom_client(None, |connector| connector.session(session)).await.unwrap();
+}
+
+#[cfg(feature = "sasl-digest-md5")]
+#[test_log::test(tokio::test)]
+async fn test_sasl_digest_md5() {
+    let cluster = Cluster::with_options(ClusterOptions {
+        volumes: HashMap::from([(
+            "/conf/jaas.conf",
+            r#"
+Server {
+    org.apache.zookeeper.server.auth.DigestLoginModule required
+    user_client1="password1"
+    user_client2="password2";
+};
+                               "#,
+        )]),
+        configs: vec![
+            "authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider",
+            "enforce.auth.enabled=true",
+            "enforce.auth.schemes=sasl",
+            "sessionRequireClientSASLAuth=true",
+        ],
+        properties: vec!["-Djava.security.auth.login.config=/conf/jaas.conf"],
+        ..Default::default()
+    })
+    .await;
+    cluster
+        .custom_client(None, |connector| {
+            let options = zk::SaslOptions::digest_md5("client1", "password1");
+            connector.sasl(options)
+        })
+        .await
+        .unwrap();
+    cluster
+        .custom_client(None, |connector| {
+            let options = zk::SaslOptions::digest_md5("client2", "password2");
+            connector.sasl(options)
+        })
+        .await
+        .unwrap();
+    let err = cluster
+        .custom_client(None, |connector| {
+            let options = zk::SaslOptions::digest_md5("client1", "password2");
+            connector.sasl(options)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err, zk::Error::AuthFailed);
 }
 
 fn generate_ca_cert() -> (Certificate, String) {
