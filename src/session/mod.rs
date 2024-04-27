@@ -113,10 +113,10 @@ impl Builder {
         let session = match self.session {
             Some(session) => {
                 if session.is_readonly() {
-                    return Err(Error::new_other(
-                        format!("can't reestablish readonly and hence local session {}", session.id()),
-                        None,
-                    ));
+                    return Err(Error::with_message(format!(
+                        "can't reestablish readonly and hence local session {}",
+                        session.id()
+                    )));
                 }
                 Span::current().record("session", display(session.id()));
                 session
@@ -490,7 +490,7 @@ impl Session {
             },
             Err(err) => {
                 if err.kind() != io::ErrorKind::WouldBlock {
-                    return Err(Error::other_from(err));
+                    return Err(Error::other(err));
                 }
             },
             _ => {},
@@ -539,7 +539,7 @@ impl Session {
                 },
                 now = tick.tick() => {
                     if now >= self.last_recv + self.connector.timeout() {
-                        return Err(Error::new_other(format!("no response from connection in {}ms", self.connector.timeout().as_millis()), None));
+                        return Err(Error::with_message(format!("no response from connection in {}ms", self.connector.timeout().as_millis())));
                     }
                 },
             }
@@ -583,7 +583,7 @@ impl Session {
             select! {
                 Some(endpoint) = Self::poll(&mut seek_for_writable), if seek_for_writable.is_some() => {
                     seek_for_writable = None;
-                    err = Some(Error::new_other(format!("encounter writable server {}", endpoint), None));
+                    err = Some(Error::with_message(format!("encounter writable server {}", endpoint)));
                     channel_halted = true;
                 },
                 _ = conn.readable() => {
@@ -613,7 +613,7 @@ impl Session {
                 },
                 now = tick.tick() => {
                     if now >= self.last_recv + self.connector.timeout() {
-                        return Err(Error::new_other(format!("no response from connection in {}ms", self.connector.timeout().as_millis()), None));
+                        return Err(Error::with_message(format!("no response from connection in {}ms", self.connector.timeout().as_millis())));
                     }
                     if self.last_ping.is_none() && now >= self.last_send + self.ping_timeout {
                         self.send_ping(depot, now);

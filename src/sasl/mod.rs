@@ -98,7 +98,7 @@ impl SaslSession {
             return Err(Error::UnexpectedError(format!("SASL {} session already finished", self.name())));
         }
         self.output.clear();
-        match self.session.step(Some(challenge), &mut self.output).map_err(|e| Error::other(format!("{e}"), e))? {
+        match self.session.step(Some(challenge), &mut self.output).map_err(Error::other)? {
             State::Running => Ok(Some(&self.output)),
             State::Finished(MessageSent::Yes) => {
                 self.finished = true;

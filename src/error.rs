@@ -1,6 +1,7 @@
+use std::borrow::Cow;
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
-use derive_where::derive_where;
 use static_assertions::assert_impl_all;
 use thiserror::Error;
 
@@ -87,17 +88,40 @@ pub enum Error {
     RuntimeInconsistent,
 
     #[error(transparent)]
-    Other(OtherError),
+    Custom(CustomError),
 }
 
 #[derive(Error, Clone, Debug)]
-#[derive_where(Eq, PartialEq)]
-#[error("{message}")]
-pub struct OtherError {
-    message: Arc<String>,
-    #[derive_where(skip(EqHashOrd))]
+pub struct CustomError {
+    message: Option<Arc<Cow<'static, str>>>,
     source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
 }
+
+impl Display for CustomError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match (self.message.as_ref(), self.source.as_ref()) {
+            (Some(message), None) => f.write_str(message),
+            (Some(message), Some(err)) => write!(f, "{}: {}", message, err),
+            (None, Some(err)) => err.fmt(f),
+            _ => unreachable!("no error message or source"),
+        }
+    }
+}
+
+impl PartialEq for CustomError {
+    fn eq(&self, other: &Self) -> bool {
+        if !self.message.eq(&other.message) {
+            return false;
+        }
+        match (self.source.as_ref(), other.source.as_ref()) {
+            (Some(lhs), Some(rhs)) => Arc::ptr_eq(lhs, rhs),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CustomError {}
 
 impl Error {
     pub(crate) fn is_terminated(&self) -> bool {
@@ -131,20 +155,20 @@ impl Error {
         }
     }
 
-    pub(crate) fn new_other(
-        message: impl Into<Arc<String>>,
-        source: Option<Arc<dyn std::error::Error + Send + Sync + 'static>>,
-    ) -> Self {
-        Self::Other(OtherError { message: message.into(), source })
+    pub(crate) fn with_message(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::Custom(CustomError { message: Some(Arc::new(message.into())), source: None })
     }
 
     #[allow(dead_code)]
-    pub(crate) fn other(message: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::new_other(message.into(), Some(Arc::new(source)))
+    pub(crate) fn with_other(
+        message: impl Into<Cow<'static, str>>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Custom(CustomError { message: Some(Arc::new(message.into())), source: Some(Arc::new(source)) })
     }
 
-    pub(crate) fn other_from(source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::new_other(source.to_string(), Some(Arc::new(source)))
+    pub(crate) fn other(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Custom(CustomError { message: None, source: Some(Arc::new(source)) })
     }
 }
 

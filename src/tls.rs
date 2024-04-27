@@ -126,10 +126,10 @@ impl TlsOptions {
         for r in rustls_pemfile::certs(&mut certs.as_bytes()) {
             let cert = match r {
                 Ok(cert) => cert,
-                Err(err) => return Err(Error::other(format!("fail to read cert {}", err), err)),
+                Err(err) => return Err(Error::with_other("fail to read cert", err)),
             };
             if let Err(err) = self.ca_certs.add(cert) {
-                return Err(Error::other(format!("fail to add cert {}", err), err));
+                return Err(Error::with_other("fail to add cert", err));
             }
         }
         Ok(self)
@@ -139,11 +139,11 @@ impl TlsOptions {
     pub fn with_pem_identity(mut self, cert: &str, key: &str) -> Result<Self> {
         let r: std::result::Result<Vec<_>, _> = rustls_pemfile::certs(&mut cert.as_bytes()).collect();
         let certs = match r {
-            Err(err) => return Err(Error::other(format!("fail to read cert {}", err), err)),
+            Err(err) => return Err(Error::with_other("fail to read cert", err)),
             Ok(certs) => certs,
         };
         let key = match rustls_pemfile::private_key(&mut key.as_bytes()) {
-            Err(err) => return Err(Error::other(format!("fail to read client private key {err}"), err)),
+            Err(err) => return Err(Error::with_other("fail to read client private key", err)),
             Ok(None) => return Err(Error::BadArguments(&"no client private key")),
             Ok(Some(key)) => key,
         };
@@ -163,7 +163,7 @@ impl TlsOptions {
         if let Some((client_cert, client_key)) = self.identity.take() {
             match builder.with_client_auth_cert(client_cert, client_key) {
                 Ok(config) => Ok(config),
-                Err(err) => Err(Error::other(format!("invalid client private key {err}"), err)),
+                Err(err) => Err(Error::with_other("invalid client private key", err)),
             }
         } else {
             Ok(builder.with_no_client_auth())

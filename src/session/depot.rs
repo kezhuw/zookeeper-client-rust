@@ -248,7 +248,7 @@ impl Depot {
                 if err.kind() == io::ErrorKind::WouldBlock {
                     return Ok(());
                 }
-                return Err(Error::other_from(err));
+                return Err(Error::other(err));
             }
             return Ok(());
         }
@@ -258,7 +258,7 @@ impl Depot {
                 if err.kind() == io::ErrorKind::WouldBlock {
                     return Ok(());
                 }
-                return Err(Error::other_from(err));
+                return Err(Error::other(err));
             },
             Ok(written_bytes) => written_bytes,
         };
