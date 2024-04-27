@@ -34,8 +34,10 @@ jobs:
     - name: Install krb5
       run: |
         sudo apt install -y libkrb5-dev
+    - name: Install cargo-all-features
+      run: cargo install cargo-all-features
     - name: Build code
-      run: cargo build --all-features
+      run: cargo build-all-features
   test:
     needs: [build]
     runs-on: ubuntu-latest
