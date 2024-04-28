@@ -225,16 +225,15 @@ impl Session {
         mut endpoints: IterableEndpoints,
         conn: Connection,
         mut buf: Vec<u8>,
-        mut connecting_trans: Depot,
+        mut depot: Depot,
         mut requester: mpsc::UnboundedReceiver<SessionOperation>,
     ) {
-        let mut depot = Depot::for_serving();
         let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
         endpoints.cycle();
         endpoints.reset();
         self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
         while !self.session_state.is_terminated() {
-            let conn = match self.start(&mut endpoints, &mut buf, &mut connecting_trans).await {
+            let conn = match self.start(&mut endpoints, &mut buf, &mut depot).await {
                 Err(err) => {
                     warn!("fail to connect to cluster {:?} due to {}", endpoints.endpoints(), err);
                     self.resolve_start_error(&err);
@@ -683,7 +682,7 @@ impl Session {
                 conn
             },
         };
-        depot.clear();
+        depot.reset();
         buf.clear();
         self.send_connect(depot);
         #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
