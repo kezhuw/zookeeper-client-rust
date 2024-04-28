@@ -1671,8 +1671,8 @@ impl Connector {
             endpoints.cycle();
         }
         let mut buf = Vec::with_capacity(4096);
-        let mut connecting_depot = Depot::for_connecting();
-        let conn = session.start(&mut endpoints, &mut buf, &mut connecting_depot).await?;
+        let mut depot = Depot::new();
+        let conn = session.start(&mut endpoints, &mut buf, &mut depot).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let session_info = session.session.clone();
         let session_timeout = session.session_timeout;
@@ -1680,7 +1680,7 @@ impl Connector {
         // Consume all state changes so far.
         state_watcher.state();
         tokio::spawn(async move {
-            session.serve(endpoints, conn, buf, connecting_depot, receiver).await;
+            session.serve(endpoints, conn, buf, depot, receiver).await;
         });
         let client =
             Client::new(chroot.to_owned(), self.server_version, session_info, session_timeout, sender, state_watcher);

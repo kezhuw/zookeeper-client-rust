@@ -16,6 +16,9 @@ use crate::proto::{OpCode, PredefinedXid, RemoveWatchesRequest};
 pub struct Depot {
     xid: Xid,
 
+    // If ongoing authes are interruptted due to disconnection, they will be retried after
+    // session reestablishment as auth failure will terminate session and should not be dropped
+    // silently in case of disconnection.
     pending_authes: Vec<SessionOperation>,
 
     writing_slices: Vec<IoSlice<'static>>,
@@ -30,7 +33,7 @@ pub struct Depot {
 }
 
 impl Depot {
-    pub fn for_serving() -> Depot {
+    pub fn new() -> Self {
         let writing_capacity = 128usize;
         Depot {
             xid: Default::default(),
@@ -39,34 +42,18 @@ impl Depot {
             writing_slices: Vec::with_capacity(writing_capacity),
             writing_operations: VecDeque::with_capacity(writing_capacity),
             written_operations: HashMap::with_capacity(128),
-            pending_operations: Default::default(),
+            pending_operations: VecDeque::with_capacity(32),
             watching_paths: HashMap::with_capacity(32),
             unwatching_paths: HashMap::with_capacity(32),
         }
     }
 
-    pub fn for_connecting() -> Depot {
-        Depot {
-            xid: Default::default(),
-            sasl: false,
-            pending_authes: Default::default(),
-            writing_slices: Vec::with_capacity(10),
-            writing_operations: VecDeque::with_capacity(10),
-            written_operations: HashMap::with_capacity(10),
-            pending_operations: VecDeque::with_capacity(10),
-            watching_paths: HashMap::new(),
-            unwatching_paths: HashMap::new(),
-        }
-    }
-
-    /// Clear all buffered operations from previous run.
-    pub fn clear(&mut self) {
-        self.xid = Default::default();
+    /// Reset state and clear buffered operations from previous run except `pending_authes`.
+    pub fn reset(&mut self) {
+        // We don't reset xid, so we get continuous xid (ignoring the overflow) even in case of
+        // reconnection. This is helpful in diagnosis.
         self.sasl = false;
-        self.pending_authes.clear();
         self.writing_slices.clear();
-        self.watching_paths.clear();
-        self.unwatching_paths.clear();
         self.writing_operations.clear();
         self.written_operations.clear();
         self.pending_operations.clear();
