@@ -292,14 +292,10 @@ impl Session {
         requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
         unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
     ) {
-        if let Err(err) = self.serve_session(endpoints, &mut conn, buf, depot, requester, unwatch_requester).await {
-            self.resolve_serve_error(&err);
-            info!("enter state {} due to {}", self.session_state, err);
-            depot.error(&err);
-        } else {
-            self.change_state(SessionState::Disconnected);
-            self.change_state(SessionState::Closed);
-        }
+        let err = self.serve_session(endpoints, &mut conn, buf, depot, requester, unwatch_requester).await.unwrap_err();
+        self.resolve_serve_error(&err);
+        info!("enter state {} due to {}", self.session_state, err);
+        depot.error(&err);
     }
 
     fn handle_notification(&mut self, zxid: i64, mut body: &[u8], depot: &mut Depot) -> Result<(), Error> {

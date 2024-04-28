@@ -61,6 +61,11 @@ impl SessionInfo {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, strum::Display)]
 pub enum SessionState {
     /// Intermediate state states that client is disconnected from zookeeper cluster.
+    ///
+    /// In case of all clients dropped, this state is not reported. This differs from Java client
+    /// which is indeterminate currently. See [ZOOKEEPER-4702][].
+    ///
+    /// [ZOOKEEPER-4702]: https://issues.apache.org/jira/browse/ZOOKEEPER-4702
     Disconnected,
 
     /// Intermediate state states that client has recovered from disconnected state.

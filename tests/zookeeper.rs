@@ -1823,7 +1823,6 @@ async fn test_client_drop() {
     let client = cluster.client(None).await;
 
     let mut state_watcher = client.state_watcher();
-    tokio::time::sleep(Duration::from_secs(20)).await;
     let session = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
