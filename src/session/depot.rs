@@ -1,11 +1,11 @@
 use std::collections::VecDeque;
-use std::io::{self, IoSlice};
+use std::io::IoSlice;
 
 use hashbrown::HashMap;
 use strum::IntoEnumIterator;
+use tokio::io::AsyncWriteExt;
 use tracing::debug;
 
-use super::connection::Connection;
 use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};
 use super::types::WatchMode;
 use super::xid::Xid;
@@ -229,26 +229,12 @@ impl Depot {
             .any(|mode| self.watching_paths.contains_key(&(path, mode)))
     }
 
-    pub fn write_operations(&mut self, conn: &mut Connection) -> Result<(), Error> {
+    pub async fn write_to(&mut self, write: &mut (impl AsyncWriteExt + Unpin)) -> Result<(), Error> {
         if !self.has_pending_writes() {
-            if let Err(err) = conn.try_flush() {
-                if err.kind() == io::ErrorKind::WouldBlock {
-                    return Ok(());
-                }
-                return Err(Error::other(err));
-            }
-            return Ok(());
+            write.flush().await.map_err(Error::other)?;
+            return std::future::pending().await;
         }
-        let result = conn.try_write_vectored(self.writing_slices.as_slice());
-        let mut written_bytes = match result {
-            Err(err) => {
-                if err.kind() == io::ErrorKind::WouldBlock {
-                    return Ok(());
-                }
-                return Err(Error::other(err));
-            },
-            Ok(written_bytes) => written_bytes,
-        };
+        let mut written_bytes = write.write_vectored(self.writing_slices.as_slice()).await.map_err(Error::other)?;
         let written_slices = self
             .writing_slices
             .iter()
