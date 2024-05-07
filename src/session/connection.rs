@@ -1,12 +1,11 @@
 use std::io::{Error, ErrorKind, IoSlice, Result};
 use std::pin::Pin;
-use std::ptr;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::buf::BufMut;
 use ignore_result::Ignore;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::{select, time};
 use tracing::{debug, trace};
@@ -26,16 +25,30 @@ use tls::*;
 use crate::deadline::Deadline;
 use crate::endpoint::{EndpointRef, IterableEndpoints};
 
-const NOOP_VTABLE: RawWakerVTable =
-    RawWakerVTable::new(|_| RawWaker::new(ptr::null(), &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
-const NOOP_WAKER: RawWaker = RawWaker::new(ptr::null(), &NOOP_VTABLE);
-
 #[derive(Debug)]
 pub enum Connection {
     Raw(TcpStream),
     #[cfg(feature = "tls")]
     Tls(TlsStream<TcpStream>),
 }
+
+pub trait AsyncReadToBuf: AsyncReadExt {
+    async fn read_to_buf(&mut self, buf: &mut impl BufMut) -> Result<usize>
+    where
+        Self: Unpin, {
+        let chunk = buf.chunk_mut();
+        let read_to = unsafe { std::mem::transmute(chunk.as_uninit_slice_mut()) };
+        let n = self.read(read_to).await?;
+        if n != 0 {
+            unsafe {
+                buf.advance_mut(n);
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl<T> AsyncReadToBuf for T where T: AsyncReadExt {}
 
 impl AsyncRead for Connection {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
@@ -56,6 +69,14 @@ impl AsyncWrite for Connection {
         }
     }
 
+    fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>]) -> Poll<Result<usize>> {
+        match self.get_mut() {
+            Self::Raw(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+            #[cfg(feature = "tls")]
+            Self::Tls(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+        }
+    }
+
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_flush(cx),
@@ -73,86 +94,52 @@ impl AsyncWrite for Connection {
     }
 }
 
+pub struct ConnReader<'a> {
+    conn: &'a mut Connection,
+}
+
+impl AsyncRead for ConnReader<'_> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.get_mut().conn).poll_read(cx, buf)
+    }
+}
+
+pub struct ConnWriter<'a> {
+    conn: &'a mut Connection,
+}
+
+impl AsyncWrite for ConnWriter<'_> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        Pin::new(&mut self.get_mut().conn).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>]) -> Poll<Result<usize>> {
+        Pin::new(&mut self.get_mut().conn).poll_write_vectored(cx, bufs)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.get_mut().conn).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.get_mut().conn).poll_shutdown(cx)
+    }
+}
+
 impl Connection {
     pub fn new_raw(stream: TcpStream) -> Self {
         Self::Raw(stream)
     }
 
+    pub fn split(&mut self) -> (ConnReader<'_>, ConnWriter<'_>) {
+        let reader = ConnReader { conn: self };
+        let writer = ConnWriter { conn: unsafe { std::ptr::read(&reader.conn) } };
+        (reader, writer)
+    }
+
     #[cfg(feature = "tls")]
     pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
         Self::Tls(stream)
-    }
-
-    pub fn try_write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize> {
-        let waker = unsafe { Waker::from_raw(NOOP_WAKER) };
-        let mut context = Context::from_waker(&waker);
-        match Pin::new(self).poll_write_vectored(&mut context, bufs) {
-            Poll::Pending => Err(ErrorKind::WouldBlock.into()),
-            Poll::Ready(result) => result,
-        }
-    }
-
-    pub fn try_read_buf(&mut self, buf: &mut impl BufMut) -> Result<usize> {
-        let waker = unsafe { Waker::from_raw(NOOP_WAKER) };
-        let mut context = Context::from_waker(&waker);
-        let chunk = buf.chunk_mut();
-        let mut read_buf = unsafe { ReadBuf::uninit(chunk.as_uninit_slice_mut()) };
-        match Pin::new(self).poll_read(&mut context, &mut read_buf) {
-            Poll::Pending => Err(ErrorKind::WouldBlock.into()),
-            Poll::Ready(Err(err)) => Err(err),
-            Poll::Ready(Ok(())) => {
-                let n = read_buf.filled().len();
-                unsafe { buf.advance_mut(n) };
-                Ok(n)
-            },
-        }
-    }
-
-    pub async fn readable(&self) -> Result<()> {
-        match self {
-            Self::Raw(stream) => stream.readable().await,
-            #[cfg(feature = "tls")]
-            Self::Tls(stream) => {
-                let (stream, session) = stream.get_ref();
-                if session.wants_read() {
-                    stream.readable().await
-                } else {
-                    // plaintext data are available for read
-                    std::future::ready(Ok(())).await
-                }
-            },
-        }
-    }
-
-    pub async fn writable(&self) -> Result<()> {
-        match self {
-            Self::Raw(stream) => stream.writable().await,
-            #[cfg(feature = "tls")]
-            Self::Tls(stream) => {
-                let (stream, _session) = stream.get_ref();
-                stream.writable().await
-            },
-        }
-    }
-
-    pub fn wants_write(&self) -> bool {
-        match self {
-            Self::Raw(_) => false,
-            #[cfg(feature = "tls")]
-            Self::Tls(stream) => {
-                let (_stream, session) = stream.get_ref();
-                session.wants_write()
-            },
-        }
-    }
-
-    pub fn try_flush(&mut self) -> Result<()> {
-        let waker = unsafe { Waker::from_raw(NOOP_WAKER) };
-        let mut context = Context::from_waker(&waker);
-        match Pin::new(self).poll_flush(&mut context) {
-            Poll::Pending => Err(ErrorKind::WouldBlock.into()),
-            Poll::Ready(result) => result,
-        }
     }
 
     pub async fn command(self, cmd: &str) -> Result<String> {
