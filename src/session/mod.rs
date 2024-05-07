@@ -6,17 +6,17 @@ mod types;
 mod watch;
 mod xid;
 
-use std::io;
 use std::time::Duration;
 
 use ignore_result::Ignore;
+use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
 use tracing::field::display;
 use tracing::{debug, info, instrument, warn, Span};
 
-use self::connection::{Connection, Connector};
+use self::connection::{AsyncReadToBuf, Connection, Connector};
 pub use self::depot::Depot;
 use self::event::WatcherEvent;
 pub use self::request::{
@@ -478,21 +478,6 @@ impl Session {
         Ok(())
     }
 
-    fn read_connection(&mut self, conn: &mut Connection, buf: &mut Vec<u8>) -> Result<(), Error> {
-        match conn.try_read_buf(buf) {
-            Ok(0) => {
-                return Err(Error::ConnectionLoss);
-            },
-            Err(err) => {
-                if err.kind() != io::ErrorKind::WouldBlock {
-                    return Err(Error::other(err));
-                }
-            },
-            _ => {},
-        }
-        Ok(())
-    }
-
     fn handle_recv_buf(&mut self, recved: &mut Vec<u8>, depot: &mut Depot) -> Result<(), Error> {
         let mut reading = recved.as_slice();
         if self.session_state == SessionState::Disconnected {
@@ -522,14 +507,15 @@ impl Session {
         let mut pinged = false;
         let mut tick = time::interval(self.tick_timeout);
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let (mut reader, mut writer) = conn.split();
         while !(self.session_state.is_connected() && depot.is_empty()) {
             select! {
-                _ = conn.readable() => {
-                    self.read_connection(conn, buf)?;
-                    self.handle_recv_buf(buf, depot)?;
+                r = reader.read_to_buf(buf) => match r.map_err(Error::other)? {
+                    0 => return Err(Error::ConnectionLoss),
+                    _ => self.handle_recv_buf(buf, depot)?,
                 },
-                _ = conn.writable(), if depot.has_pending_writes() || conn.wants_write() => {
-                    depot.write_operations(conn)?;
+                r = depot.write_to(&mut writer) => {
+                    r?;
                     self.last_send = Instant::now();
                 },
                 now = tick.tick() => {
@@ -543,7 +529,6 @@ impl Session {
                 // "zookeeper.enforce.auth.enabled".
                 pinged = true;
                 self.send_ping(depot, Instant::now());
-                depot.write_operations(conn)?;
             }
         }
         Ok(())
@@ -574,19 +559,20 @@ impl Session {
         let mut err = None;
         let mut channel_halted = false;
         depot.start();
-        while !(channel_halted && depot.is_empty() && !conn.wants_write()) {
+        let (mut reader, mut writer) = conn.split();
+        while !(channel_halted && depot.is_empty()) {
             select! {
                 Some(endpoint) = Self::poll(&mut seek_for_writable), if seek_for_writable.is_some() => {
                     seek_for_writable = None;
                     err = Some(Error::with_message(format!("encounter writable server {}", endpoint)));
                     channel_halted = true;
                 },
-                _ = conn.readable() => {
-                    self.read_connection(conn, buf)?;
-                    self.handle_recv_buf(buf, depot)?;
+                r = reader.read_to_buf(buf) => match r.map_err(Error::other)? {
+                    0 => return Err(Error::ConnectionLoss),
+                    _ => self.handle_recv_buf(buf, depot)?,
                 },
-                _ = conn.writable(), if depot.has_pending_writes() || conn.wants_write() => {
-                    depot.write_operations(conn)?;
+                r = depot.write_to(&mut writer) => {
+                    r?;
                     self.last_send = Instant::now();
                 },
                 r = requester.recv(), if !channel_halted => {
@@ -600,8 +586,6 @@ impl Session {
                         continue;
                     };
                     depot.push_session(operation);
-                    depot.write_operations(conn)?;
-                    self.last_send = Instant::now();
                 },
                 r = unwatch_requester.recv() => if let Some((watcher_id, responser)) = r {
                     self.watch_manager.remove_watcher(watcher_id, responser, depot);
@@ -612,11 +596,11 @@ impl Session {
                     }
                     if self.last_ping.is_none() && now >= self.last_send + self.ping_timeout {
                         self.send_ping(depot, now);
-                        depot.write_operations(conn)?;
                     }
                 },
             }
         }
+        writer.flush().await.map_err(Error::other)?;
         Err(err.unwrap_or(Error::ClientClosed))
     }
 
