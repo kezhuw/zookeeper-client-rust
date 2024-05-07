@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2024-05-07
+### Added
+- feat: support SASL authentication ([#46](https://github.com/kezhuw/zookeeper-client-rust/pull/46))
+
+### Fixed
+- fix: AuthFailed not reported eagerly in Connector::connect ([#45](https://github.com/kezhuw/zookeeper-client-rust/pull/45))
+
+### Changed
+- refactor: toggle TLS support with feature gate ([#47](https://github.com/kezhuw/zookeeper-client-rust/pull/47))
+- refactor!: refactor OtherError to CustomError ([b71aa2c](https://github.com/kezhuw/zookeeper-client-rust/commit/b71aa2c4738d436ada38549fdd6b1083b9eb6d5a))
+- docs: state that no session disconnected event before closed ([#48](https://github.com/kezhuw/zookeeper-client-rust/pull/48))
+
 ## [0.7.1] - 2024-04-01
 ### Changed
 - fix: can not connect to ZooKeeper 3.3 ([c031d8e](https://github.com/kezhuw/zookeeper-client-rust/commit/c031d8ee7663a4eecdbba059ae59e9d5f72d1243))
