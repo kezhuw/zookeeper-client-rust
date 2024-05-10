@@ -3,21 +3,24 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use async_io::Timer;
+use async_net::TcpStream;
+use asyncs::select;
 use bytes::buf::BufMut;
+use futures::io::BufReader;
+use futures::prelude::*;
+use futures_lite::AsyncReadExt;
 use ignore_result::Ignore;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
-use tokio::net::TcpStream;
-use tokio::{select, time};
 use tracing::{debug, trace};
 
 #[cfg(feature = "tls")]
 mod tls {
     pub use std::sync::Arc;
 
+    pub use futures_rustls::client::TlsStream;
+    pub use futures_rustls::TlsConnector;
     pub use rustls::pki_types::ServerName;
     pub use rustls::ClientConfig;
-    pub use tokio_rustls::client::TlsStream;
-    pub use tokio_rustls::TlsConnector;
 }
 #[cfg(feature = "tls")]
 use tls::*;
@@ -51,7 +54,7 @@ pub trait AsyncReadToBuf: AsyncReadExt {
 impl<T> AsyncReadToBuf for T where T: AsyncReadExt {}
 
 impl AsyncRead for Connection {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "tls")]
@@ -85,11 +88,11 @@ impl AsyncWrite for Connection {
         }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
         match self.get_mut() {
-            Self::Raw(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::Raw(stream) => Pin::new(stream).poll_close(cx),
             #[cfg(feature = "tls")]
-            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_close(cx),
         }
     }
 }
@@ -99,7 +102,7 @@ pub struct ConnReader<'a> {
 }
 
 impl AsyncRead for ConnReader<'_> {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize>> {
         Pin::new(&mut self.get_mut().conn).poll_read(cx, buf)
     }
 }
@@ -121,8 +124,8 @@ impl AsyncWrite for ConnWriter<'_> {
         Pin::new(&mut self.get_mut().conn).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        Pin::new(&mut self.get_mut().conn).poll_shutdown(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.get_mut().conn).poll_close(cx)
     }
 }
 
@@ -142,13 +145,14 @@ impl Connection {
         Self::Tls(stream)
     }
 
-    pub async fn command(self, cmd: &str) -> Result<String> {
-        let mut stream = BufStream::new(self);
-        stream.write_all(cmd.as_bytes()).await?;
-        stream.flush().await?;
+    pub async fn command(mut self, cmd: &str) -> Result<String> {
+        // let mut stream = BufStream::new(self);
+        self.write_all(cmd.as_bytes()).await?;
+        self.flush().await?;
         let mut line = String::new();
-        stream.read_line(&mut line).await?;
-        stream.shutdown().await.ignore();
+        let mut reader = BufReader::new(self);
+        reader.read_line(&mut line).await?;
+        reader.close().await.ignore();
         Ok(line)
     }
 
@@ -212,7 +216,7 @@ impl Connector {
         }
         select! {
             _ = unsafe { Pin::new_unchecked(deadline) } => Err(Error::new(ErrorKind::TimedOut, "deadline exceed")),
-            _ = time::sleep(self.timeout) => Err(Error::new(ErrorKind::TimedOut, format!("connection timeout{:?} exceed", self.timeout))),
+            _ = Timer::after(self.timeout) => Err(Error::new(ErrorKind::TimedOut, format!("connection timeout{:?} exceed", self.timeout))),
             r = TcpStream::connect((endpoint.host, endpoint.port)) => {
                 match r {
                     Err(err) => Err(err),
@@ -255,10 +259,10 @@ impl Connector {
                     "fails to contact writable server from endpoints {:?}",
                     endpoints.endpoints()
                 );
-                time::sleep(timeout).await;
+                Timer::after(timeout).await;
                 timeout = max_timeout.min(timeout * 2);
             } else {
-                time::sleep(Duration::from_millis(5)).await;
+                Timer::after(Duration::from_millis(5)).await;
             }
         }
         None
@@ -273,7 +277,7 @@ mod tests {
     use crate::deadline::Deadline;
     use crate::endpoint::EndpointRef;
 
-    #[tokio::test]
+    #[asyncs::test]
     async fn raw() {
         let connector = Connector::new();
         let endpoint = EndpointRef::new("host1", 2181, true);

@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use const_format::formatcp;
 use either::{Either, Left, Right};
+use futures::channel::mpsc;
 use ignore_result::Ignore;
 use thiserror::Error;
-use tokio::sync::mpsc;
 use tracing::instrument;
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
@@ -322,9 +322,9 @@ impl Client {
 
     fn send_marshalled_request(&self, request: MarshalledRequest) -> StateReceiver {
         let (operation, receiver) = SessionOperation::new_marshalled(request).with_responser();
-        if let Err(mpsc::error::SendError(operation)) = self.requester.send(operation) {
+        if let Err(err) = self.requester.unbounded_send(operation) {
             let state = self.state();
-            operation.responser.send(Err(state.to_error()));
+            err.into_inner().responser.send(Err(state.to_error()));
         }
         receiver
     }
@@ -514,7 +514,7 @@ impl Client {
 
     // TODO: move these to session side so to eliminate owned Client and String.
     fn delete_background(self, path: String) {
-        tokio::spawn(async move {
+        asyncs::spawn(async move {
             self.delete_foreground(&path).await;
         });
     }
@@ -524,7 +524,7 @@ impl Client {
     }
 
     fn delete_ephemeral_background(self, prefix: String, unique: bool) {
-        tokio::spawn(async move {
+        asyncs::spawn(async move {
             let (parent, tree, name) = util::split_path(&prefix);
             let mut children = Self::retry_on_connection_loss(|| self.list_children(parent)).await?;
             if unique {
@@ -1673,13 +1673,13 @@ impl Connector {
         let mut buf = Vec::with_capacity(4096);
         let mut depot = Depot::new();
         let conn = session.start(&mut endpoints, &mut buf, &mut depot).await?;
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::unbounded();
         let session_info = session.session.clone();
         let session_timeout = session.session_timeout;
         let mut state_watcher = StateWatcher::new(state_receiver);
         // Consume all state changes so far.
         state_watcher.state();
-        tokio::spawn(async move {
+        asyncs::spawn(async move {
             session.serve(endpoints, conn, buf, depot, receiver).await;
         });
         let client =
@@ -2270,7 +2270,7 @@ mod tests {
         .is_equal_to(Error::BadArguments(&"directory node must not be sequential"));
     }
 
-    #[test_log::test(tokio::test)]
+    #[test_log::test(asyncs::test)]
     async fn session_last_zxid_seen() {
         use testcontainers::clients::Cli as DockerCli;
         use testcontainers::core::{Healthcheck, WaitFor};

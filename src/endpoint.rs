@@ -1,6 +1,8 @@
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
+use async_io::Timer;
+
 use crate::chroot::Chroot;
 use crate::error::Error;
 use crate::util::{Ref, ToRef};
@@ -219,7 +221,7 @@ impl IterableEndpoints {
     async fn delay(&self, index: Index, max_delay: Duration) {
         let timeout = max_delay.min(Self::timeout(index, self.endpoints.len()));
         if timeout != Duration::ZERO {
-            tokio::time::sleep(timeout).await;
+            Timer::after(timeout).await;
         }
     }
 
@@ -336,7 +338,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[asyncs::test]
     async fn test_iterable_endpoints_next() {
         use std::time::Duration;
 

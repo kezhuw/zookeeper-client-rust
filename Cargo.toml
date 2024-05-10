@@ -23,7 +23,6 @@ sasl-gssapi = ["rsasl/gssapi"]
 
 [dependencies]
 bytes = "1.1.0"
-tokio = {version = "1.15.0", features = ["full"]}
 thiserror = "1.0.30"
 strum = { version = "0.23", features = ["derive"] }
 num_enum = "0.5.6"
@@ -39,13 +38,18 @@ rustls = { version =  "0.23.2", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 webpki-roots = { version = "0.26.1", optional = true }
 derive-where = "1.2.7"
-tokio-rustls = "0.26.0"
 fastrand = "2.0.2"
 tracing = "0.1.40"
 rsasl = { version = "2.0.1", default-features = false, features = ["provider", "config_builder", "registry_static", "std"], optional = true }
 md5 = { version = "0.7.0", optional = true }
 hex = { version = "0.4.3", optional = true }
 linkme = { version = "0.2", optional = true }
+async-io = "2.3.2"
+futures = "0.3.30"
+async-net = "2.0.0"
+futures-rustls = "0.26.0"
+futures-lite = "2.3.0"
+asyncs = "0.3.0"
 
 [dev-dependencies]
 test-log = { version = "0.2.15", features = ["log", "trace"] }
@@ -59,9 +63,15 @@ assert_matches = "1.5.0"
 tempfile = "3.6.0"
 rcgen = { version = "0.12.1", features = ["default", "x509-parser"] }
 serial_test = "3.0.0"
+asyncs = { version = "0.3.0", features = ["test"] }
+blocking = "1.6.0"
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
 
 [package.metadata.docs.rs]
 all-features = true
+
+[profile.dev]
+# Need this for linkme crate to work for spawns in macOS
+lto = "thin"
