@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, future};
 
 use assert_matches::assert_matches;
 use assertor::*;
+use async_io::Timer;
+use asyncs::select;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::Rng;
@@ -17,7 +20,6 @@ use test_case::test_case;
 use testcontainers::clients::Cli as DockerCli;
 use testcontainers::core::{Container, Healthcheck, LogStream, RunnableImage, WaitFor};
 use testcontainers::images::generic::GenericImage;
-use tokio::select;
 use zookeeper_client as zk;
 
 static ZK_IMAGE_TAG: &'static str = "3.9.0";
@@ -129,9 +131,9 @@ async fn example() {
     assert_eq!(session_event.session_state, zk::SessionState::Closed);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_example() {
-    tokio::spawn(async move { example().await }).await.unwrap()
+    asyncs::spawn(async move { example().await }).await.unwrap()
 }
 
 async fn connect(cluster: &Cluster, chroot: &str) -> zk::Client {
@@ -155,7 +157,7 @@ async fn connect(cluster: &Cluster, chroot: &str) -> zk::Client {
     client.chroot(chroot).unwrap()
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_connect_nohosts() {
     assert_that!(zk::Client::connector()
         .session_timeout(Duration::from_secs(24 * 3600))
@@ -166,7 +168,7 @@ async fn test_connect_nohosts() {
     .is_equal_to(zk::Error::NoHosts);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_connect_timeout() {
     assert_that!(zk::Client::connector()
         .session_timeout(Duration::from_secs(1))
@@ -176,14 +178,14 @@ async fn test_connect_timeout() {
     .is_equal_to(zk::Error::Timeout);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_connect_session_expired() {
     let cluster = Cluster::new().await;
     let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
     let timeout = client.session_timeout();
     let session = client.into_session();
 
-    tokio::time::sleep(timeout * 2).await;
+    Timer::after(timeout * 2).await;
 
     assert_that!(cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err())
         .is_equal_to(zk::Error::SessionExpired);
@@ -502,7 +504,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 
             tasks.push((
                 id,
-                tokio::task::spawn_blocking({
+                blocking::unblock({
                     let docker = self.docker.clone();
                     move || unsafe { std::mem::transmute::<_, Container<'static, GenericImage>>(docker.run(image)) }
                 }),
@@ -510,7 +512,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         }
         for task in tasks {
             let id = task.0;
-            let container = task.1.await.unwrap();
+            let container = task.1.await;
             self.containers.push((id, container));
         }
     }
@@ -604,7 +606,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 #[test_case("/"; "no_chroot")]
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_multi(chroot: &str) {
     let cluster = Cluster::new().await;
     let client = connect(&cluster, chroot).await;
@@ -705,7 +707,7 @@ async fn test_multi(chroot: &str) {
     assert_that!(results).is_empty();
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_multi_async_order() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -730,7 +732,7 @@ async fn test_multi_async_order() {
     assert_that!(stat).is_equal_to(set_stat);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_check_writer() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -762,7 +764,7 @@ async fn test_check_writer() {
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_lock_shared(chroot: &str) {
     let cluster = Cluster::new().await;
 
@@ -777,7 +779,7 @@ async fn test_lock_shared(chroot: &str) {
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_lock_custom(chroot: &str) {
     let cluster = Cluster::new().await;
 
@@ -788,7 +790,7 @@ async fn test_lock_custom(chroot: &str) {
 
 #[test_case("/x"; "chroot_x")]
 #[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_lock_curator(chroot: &str) {
     let cluster = Cluster::new().await;
 
@@ -797,7 +799,7 @@ async fn test_lock_curator(chroot: &str) {
     test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_lock_no_node() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -805,7 +807,7 @@ async fn test_lock_no_node() {
     assert_eq!(client.lock(prefix, b"", zk::Acls::anyone_all()).await.unwrap_err(), zk::Error::NoNode);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_lock_curator_filter() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -831,7 +833,7 @@ async fn test_lock_with_path(
     let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
 
     let lock1 = client1.lock(lock1_prefix, b"", options.clone()).await.unwrap();
-    let contender2 = tokio::spawn(async move {
+    let contender2 = asyncs::spawn(async move {
         let lock2 = client2.lock(lock2_prefix, b"", options).await.unwrap();
         let (data, stat) = lock2.client().get_data("/lock-path").await.unwrap();
         lock2.set_data("/lock-path", lock2.lock_path().as_bytes(), None).await.unwrap();
@@ -840,7 +842,7 @@ async fn test_lock_with_path(
     });
 
     // Let lock2 get chance to chime in.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    Timer::after(Duration::from_millis(100)).await;
 
     let lock1_path = lock1.lock_path().to_string();
 
@@ -860,12 +862,12 @@ async fn test_lock_with_path(
     let lock2_path = String::from_utf8(data).unwrap();
 
     // Let background delete get chance to chime in.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    Timer::after(Duration::from_millis(100)).await;
     assert_that!(client1.check_stat(&lock1_path).await.unwrap()).is_equal_to(None);
     assert_that!(client1.check_stat(&lock2_path).await.unwrap()).is_equal_to(None);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_no_node() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -883,7 +885,7 @@ async fn test_no_node() {
     );
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_request_order() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -911,7 +913,7 @@ async fn test_request_order() {
     assert_that!(get_child_data.await).is_equal_to(Err(zk::Error::NoNode));
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_data_node() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -930,7 +932,7 @@ async fn test_data_node() {
     assert_eq!(client.check_stat(path).await.unwrap(), None);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_create_root() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await.chroot("/a").unwrap();
@@ -940,7 +942,7 @@ async fn test_create_root() {
         .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_create_sequential() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -964,7 +966,7 @@ async fn test_create_sequential() {
     assert_eq!((data, stat2), client.get_data(&path2).await.unwrap());
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_create_ttl() {
     let cluster = Cluster::with_properties(vec![
         "-Dzookeeper.extendedTypesEnabled=true",
@@ -976,13 +978,13 @@ async fn test_create_ttl() {
     let ttl_options = PERSISTENT_OPEN.clone().with_ttl(Duration::from_millis(500));
     client.create("/ttl", &vec![], &ttl_options).await.unwrap();
     client.create("/ttl/child", &vec![], PERSISTENT_OPEN).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    Timer::after(Duration::from_secs(4)).await;
     client.delete("/ttl/child", None).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    Timer::after(Duration::from_secs(4)).await;
     assert_that!(client.delete("/ttl", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_create_container() {
     let cluster = Cluster::with_properties(vec![
         "-Dzookeeper.extendedTypesEnabled=true",
@@ -993,15 +995,15 @@ async fn test_create_container() {
 
     client.create("/container", &vec![], &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all())).await.unwrap();
     client.create("/container/child", &vec![], PERSISTENT_OPEN).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    Timer::after(Duration::from_secs(4)).await;
     client.delete("/container/child", None).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    Timer::after(Duration::from_secs(4)).await;
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
 #[test_case("3.3"; "3.3")]
 #[test_case("3.4"; "3.4")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_zookeeper_old_server(tag: &'static str) {
     let cluster = Cluster::with_options(ClusterOptions { tag, ..Default::default() }, Some(Encryption::Raw)).await;
 
@@ -1037,7 +1039,7 @@ async fn test_zookeeper_old_server(tag: &'static str) {
     assert_eq!(event.event_type, zk::EventType::NodeDeleted);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_mkdir() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1053,7 +1055,7 @@ async fn test_mkdir() {
     assert_that!(_client.mkdir("/a/b/c", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_descendants_number() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1101,7 +1103,7 @@ where
     }
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_ephemerals() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1163,7 +1165,7 @@ async fn test_ephemerals() {
     assert_eq!(vec!["/"], child_root_client.list_ephemerals("/").await.unwrap().into_sorted());
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_chroot() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1208,7 +1210,7 @@ async fn test_chroot() {
     assert_eq!(relative_grandchild_event.path, relative_grandchild_path);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_auth() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1230,7 +1232,7 @@ async fn test_auth() {
     assert!(authed_users.contains(&authed_user));
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_no_auth() {
     let cluster = Cluster::with_options(Default::default(), Some(Encryption::Raw)).await;
     let client = cluster.client(None).await;
@@ -1260,7 +1262,7 @@ async fn test_no_auth() {
     assert_eq!(no_auth_client.set_data("/acl_test_2", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 #[should_panic(expected = "AuthFailed")]
 async fn test_auth_failed() {
     let cluster = Cluster::with_options(
@@ -1279,7 +1281,7 @@ async fn test_auth_failed() {
     cluster.client(None).await;
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_delete() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1297,7 +1299,7 @@ async fn test_delete() {
     client.delete(path, Some(stat.version)).await.unwrap();
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_oneshot_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1469,7 +1471,7 @@ async fn test_oneshot_watcher() {
     eprintln!("node deletion done");
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_config_watch() {
     let cluster = Cluster::new().await;
 
@@ -1485,7 +1487,7 @@ async fn test_config_watch() {
     assert_eq!(event.path, "/zookeeper/config");
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_persistent_watcher_passive_remove() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1519,7 +1521,7 @@ async fn test_persistent_watcher_passive_remove() {
     assert_eq!(child_event.path, "/");
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_fail_watch_with_multiple_unwatching() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1540,11 +1542,11 @@ async fn test_fail_watch_with_multiple_unwatching() {
 
     select! {
         state = state_watcher.changed() => panic!("expect no state update, but got {state}"),
-        _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+        _ = Timer::after(Duration::from_millis(10)) => {},
     }
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_fail_watch_with_concurrent_passive_remove() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1564,7 +1566,7 @@ async fn test_fail_watch_with_concurrent_passive_remove() {
     assert_that!(event.path).is_same_string_to("/a");
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_persistent_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1579,7 +1581,7 @@ async fn test_persistent_watcher() {
     let path_persistent_watcher = client.watch(path, zk::AddWatchMode::PersistentRecursive).await.unwrap();
     drop(root_recursive_watcher);
     path_persistent_watcher.remove().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    Timer::after(Duration::from_millis(10)).await;
 
     let mut root_recursive_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
     let mut path_recursive_watcher = client.watch(path, zk::AddWatchMode::PersistentRecursive).await.unwrap();
@@ -1684,7 +1686,7 @@ async fn test_persistent_watcher() {
     assert_eq!(event, path_persistent_watcher.changed().await);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_watcher_coexist_on_same_path() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1743,7 +1745,7 @@ async fn test_watcher_coexist_on_same_path() {
 }
 
 // Use "current_thread" explicitly.
-#[test_log::test(tokio::test(flavor = "current_thread"))]
+#[test_log::test(asyncs::test(parallelism = 1))]
 async fn test_remove_no_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1752,7 +1754,7 @@ async fn test_remove_no_watcher() {
     let create = client.create("/a", &vec![], PERSISTENT_OPEN);
 
     // Let session task issue `create` request first, oneshot watch will be removed by server.
-    tokio::task::yield_now().await;
+    asyncs::task::yield_now().await;
 
     // Issue `RemoveWatches` which likely happen before watch event notification as it involves
     // several IO paths.
@@ -1761,12 +1763,12 @@ async fn test_remove_no_watcher() {
 
     let (_, _, data_watcher) = client.get_and_watch_data("/a").await.unwrap();
     let delete = client.delete("/a", None);
-    tokio::task::yield_now().await;
+    asyncs::task::yield_now().await;
     assert_that!(data_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
     delete.await.unwrap();
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_session_event() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1797,27 +1799,25 @@ async fn test_session_event() {
     assert_eq!(client.get_data("/a/no-exist-path").await.unwrap_err(), zk::Error::SessionExpired);
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_state_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
     let mut state_watcher = client.state_watcher();
     select! {
-        biased;
+        default => {},
         _ = state_watcher.changed() => panic!("expect no state update"),
-        _ = future::ready(()) => {},
     }
     assert_eq!(zk::SessionState::SyncConnected, state_watcher.state());
     drop(client);
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
     select! {
-        biased;
         _ = state_watcher.changed() => panic!("expect no state update after terminal state"),
-        _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+        _ = Timer::after(Duration::from_millis(10)) => {},
     }
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_client_drop() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1829,7 +1829,7 @@ async fn test_client_drop() {
     cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err();
 }
 
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_client_detach() {
     let cluster = Cluster::new().await;
     let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
@@ -1842,7 +1842,7 @@ async fn test_client_detach() {
 }
 
 #[cfg(feature = "sasl-digest-md5")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_sasl_digest_md5() {
     let cluster = Cluster::with_options(
         ClusterOptions {
@@ -1922,7 +1922,7 @@ fn generate_client_cert(cn: &str) -> Certificate {
 }
 
 #[cfg(feature = "tls")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test)]
 async fn test_tls() {
     let cluster = Cluster::with_options(Default::default(), Some(Encryption::Tls)).await;
     let client = cluster.client(None).await;
@@ -1944,7 +1944,7 @@ trait StateWaiter {
 impl StateWaiter for zk::StateWatcher {
     async fn wait(&mut self, expected: zk::SessionState, timeout: Option<Duration>) {
         let timeout = timeout.unwrap_or_else(|| Duration::from_secs(60));
-        let mut sleep = tokio::time::sleep(timeout);
+        let mut sleep = Timer::after(timeout);
         let mut got = self.state();
         loop {
             if got == expected {
@@ -1961,7 +1961,7 @@ impl StateWaiter for zk::StateWatcher {
 }
 
 #[cfg(target_os = "linux")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test(send = false))]
 #[serial_test::serial(network_host)]
 async fn test_readonly_plaintext() {
     test_readonly(Encryption::Raw).await
@@ -1969,7 +1969,7 @@ async fn test_readonly_plaintext() {
 
 #[cfg(feature = "tls")]
 #[cfg(target_os = "linux")]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test(send = false))]
 #[serial_test::serial(network_host)]
 async fn test_readonly_tls() {
     test_readonly(Encryption::Tls).await
@@ -2043,7 +2043,7 @@ async fn test_readonly(encryption: Encryption) {
 /// * https://docs.docker.com/network/links/
 #[cfg(target_os = "linux")]
 #[serial_test::serial(network_host)]
-#[test_log::test(tokio::test)]
+#[test_log::test(asyncs::test(send = false))]
 async fn test_update_ensemble() {
     let _cluster = Cluster::with_options(
         ClusterOptions {

@@ -3,8 +3,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BufMut};
+use futures::channel::oneshot;
 use ignore_result::Ignore;
-use tokio::sync::oneshot;
 
 use super::types::WatchMode;
 use super::watch::WatchReceiver;

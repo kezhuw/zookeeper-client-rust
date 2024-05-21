@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 use std::io::IoSlice;
 
+use futures_lite::io::AsyncWriteExt;
 use hashbrown::HashMap;
 use strum::IntoEnumIterator;
-use tokio::io::AsyncWriteExt;
 use tracing::debug;
 
 use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};

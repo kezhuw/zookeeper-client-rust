@@ -1,7 +1,8 @@
+use futures::channel::{mpsc, oneshot};
+use futures::StreamExt;
 use hashbrown::HashMap;
 use hashlink::LinkedHashSet;
 use ignore_result::Ignore;
-use tokio::sync::{mpsc, oneshot};
 
 use super::depot::Depot;
 use super::event::WatcherEvent;
@@ -69,7 +70,7 @@ impl OneshotReceiver {
         let id = self.id;
         let unwatch = unsafe { self.into_unwatch() };
         let (sender, receiver) = oneshot::channel();
-        unwatch.send((id, StateResponser::new(sender))).ignore();
+        unwatch.unbounded_send((id, StateResponser::new(sender))).ignore();
         let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
         receiver.await?;
         Ok(())
@@ -78,7 +79,7 @@ impl OneshotReceiver {
 
 impl Drop for OneshotReceiver {
     fn drop(&mut self) {
-        self.unwatch.send((self.id, Default::default())).ignore();
+        self.unwatch.unbounded_send((self.id, Default::default())).ignore();
     }
 }
 
@@ -106,14 +107,14 @@ impl PersistentReceiver {
     }
 
     pub async fn recv(&mut self) -> WatchedEvent {
-        self.receiver.recv().await.unwrap()
+        self.receiver.next().await.unwrap()
     }
 
     pub async fn remove(self) -> Result<(), Error> {
         let id = self.id;
         let unwatch = unsafe { self.into_unwatch() };
         let (sender, receiver) = oneshot::channel();
-        unwatch.send((id, StateResponser::new(sender))).ignore();
+        unwatch.unbounded_send((id, StateResponser::new(sender))).ignore();
         let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
         receiver.await?;
         Ok(())
@@ -122,7 +123,7 @@ impl PersistentReceiver {
 
 impl Drop for PersistentReceiver {
     fn drop(&mut self) {
-        self.unwatch.send((self.id, Default::default())).ignore();
+        self.unwatch.unbounded_send((self.id, Default::default())).ignore();
     }
 }
 
@@ -195,7 +196,7 @@ impl Watch {
                     let sender = watcher.sender.into_oneshot();
                     sender.send(event.to_value()).ignore();
                 },
-                WatchSender::Persistent(sender) => sender.send(event.to_value()).ignore(),
+                WatchSender::Persistent(sender) => sender.unbounded_send(event.to_value()).ignore(),
             }
         }
     }
@@ -219,7 +220,7 @@ pub struct WatchManager {
 
 impl WatchManager {
     pub fn new() -> (Self, mpsc::UnboundedReceiver<(WatcherId, StateResponser)>) {
-        let (unwatch_sender, unwatch_receiver) = mpsc::unbounded_channel();
+        let (unwatch_sender, unwatch_receiver) = mpsc::unbounded();
         let manager = WatchManager {
             cached_paths: LinkedHashSet::with_capacity(1000),
             cached_watches: Vec::with_capacity(100),
@@ -265,7 +266,7 @@ impl WatchManager {
 
     fn add_persistent_watch(&mut self, path: &str, kind: WatcherKind) -> PersistentReceiver {
         let id = self.new_watcher_id();
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::unbounded();
         let watcher = Watcher { id, kind, sender: WatchSender::Persistent(sender) };
         self.add_watch(path, watcher);
         PersistentReceiver::new(id, receiver, self.unwatch_sender.clone())
@@ -354,7 +355,7 @@ impl WatchManager {
             path = unsafe { path.get_unchecked(..i) };
             if let Some(watch) = self.watches.get_mut(path) {
                 for watcher in watch.iter().filter(|watcher| watcher.kind == WatcherKind::PersistentRecursive) {
-                    watcher.sender.get_persistent().send(event.to_value()).ignore();
+                    watcher.sender.get_persistent().unbounded_send(event.to_value()).ignore();
                     has_watch = true;
                 }
             }

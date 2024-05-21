@@ -6,13 +6,14 @@ mod types;
 mod watch;
 mod xid;
 
-use std::time::Duration;
+use std::pin::pin;
+use std::time::{Duration, Instant};
 
+use async_io::Timer;
+use asyncs::select;
+use futures::channel::mpsc;
+use futures::{AsyncWriteExt, StreamExt};
 use ignore_result::Ignore;
-use tokio::io::AsyncWriteExt;
-use tokio::select;
-use tokio::sync::mpsc;
-use tokio::time::{self, Instant};
 use tracing::field::display;
 use tracing::{debug, info, instrument, warn, Span};
 
@@ -109,7 +110,7 @@ impl Builder {
         Self { connection_timeout, ..self }
     }
 
-    pub fn build(self) -> Result<(Session, tokio::sync::watch::Receiver<SessionState>), Error> {
+    pub fn build(self) -> Result<(Session, asyncs::sync::watch::Receiver<SessionState>), Error> {
         let session = match self.session {
             Some(session) => {
                 if session.is_readonly() {
@@ -132,7 +133,7 @@ impl Builder {
         let connector = Connector::with_tls(self.tls.unwrap_or_default().into_config()?);
         #[cfg(not(feature = "tls"))]
         let connector = Connector::new();
-        let (state_sender, state_receiver) = tokio::sync::watch::channel(SessionState::Disconnected);
+        let (state_sender, state_receiver) = asyncs::sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
         let (watch_manager, unwatch_receiver) = WatchManager::new();
         let mut session = Session {
@@ -195,7 +196,7 @@ pub struct Session {
     sasl_session: Option<SaslSession>,
 
     pub authes: Vec<MarshalledRequest>,
-    state_sender: tokio::sync::watch::Sender<SessionState>,
+    state_sender: asyncs::sync::watch::Sender<SessionState>,
 
     watch_manager: WatchManager,
     unwatch_receiver: Option<mpsc::UnboundedReceiver<(WatcherId, StateResponser)>>,
@@ -213,7 +214,7 @@ impl Session {
 
     async fn close_requester<T: RequestOperation>(mut requester: mpsc::UnboundedReceiver<T>, err: &Error) {
         requester.close();
-        while let Some(operation) = requester.recv().await {
+        while let Some(operation) = requester.next().await {
             let responser = operation.into_responser();
             responser.send(Err(err.clone()));
         }
@@ -505,9 +506,8 @@ impl Session {
         depot: &mut Depot,
     ) -> Result<(), Error> {
         let mut pinged = false;
-        let mut tick = time::interval(self.tick_timeout);
-        tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         let (mut reader, mut writer) = conn.split();
+        let mut tick = pin!(Timer::interval(self.tick_timeout));
         while !(self.session_state.is_connected() && depot.is_empty()) {
             select! {
                 r = reader.read_to_buf(buf) => match r.map_err(Error::other)? {
@@ -518,7 +518,7 @@ impl Session {
                     r?;
                     self.last_send = Instant::now();
                 },
-                now = tick.tick() => {
+                now = tick.as_mut() => {
                     if now >= self.last_recv + self.connector.timeout() {
                         return Err(Error::with_message(format!("no response from connection in {}ms", self.connector.timeout().as_millis())));
                     }
@@ -554,8 +554,7 @@ impl Session {
         self.sasl_session.take();
         let mut seek_for_writable =
             if self.session.readonly { Some(self.connector.clone().seek_for_writable(endpoints)) } else { None };
-        let mut tick = time::interval(self.tick_timeout);
-        tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let mut tick = pin!(Timer::interval(self.tick_timeout));
         let mut err = None;
         let mut channel_halted = false;
         depot.start();
@@ -575,7 +574,7 @@ impl Session {
                     r?;
                     self.last_send = Instant::now();
                 },
-                r = requester.recv(), if !channel_halted => {
+                r = requester.next(), if !channel_halted => {
                     let operation = if let Some(operation) = r {
                         operation
                     } else {
@@ -587,10 +586,10 @@ impl Session {
                     };
                     depot.push_session(operation);
                 },
-                r = unwatch_requester.recv() => if let Some((watcher_id, responser)) = r {
+                r = unwatch_requester.next() => if let Some((watcher_id, responser)) = r {
                     self.watch_manager.remove_watcher(watcher_id, responser, depot);
                 },
-                now = tick.tick() => {
+                now = tick.as_mut() => {
                     if now >= self.last_recv + self.connector.timeout() {
                         return Err(Error::with_message(format!("no response from connection in {}ms", self.connector.timeout().as_millis())));
                     }

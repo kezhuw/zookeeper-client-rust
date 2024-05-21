@@ -1,4 +1,4 @@
-use tokio::sync::watch;
+use asyncs::sync::watch;
 
 use crate::chroot::OwnedChroot;
 use crate::error::Error;
@@ -25,11 +25,11 @@ impl StateWatcher {
     ///
     /// This method will block indefinitely after one of terminal states consumed.
     pub async fn changed(&mut self) -> SessionState {
-        if self.receiver.changed().await.is_err() {
+        match self.receiver.changed().await {
+            Ok(changed) => *changed,
             // Terminal state must be delivered.
-            std::future::pending().await
+            Err(_) => std::future::pending().await,
         }
-        self.state()
     }
 
     /// Returns but not consumes most recently state.
