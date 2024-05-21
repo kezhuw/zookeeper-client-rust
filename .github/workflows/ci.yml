@@ -76,6 +76,10 @@ jobs:
     - name: Install krb5
       run: |
         sudo apt install -y libkrb5-dev
+    # dtolnay/linkme#88
+    # rust-lang/rust#124129
+    - name: Disable rust-lld
+      run: echo RUSTFLAGS=${RUSTFLAGS}\ -Zlinker-features=-lld >> $GITHUB_ENV
     - run: cargo build --all-features --verbose
     - name: Run tests
       run: LLVM_PROFILE_FILE="zookeeper-client-%p-%m.profraw" cargo test --all-features --verbose -- --nocapture
