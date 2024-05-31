@@ -4,6 +4,7 @@
 [![github-ci](https://github.com/kezhuw/zookeeper-client-rust/actions/workflows/ci.yml/badge.svg?event=push)](https://github.com/kezhuw/zookeeper-client-rust/actions)
 [![mit-license](https://img.shields.io/github/license/kezhuw/zookeeper-client-rust)](LICENSE)
 [![codecov](https://codecov.io/gh/kezhuw/zookeeper-client-rust/branch/master/graph/badge.svg?token=C98TXPU5ZZ)](https://codecov.io/gh/kezhuw/zookeeper-client-rust)
+[![Crates.io Total Downloads](https://img.shields.io/crates/d/zookeeper-client)](https://crates.io/keywords/zookeeper?sort=downloads)
 
 ZooKeeper client writes in async rust.
 
