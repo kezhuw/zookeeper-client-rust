@@ -8,13 +8,15 @@
 
 ZooKeeper client writes in async rust.
 
-## Features
+## Opinionated API
+This library is written from scratch. Its API is pretty different from Java counterpart or even other Rust clients. Some of them are listed here for a glance.
 * No callbacks.
 * No catch-all watcher.
 * `StateWatcher` tracks session state updates.
 * `OneshotWatcher` tracks oneshot ZooKeeper node event.
 * `PersistentWatcher` tracks persistent and recursive persistent ZooKeeper node events.
-* No event type `XyzWatchRemoved` as there is no way to receive such event after watchers dropped.
+* No event type `XyzWatchRemoved` as Rust has `Drop`.
+* Most data operations are ordered at future creation time but not polling time.
 * Cloneable `Client` and `Client::chroot` enables session sharing cross multiple different rooted clients.
 
 ## Examples
