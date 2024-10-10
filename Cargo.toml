@@ -20,6 +20,9 @@ tls = ["rustls", "rustls-pemfile", "webpki-roots"]
 sasl = ["sasl-gssapi", "sasl-digest-md5"]
 sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
 sasl-gssapi = ["rsasl/gssapi"]
+tokio = ["asyncs/tokio"]
+smol = ["asyncs/smol"]
+async-global-executor = ["asyncs/async-global-executor"]
 
 [dependencies]
 bytes = "1.1.0"
