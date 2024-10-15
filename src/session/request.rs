@@ -18,8 +18,12 @@ pub struct MarshalledRequest(pub Vec<u8>);
 #[derive(Clone, Copy, Debug)]
 pub enum OpStat<'a> {
     None,
+    #[allow(dead_code)]
     Path(&'a str),
-    Watch { path: &'a str, mode: WatchMode },
+    Watch {
+        path: &'a str,
+        mode: WatchMode,
+    },
 }
 
 impl MarshalledRequest {

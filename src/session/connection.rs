@@ -37,7 +37,8 @@ pub trait AsyncReadToBuf: AsyncReadExt {
     where
         Self: Unpin, {
         let chunk = buf.chunk_mut();
-        let read_to = unsafe { std::mem::transmute(chunk.as_uninit_slice_mut()) };
+        let read_to =
+            unsafe { std::mem::transmute::<&mut [std::mem::MaybeUninit<u8>], &mut [u8]>(chunk.as_uninit_slice_mut()) };
         let n = self.read(read_to).await?;
         if n != 0 {
             unsafe {
@@ -242,7 +243,10 @@ impl Connector {
             i += 1;
             match self.connect(endpoint, &mut deadline).await {
                 Ok(conn) => match conn.command_isro().await {
-                    Ok(true) => return Some(unsafe { std::mem::transmute(endpoint) }),
+                    // Safety: https://github.com/rust-lang/rust/issues/74068
+                    Ok(true) => {
+                        return Some(unsafe { std::mem::transmute::<EndpointRef<'_>, EndpointRef<'_>>(endpoint) })
+                    },
                     Ok(false) => trace!("succeeds to contact readonly {}", endpoint),
                     Err(err) => trace!(%err, r#"fails to complete "isro" to {}"#, endpoint),
                 },
