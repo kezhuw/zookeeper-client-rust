@@ -2,29 +2,13 @@ use std::borrow::Cow;
 use std::io::Write;
 
 use md5::Context as Md5Hasher;
-use rsasl::mechanism::{
-    Authentication,
-    Demand,
-    DemandReply,
-    MechanismData,
-    MechanismError,
-    MechanismErrorKind,
-    Provider,
-};
+use rsasl::mechanism::{Authentication, EmptyProvider, MechanismData, MechanismError, MechanismErrorKind};
 use rsasl::prelude::*;
 use rsasl::property::{AuthId, Password, Realm};
 use rsasl::registry::{distributed_slice, Matches, Named, Side, MECHANISMS};
 use thiserror::Error;
 
 pub(crate) type Result<T, E = crate::error::Error> = std::result::Result<T, E>;
-
-#[derive(Debug)]
-pub struct EmptyProvider;
-impl Provider<'_> for EmptyProvider {
-    fn provide(&self, _: &mut Demand<'_>) -> DemandReply<()> {
-        DemandReply::Continue(())
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, strum::Display)]
 enum ValueKind {
