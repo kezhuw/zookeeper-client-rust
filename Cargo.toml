@@ -42,10 +42,10 @@ derive-where = "1.2.7"
 tokio-rustls = "0.26.0"
 fastrand = "2.0.2"
 tracing = "0.1.40"
-rsasl = { version = "2.0.1", default-features = false, features = ["provider", "config_builder", "registry_static", "std"], optional = true }
+rsasl = { version = "2.2.0", default-features = false, features = ["provider", "config_builder", "registry_static", "std"], optional = true }
 md5 = { version = "0.7.0", optional = true }
 hex = { version = "0.4.3", optional = true }
-linkme = { version = "0.2", optional = true }
+linkme = { version = "0.3", optional = true }
 
 [dev-dependencies]
 test-log = { version = "0.2.15", features = ["log", "trace"] }
