@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2024-10-16
+### Changed
+- Upgrade rsasl to 2.2.0 to fix unexported types ([#54](https://github.com/kezhuw/zookeeper-client-rust/pull/54))
+- Split connection to reader and writer to multiplex them ([#51](https://github.com/kezhuw/zookeeper-client-rust/pull/51))
+
 ## [0.8.0] - 2024-05-07
 ### Added
 - feat: support SASL authentication ([#46](https://github.com/kezhuw/zookeeper-client-rust/pull/46))
