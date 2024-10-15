@@ -859,7 +859,7 @@ impl Client {
     /// # Cautions
     /// * Holds returned watcher without polling events may result in memory burst.
     /// * At the time of written, ZooKeeper [ZOOKEEPER-4466][] does not support oneshot and
-    /// persistent watch on same path.
+    ///   persistent watch on same path.
     /// * Persistent watch could lose events during reconnection due to [ZOOKEEPER-4698][].
     ///
     /// [ZOOKEEPER-4466]: https://issues.apache.org/jira/browse/ZOOKEEPER-4466
@@ -1137,8 +1137,8 @@ impl Client {
     ///
     /// # Error handling on [Error::ConnectionLoss]
     /// * If connection loss during lock path creation, this method will find out the created lock
-    /// path if creation success by matching prefix for [LockPrefix::new_curator] or ephemeral
-    /// owner for others.
+    ///   path if creation success by matching prefix for [LockPrefix::new_curator] or ephemeral
+    ///   owner for others.
     /// * Retry all other operations on connection loss.
     ///
     /// # Notable issues
@@ -1287,7 +1287,7 @@ impl<'a> LockPrefix<'a> {
     ///
     /// # Notable usages
     /// * Uses "{dir}/x-{session_id}-" as `prefix` and "x-" or "" as `name` for ZooKeeper java
-    /// client's [WriteLock].
+    ///   client's [WriteLock].
     ///
     /// [WriteLock]: https://github.com/apache/zookeeper/blob/release-3.9.0/zookeeper-recipes/zookeeper-recipes-lock/src/main/java/org/apache/zookeeper/recipes/lock/WriteLock.java#L212
     pub fn new_custom(prefix: String, name: &'a str) -> Result<Self> {
