@@ -16,7 +16,7 @@ rust-version = "1.76"
 
 [features]
 default = []
-tls = ["rustls", "rustls-pemfile", "webpki-roots"]
+tls = ["rustls", "rustls-pemfile", "webpki-roots", "futures-rustls"]
 sasl = ["sasl-gssapi", "sasl-digest-md5"]
 sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
 sasl-gssapi = ["rsasl/gssapi"]
@@ -50,7 +50,7 @@ linkme = { version = "0.3", optional = true }
 async-io = "2.3.2"
 futures = "0.3.30"
 async-net = "2.0.0"
-futures-rustls = "0.26.0"
+futures-rustls = { version = "0.26.0", optional = true }
 futures-lite = "2.3.0"
 asyncs = "0.3.0"
 
