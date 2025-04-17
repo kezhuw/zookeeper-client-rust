@@ -12,7 +12,7 @@ lint:
 	cargo clippy --all-features --no-deps -- -D clippy::all
 
 build:
-	cargo build-all-features
+	RUSTFLAGS=-Dunused-crate-dependencies cargo build-all-features
 
 test:
 	cargo test --all-features
