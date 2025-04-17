@@ -4,7 +4,7 @@ use crate::record::{DynamicRecord, SerializableRecord};
 
 struct ServerList<'a, 'b: 'a, T: Iterator<Item = &'b str> + Clone>(&'a T);
 
-impl<'a, 'b, T: Iterator<Item = &'b str> + Clone> SerializableRecord for ServerList<'a, 'b, T> {
+impl<'b, T: Iterator<Item = &'b str> + Clone> SerializableRecord for ServerList<'_, 'b, T> {
     fn serialize(&self, buf: &mut dyn BufMut) {
         let n = self.serialized_len();
         if n == 4 {
@@ -21,7 +21,7 @@ impl<'a, 'b, T: Iterator<Item = &'b str> + Clone> SerializableRecord for ServerL
     }
 }
 
-impl<'a, 'b, T: Iterator<Item = &'b str> + Clone> DynamicRecord for ServerList<'a, 'b, T> {
+impl<'b, T: Iterator<Item = &'b str> + Clone> DynamicRecord for ServerList<'_, 'b, T> {
     fn serialized_len(&self) -> usize {
         let n: usize = self.0.clone().filter(|s| !s.is_empty()).map(|s| s.len() + 1).sum();
         4 + if n > 0 { n - 1 } else { 0 }

@@ -72,7 +72,7 @@ impl PartialEq<(&str, u16, bool)> for EndpointRef<'_> {
 
 impl<'a> ToRef<'a, EndpointRef<'a>> for Endpoint {
     fn to_ref(&'a self) -> EndpointRef<'a> {
-        return EndpointRef::new(self.host.as_str(), self.port, self.tls);
+        EndpointRef::new(self.host.as_str(), self.port, self.tls)
     }
 }
 

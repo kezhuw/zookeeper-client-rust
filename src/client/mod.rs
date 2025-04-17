@@ -1210,7 +1210,7 @@ enum LockPrefixKind<'a> {
     Shared { prefix: &'a str },
 }
 
-impl<'a> LockPrefixKind<'a> {
+impl LockPrefixKind<'_> {
     fn filter(&self, name: &str) -> bool {
         match self {
             Self::Curator { lock_name } => name.contains(lock_name),
@@ -2181,14 +2181,12 @@ impl<'a> MultiWriter<'a> {
         Client::resolve(self.commit_internally(request))
     }
 
+    #[allow(clippy::type_complexity)]
     fn commit_internally(
         &self,
         request: MarshalledRequest,
-    ) -> std::result::Result<
-        Either<
-            impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a,
-            Vec<MultiWriteResult>,
-        >,
+    ) -> Result<
+        Either<impl Future<Output = Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a, Vec<MultiWriteResult>>,
         MultiWriteError,
     > {
         if request.is_empty() {
