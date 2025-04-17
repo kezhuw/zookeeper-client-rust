@@ -23,7 +23,7 @@ impl SerializableRecord for Acl {
 
 impl DynamicRecord for Acl {
     fn serialized_len(&self) -> usize {
-        return 4 + self.scheme().serialized_len() + self.id().serialized_len();
+        4 + self.scheme().serialized_len() + self.id().serialized_len()
     }
 }
 
