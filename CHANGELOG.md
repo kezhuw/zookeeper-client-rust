@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] = 2025-04-17
+### Fixed
+- Mark `futures-rustls` as an optional dependency ([#56](https://github.com/kezhuw/zookeeper-client-rust/pull/56))
+
 ## [0.9.0] = 2024-10-16
 ### Added
 - **Breaking:** support multiple async runtimes but not only tokio ([#52](https://github.com/kezhuw/zookeeper-client-rust/pull/52)[#53](https://github.com/kezhuw/zookeeper-client-rust/pull/53))
