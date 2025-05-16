@@ -1937,6 +1937,7 @@ async fn test_tls() {
     assert_eq!(client2.get_data("/a").await.unwrap_err(), zk::Error::NoAuth);
 }
 
+#[allow(dead_code)]
 trait StateWaiter {
     async fn wait(&mut self, expected: zk::SessionState, timeout: Option<Duration>);
 }

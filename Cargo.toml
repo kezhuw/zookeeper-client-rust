@@ -74,7 +74,3 @@ skip_optional_dependencies = true
 
 [package.metadata.docs.rs]
 all-features = true
-
-[profile.dev]
-# Need this for linkme crate to work for spawns in macOS
-lto = "thin"
