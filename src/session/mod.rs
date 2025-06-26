@@ -131,7 +131,7 @@ impl Builder {
         }
         #[cfg(feature = "tls")]
         let connector = match self.tls {
-            Some(options) => Connector::with_tls(options.into_config()?),
+            Some(options) => Connector::with_tls(options.into_client()?),
             None => Connector::new(),
         };
         #[cfg(not(feature = "tls"))]

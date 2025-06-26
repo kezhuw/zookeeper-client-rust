@@ -10,23 +10,15 @@ use bytes::buf::BufMut;
 use futures::io::BufReader;
 use futures::prelude::*;
 use futures_lite::AsyncReadExt;
+#[cfg(feature = "tls")]
+pub use futures_rustls::client::TlsStream;
 use ignore_result::Ignore;
 use tracing::{debug, trace};
 
-#[cfg(feature = "tls")]
-mod tls {
-    pub use std::sync::Arc;
-
-    pub use futures_rustls::client::TlsStream;
-    pub use futures_rustls::TlsConnector;
-    pub use rustls::pki_types::ServerName;
-    pub use rustls::ClientConfig;
-}
-#[cfg(feature = "tls")]
-use tls::*;
-
 use crate::deadline::Deadline;
 use crate::endpoint::{EndpointRef, IterableEndpoints};
+#[cfg(feature = "tls")]
+use crate::tls::TlsClient;
 
 #[derive(Debug)]
 pub enum Connection {
@@ -170,31 +162,22 @@ impl Connection {
 #[derive(Clone)]
 pub struct Connector {
     #[cfg(feature = "tls")]
-    tls: Option<TlsConnector>,
+    tls: Option<TlsClient>,
     timeout: Duration,
 }
 
 impl Connector {
-    #[cfg(feature = "tls")]
     pub fn new() -> Self {
-        Self { tls: None, timeout: Duration::from_secs(10) }
-    }
-
-    #[cfg(not(feature = "tls"))]
-    pub fn new() -> Self {
-        Self { timeout: Duration::from_secs(10) }
-    }
-
-    #[cfg(feature = "tls")]
-    pub fn with_tls(config: ClientConfig) -> Self {
-        Self { tls: Some(TlsConnector::from(Arc::new(config))), timeout: Duration::from_secs(10) }
+        Self {
+            #[cfg(feature = "tls")]
+            tls: None,
+            timeout: Duration::from_secs(10),
+        }
     }
 
     #[cfg(feature = "tls")]
-    async fn connect_tls(&self, stream: TcpStream, host: &str) -> Result<Connection> {
-        let domain = ServerName::try_from(host).unwrap().to_owned();
-        let stream = self.tls.as_ref().unwrap().connect(domain, stream).await?;
-        Ok(Connection::new_tls(stream))
+    pub fn with_tls(client: TlsClient) -> Self {
+        Self { tls: Some(client), timeout: Duration::from_secs(10) }
     }
 
     pub fn timeout(&self) -> Duration {
@@ -205,34 +188,25 @@ impl Connector {
         self.timeout = timeout;
     }
 
-    pub async fn connect(&self, endpoint: EndpointRef<'_>, deadline: &mut Deadline) -> Result<Connection> {
+    async fn connect_endpoint(&self, endpoint: EndpointRef<'_>) -> Result<Connection> {
         if endpoint.tls {
             #[cfg(feature = "tls")]
-            if self.tls.is_none() {
-                return Err(Error::new(ErrorKind::Unsupported, "tls not configured"));
-            }
+            return match self.tls.as_ref() {
+                None => return Err(Error::new(ErrorKind::Unsupported, "tls not configured")),
+                Some(client) => client.connect(endpoint.host, endpoint.port).await.map(Connection::new_tls),
+            };
             #[cfg(not(feature = "tls"))]
             return Err(Error::new(ErrorKind::Unsupported, "tls not supported"));
         }
+        TcpStream::connect((endpoint.host, endpoint.port)).await.map(Connection::new_raw)
+    }
+
+    pub async fn connect(&self, endpoint: EndpointRef<'_>, deadline: &mut Deadline) -> Result<Connection> {
         select! {
+            biased;
+            r = self.connect_endpoint(endpoint) => r,
             _ = unsafe { Pin::new_unchecked(deadline) } => Err(Error::new(ErrorKind::TimedOut, "deadline exceed")),
             _ = Timer::after(self.timeout) => Err(Error::new(ErrorKind::TimedOut, format!("connection timeout{:?} exceed", self.timeout))),
-            r = TcpStream::connect((endpoint.host, endpoint.port)) => {
-                match r {
-                    Err(err) => Err(err),
-                    Ok(sock) => {
-                        let connection = if endpoint.tls {
-                            #[cfg(not(feature = "tls"))]
-                            unreachable!("tls not supported");
-                            #[cfg(feature = "tls")]
-                            self.connect_tls(sock, endpoint.host).await?
-                        } else {
-                            Connection::new_raw(sock)
-                        };
-                        Ok(connection)
-                    },
-                }
-            },
         }
     }
 
