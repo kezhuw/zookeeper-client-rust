@@ -16,7 +16,7 @@ rust-version = "1.76"
 
 [features]
 default = []
-tls = ["rustls", "rustls-pemfile", "webpki-roots", "futures-rustls"]
+tls = ["rustls", "rustls-pemfile", "webpki-roots", "futures-rustls", "async-fs"]
 sasl = ["sasl-gssapi", "sasl-digest-md5"]
 sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
 sasl-gssapi = ["rsasl/gssapi"]
@@ -48,6 +48,7 @@ md5 = { version = "0.7.0", optional = true }
 hex = { version = "0.4.3", optional = true }
 linkme = { version = "0.3", optional = true }
 async-io = "2.3.2"
+async-fs = { version = "2.1.2", optional = true }
 futures = "0.3.30"
 async-net = "2.0.0"
 futures-rustls = { version = "0.26.0", optional = true }
@@ -67,6 +68,7 @@ tempfile = "3.6.0"
 rcgen = { version = "0.12.1", features = ["default", "x509-parser"] }
 serial_test = "3.0.0"
 asyncs = { version = "0.3.0", features = ["test"] }
+smol = "2.0.2"
 blocking = "1.6.0"
 
 [package.metadata.cargo-all-features]
@@ -78,3 +80,8 @@ all-features = true
 [profile.dev]
 # Need this for linkme crate to work for spawns in macOS
 lto = "thin"
+
+[[example]]
+name = "tls_file_based"
+path = "examples/tls_file_based.rs"
+required-features = ["tls", "smol"]

@@ -1,5 +1,7 @@
 use std::io::{Error, ErrorKind, IoSlice, Result};
 use std::pin::Pin;
+#[cfg(feature = "tls")]
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -15,18 +17,18 @@ use tracing::{debug, trace};
 
 #[cfg(feature = "tls")]
 mod tls {
-    pub use std::sync::Arc;
-
     pub use futures_rustls::client::TlsStream;
     pub use futures_rustls::TlsConnector;
     pub use rustls::pki_types::ServerName;
-    pub use rustls::ClientConfig;
 }
+
 #[cfg(feature = "tls")]
 use tls::*;
 
 use crate::deadline::Deadline;
 use crate::endpoint::{EndpointRef, IterableEndpoints};
+#[cfg(feature = "tls")]
+use crate::TlsOptions;
 
 #[derive(Debug)]
 pub enum Connection {
@@ -170,7 +172,7 @@ impl Connection {
 #[derive(Clone)]
 pub struct Connector {
     #[cfg(feature = "tls")]
-    tls: Option<TlsConnector>,
+    tls_options: Option<TlsOptions>,
     timeout: Duration,
 }
 
@@ -178,7 +180,7 @@ impl Connector {
     #[cfg(feature = "tls")]
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self { tls: None, timeout: Duration::from_secs(10) }
+        Self { tls_options: None, timeout: Duration::from_secs(10) }
     }
 
     #[cfg(not(feature = "tls"))]
@@ -187,14 +189,27 @@ impl Connector {
     }
 
     #[cfg(feature = "tls")]
-    pub fn with_tls(config: ClientConfig) -> Self {
-        Self { tls: Some(TlsConnector::from(Arc::new(config))), timeout: Duration::from_secs(10) }
+    pub fn with_tls_options(tls_options: TlsOptions) -> Self {
+        Self { tls_options: Some(tls_options), timeout: Duration::from_secs(10) }
+    }
+
+    #[cfg(feature = "tls")]
+    async fn get_current_tls_connector(&self) -> Result<TlsConnector> {
+        let Some(ref tls_opts) = self.tls_options else {
+            return Err(Error::new(ErrorKind::InvalidInput, "no TLS configuration"));
+        };
+        let config = tls_opts
+            .to_config()
+            .await
+            .map_err(|e| Error::new(ErrorKind::InvalidData, format!("TLS config creation failed: {}", e)))?;
+        Ok(TlsConnector::from(Arc::new(config)))
     }
 
     #[cfg(feature = "tls")]
     async fn connect_tls(&self, stream: TcpStream, host: &str) -> Result<Connection> {
+        let tls_connector = self.get_current_tls_connector().await?;
         let domain = ServerName::try_from(host).unwrap().to_owned();
-        let stream = self.tls.as_ref().unwrap().connect(domain, stream).await?;
+        let stream = tls_connector.connect(domain, stream).await?;
         Ok(Connection::new_tls(stream))
     }
 
@@ -209,7 +224,7 @@ impl Connector {
     pub async fn connect(&self, endpoint: EndpointRef<'_>, deadline: &mut Deadline) -> Result<Connection> {
         if endpoint.tls {
             #[cfg(feature = "tls")]
-            if self.tls.is_none() {
+            if self.tls_options.is_none() {
                 return Err(Error::new(ErrorKind::Unsupported, "tls not supported"));
             }
             #[cfg(not(feature = "tls"))]
@@ -287,5 +302,13 @@ mod tests {
         let endpoint = EndpointRef::new("host1", 2181, true);
         let err = connector.connect(endpoint, &mut Deadline::never()).await.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Unsupported);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn test_with_tls_options() {
+        let tls_options = crate::TlsOptions::default();
+        let connector = Connector::with_tls_options(tls_options);
+        assert!(connector.tls_options.is_some());
     }
 }

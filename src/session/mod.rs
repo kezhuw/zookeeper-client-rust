@@ -130,7 +130,7 @@ impl Builder {
             return Err(Error::BadArguments(&"connection timeout must not be negative"));
         }
         #[cfg(feature = "tls")]
-        let connector = Connector::with_tls(self.tls.unwrap_or_default().into_config()?);
+        let connector = Connector::with_tls_options(self.tls.unwrap_or_default());
         #[cfg(not(feature = "tls"))]
         let connector = Connector::new();
         let (state_sender, state_receiver) = asyncs::sync::watch::channel(SessionState::Disconnected);
