@@ -88,7 +88,7 @@ impl SessionState {
     pub(crate) fn from_server(state: i32) -> Result<SessionState, Error> {
         let session_state = match state {
             3 => SessionState::SyncConnected,
-            _ => return Err(Error::UnexpectedError(format!("keeper state value should not be {}", state))),
+            _ => return Err(Error::UnexpectedError(format!("keeper state value should not be {state}"))),
         };
         Ok(session_state)
     }
@@ -108,7 +108,7 @@ impl SessionState {
             SessionState::AuthFailed => Error::AuthFailed,
             SessionState::Expired => Error::SessionExpired,
             SessionState::Closed => Error::ClientClosed,
-            _ => Error::UnexpectedError(format!("expect error state, got {:?}", self)),
+            _ => Error::UnexpectedError(format!("expect error state, got {self:?}")),
         }
     }
 }
@@ -180,7 +180,7 @@ impl EventType {
             2 => EventType::NodeDeleted,
             3 => EventType::NodeDataChanged,
             4 => EventType::NodeChildrenChanged,
-            _ => return Err(Error::UnexpectedError(format!("event type should not be {}", i))),
+            _ => return Err(Error::UnexpectedError(format!("event type should not be {i}"))),
         };
         Ok(event_type)
     }

@@ -101,7 +101,7 @@ impl Depot {
 
     pub fn pop_request(&mut self, xid: i32) -> Result<SessionOperation, Error> {
         match self.written_operations.remove(&xid) {
-            None => Err(Error::UnexpectedError(format!("recv response with xid {} but no pending request", xid))),
+            None => Err(Error::UnexpectedError(format!("recv response with xid {xid} but no pending request"))),
             Some(operation) => Ok(operation),
         }
     }

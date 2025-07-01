@@ -376,14 +376,11 @@ impl Client {
     fn parse_sequence(client_path: &str, prefix: &str) -> Result<CreateSequence> {
         if let Some(sequence_path) = client_path.strip_prefix(prefix) {
             match sequence_path.parse::<i64>() {
-                Err(_) => Err(Error::UnexpectedError(format!("sequential node get no i32 path {}", client_path))),
+                Err(_) => Err(Error::UnexpectedError(format!("sequential node get no i32 path {client_path}"))),
                 Ok(i) => Ok(CreateSequence(i)),
             }
         } else {
-            Err(Error::UnexpectedError(format!(
-                "sequential path {} does not contain prefix path {}",
-                client_path, prefix
-            )))
+            Err(Error::UnexpectedError(format!("sequential path {client_path} does not contain prefix path {prefix}",)))
         }
     }
 
@@ -1049,7 +1046,7 @@ impl Client {
             std::mem::forget(guard);
             let prefix_len = prefix.len();
             let mut path = prefix;
-            write!(&mut path, "{}", sequence).unwrap();
+            write!(&mut path, "{sequence}").unwrap();
             let sequence_len = path.len() - prefix_len;
             return Ok((path, sequence_len));
         }
