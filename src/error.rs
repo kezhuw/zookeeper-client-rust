@@ -101,7 +101,7 @@ impl Display for CustomError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match (self.message.as_ref(), self.source.as_ref()) {
             (Some(message), None) => f.write_str(message),
-            (Some(message), Some(err)) => write!(f, "{}: {}", message, err),
+            (Some(message), Some(err)) => write!(f, "{message}: {err}"),
             (None, Some(err)) => err.fmt(f),
             _ => unreachable!("no error message or source"),
         }

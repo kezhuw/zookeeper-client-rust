@@ -67,7 +67,7 @@ pub fn strip_root_path<'a>(server_path: &'a str, root: &str) -> Result<&'a str, 
         }
         return Ok(client_path);
     }
-    Err(Error::UnexpectedError(format!("server path {} is not descendant of root {}", server_path, root)))
+    Err(Error::UnexpectedError(format!("server path {server_path} is not descendant of root {root}")))
 }
 
 pub fn drain_root_path(server_path: &mut String, root: &str) -> Result<(), Error> {
@@ -78,7 +78,7 @@ pub fn drain_root_path(server_path: &mut String, root: &str) -> Result<(), Error
         }
         return Ok(());
     }
-    Err(Error::UnexpectedError(format!("server path {} is not descendant of root {}", server_path, root)))
+    Err(Error::UnexpectedError(format!("server path {server_path} is not descendant of root {root}")))
 }
 
 #[allow(dead_code)]

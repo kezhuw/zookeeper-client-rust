@@ -42,9 +42,7 @@ impl DeserializeError {
     pub fn with_entity(self, entity: &'static str) -> ZkError {
         match self {
             DeserializeError::InsufficientBuf => ZkError::UnmarshalError { entity, reason: &"insufficient buf" },
-            DeserializeError::UnexpectedOpCode(code) => {
-                ZkError::UnexpectedError(format!("unexpected op code {}", code))
-            },
+            DeserializeError::UnexpectedOpCode(code) => ZkError::UnexpectedError(format!("unexpected op code {code}")),
             DeserializeError::UnexpectedErrorCode(code) => ZkError::UnexpectedErrorCode(code),
             DeserializeError::UnmarshalError(err) => ZkError::UnexpectedError(err),
         }
@@ -284,7 +282,7 @@ impl UnsafeRead<'_> for bool {
         match buf.get_unchecked_u8() {
             0 => Ok(false),
             1 => Ok(true),
-            u => Err(InvalidData::UnmarshalError(format!("invalid value {} for bool", u))),
+            u => Err(InvalidData::UnmarshalError(format!("invalid value {u} for bool"))),
         }
     }
 }

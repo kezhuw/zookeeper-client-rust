@@ -204,7 +204,7 @@ impl Future for StateReceiver {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => match result {
                 Err(_) => {
-                    Poll::Ready(Err(Error::UnexpectedError(format!("BUG: {} expect response, but got none", code))))
+                    Poll::Ready(Err(Error::UnexpectedError(format!("BUG: {code} expect response, but got none"))))
                 },
                 Ok(r) => Poll::Ready(r),
             },

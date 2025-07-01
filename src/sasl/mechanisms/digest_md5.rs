@@ -83,7 +83,7 @@ impl<'a> Parser<'a> {
     pub fn new(challenge: &'a [u8]) -> Result<Self, DigestError> {
         let challenge = match std::str::from_utf8(challenge) {
             Ok(s) => s,
-            Err(err) => return Err(DigestError::new_parse(format!("support only utf8 for now: {}", err))),
+            Err(err) => return Err(DigestError::new_parse(format!("support only utf8 for now: {err}"))),
         };
         Ok(Self { s: challenge })
     }
@@ -94,7 +94,7 @@ impl<'a> Parser<'a> {
         };
         self.skip_assignment();
         let Some((value, kind)) = self.read_value()? else {
-            return Err(DigestError::new_parse(format!("directive {} has no value", key)));
+            return Err(DigestError::new_parse(format!("directive {key} has no value")));
         };
         Ok(Some(Directive { key, value, kind }))
     }
@@ -116,7 +116,7 @@ impl<'a> Parser<'a> {
         self.skip_lws();
         if key.is_empty() {
             if !self.s.is_empty() {
-                return Err(DigestError::new_parse(format!("no valid key from {}", s)));
+                return Err(DigestError::new_parse(format!("no valid key from {s}")));
             }
             return Ok(None);
         }
@@ -377,7 +377,7 @@ impl DigestSession {
     fn gen_nonce() -> [u8; 32] {
         let r = fastrand::u128(0..u128::MAX);
         let mut buf = [0; 32];
-        write!(buf.as_mut_slice(), "{:x}", r).unwrap();
+        write!(buf.as_mut_slice(), "{r:x}").unwrap();
         buf
     }
 }
@@ -397,7 +397,7 @@ impl Authentication for DigestSession {
                     None => return Err(DigestError::new_parse("no charset").into()),
                     Some("utf-8") => true,
                     Some(charset) => {
-                        return Err(DigestError::new_parse(format!("expect charset utf-8, but got {}", charset)).into())
+                        return Err(DigestError::new_parse(format!("expect charset utf-8, but got {charset}")).into())
                     },
                 };
                 match directives.get_algorithm() {
@@ -405,13 +405,13 @@ impl Authentication for DigestSession {
                     Some("md5-sess") => {},
                     Some(algorithm) => {
                         return Err(
-                            DigestError::new_parse(format!("expect algorithm md5-sess, but got {}", algorithm)).into()
+                            DigestError::new_parse(format!("expect algorithm md5-sess, but got {algorithm}")).into()
                         )
                     },
                 };
                 if let Some(qop) = directives.get_qop() {
                     if !qop.split(',').any(|s| s == "auth") {
-                        return Err(DigestError::new_protocol(format!("unsupported qop {}", qop)).into());
+                        return Err(DigestError::new_protocol(format!("unsupported qop {qop}")).into());
                     }
                 };
                 let Some(nonce) = directives.get_nonce() else {
@@ -430,13 +430,12 @@ impl Authentication for DigestSession {
                         *realm
                     } else {
                         return Err(DigestError::new_protocol(format!(
-                            "can not choose realm {} from {:?}",
-                            client_realm, realms
+                            "can not choose realm {client_realm} from {realms:?}",
                         ))
                         .into());
                     }
                 } else {
-                    return Err(DigestError::new_protocol(format!("choose no realm from {:?}", realms)).into());
+                    return Err(DigestError::new_protocol(format!("choose no realm from {realms:?}")).into());
                 };
                 let username = session.need_with::<AuthId, _, _>(&EmptyProvider, |auth_id| Ok(auth_id.to_string()))?;
                 let password =
@@ -451,8 +450,7 @@ impl Authentication for DigestSession {
                 };
                 let response = context.client_response();
                 write!(writer,
-                    r#"username="{}",realm="{}",nonce="{}",cnonce="{}",nc=00000001,qop=auth,digest-uri="zookeeper/zk-sasl-md5",response={},charset="utf-8""#,
-                    username, realm, nonce,
+                    r#"username="{username}",realm="{realm}",nonce="{nonce}",cnonce="{}",nc=00000001,qop=auth,digest-uri="zookeeper/zk-sasl-md5",response={},charset="utf-8""#,
                     unsafe { std::str::from_utf8_unchecked(cnonce.as_slice()) },
                     unsafe { std::str::from_utf8_unchecked(response.as_slice()) },
                 ).unwrap();
@@ -503,8 +501,8 @@ mod tests {
     use super::DigestContext;
     use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
 
-    const USERNAME: &'static str = "username";
-    const PASSWORD: &'static str = "password";
+    const USERNAME: &str = "username";
+    const PASSWORD: &str = "password";
 
     fn session(realm: Option<&'static str>) -> SaslSession {
         let mut options = SaslOptions::digest_md5(USERNAME, PASSWORD);
@@ -575,7 +573,7 @@ mod tests {
     #[test]
     fn nonce_same() {
         let nonce = "tQGS7xRmk+5sqY52MKWXK5iEOt8+Y7ikskjuNjIF";
-        let challenge = format!(r#"realm="zk-sasl-md5",nonce="{}",charset=utf-8,algorithm=md5-sess"#, nonce);
+        let challenge = format!(r#"realm="zk-sasl-md5",nonce="{nonce}",charset=utf-8,algorithm=md5-sess"#);
         let mut session = session(None);
         let response = from_utf8(session.step(challenge.as_bytes()).unwrap().unwrap()).unwrap();
         assert_that!(get_directive(response, "nonce").unwrap()).is_equal_to(nonce);

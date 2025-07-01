@@ -76,7 +76,7 @@ impl std::fmt::Display for Permission {
         .into_iter()
         .filter_map(|(perm, str)| if self.has(perm) { Some(str) } else { None })
         .enumerate()
-        .try_for_each(|(i, str)| if i == 0 { f.write_str(str) } else { write!(f, "|{}", str) })
+        .try_for_each(|(i, str)| if i == 0 { f.write_str(str) } else { write!(f, "|{str}") })
     }
 }
 

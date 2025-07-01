@@ -32,7 +32,7 @@ use crate::endpoint::{EndpointRef, IterableEndpoints};
 pub enum Connection {
     Raw(TcpStream),
     #[cfg(feature = "tls")]
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 pub trait AsyncReadToBuf: AsyncReadExt {
@@ -143,7 +143,7 @@ impl Connection {
 
     #[cfg(feature = "tls")]
     pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
-        Self::Tls(stream)
+        Self::Tls(stream.into())
     }
 
     pub async fn command(mut self, cmd: &str) -> Result<String> {

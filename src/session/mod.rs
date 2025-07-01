@@ -563,7 +563,7 @@ impl Session {
             select! {
                 Some(endpoint) = Self::poll(&mut seek_for_writable), if seek_for_writable.is_some() => {
                     seek_for_writable = None;
-                    err = Some(Error::with_message(format!("encounter writable server {}", endpoint)));
+                    err = Some(Error::with_message(format!("encounter writable server {endpoint}")));
                     channel_halted = true;
                 },
                 r = reader.read_to_buf(buf) => match r.map_err(Error::other)? {

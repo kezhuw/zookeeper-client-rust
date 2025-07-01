@@ -9,7 +9,7 @@ check_fmt:
 	cargo +nightly fmt --all -- --check
 
 lint:
-	cargo clippy --all-features --no-deps -- -D clippy::all
+	cargo clippy --all-targets --all-features --no-deps -- -D clippy::all
 
 build:
 	RUSTFLAGS=-Dunused-crate-dependencies cargo build-all-features

@@ -82,8 +82,7 @@ impl DeserializableRecord<'_> for Vec<MultiReadResponse> {
                 },
                 op => {
                     return Err(DeserializeError::UnmarshalError(format!(
-                        "unexpected op code {} in multi read response",
-                        op
+                        "unexpected op code {op} in multi read response"
                     )))
                 },
             }
@@ -136,8 +135,7 @@ impl<'a> DeserializableRecord<'a> for Vec<MultiWriteResponse<'a>> {
                 },
                 op => {
                     return Err(DeserializeError::UnmarshalError(format!(
-                        "unexpected op code {} in multi write response",
-                        op
+                        "unexpected op code {op} in multi write response",
                     )))
                 },
             }
