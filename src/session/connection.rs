@@ -176,7 +176,6 @@ pub struct Connector {
 
 impl Connector {
     #[cfg(feature = "tls")]
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { tls: None, timeout: Duration::from_secs(10) }
     }
@@ -210,7 +209,7 @@ impl Connector {
         if endpoint.tls {
             #[cfg(feature = "tls")]
             if self.tls.is_none() {
-                return Err(Error::new(ErrorKind::Unsupported, "tls not supported"));
+                return Err(Error::new(ErrorKind::Unsupported, "tls not configured"));
             }
             #[cfg(not(feature = "tls"))]
             return Err(Error::new(ErrorKind::Unsupported, "tls not supported"));
