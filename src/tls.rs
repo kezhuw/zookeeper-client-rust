@@ -28,11 +28,9 @@ impl Clone for TlsOptions {
 }
 
 impl Default for TlsOptions {
-    /// Tls options with well-known ca roots.
+    /// Same as [Self::new].
     fn default() -> Self {
-        let mut options = Self::no_ca();
-        options.ca_certs.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        options
+        Self::new()
     }
 }
 
@@ -106,10 +104,24 @@ impl ServerCertVerifier for TlsServerCertVerifier {
 }
 
 impl TlsOptions {
-    /// Tls options with no ca certificates. Use [TlsOptions::default] if well-known ca roots is
-    /// desirable.
+    /// Tls options with no ca certificates.
+    #[deprecated(since = "0.10.0", note = "use TlsOptions::new instead")]
     pub fn no_ca() -> Self {
+        Self::new()
+    }
+
+    /// Tls options with no ca certificates.
+    pub fn new() -> Self {
         Self { ca_certs: RootCertStore::empty(), identity: None, hostname_verification: true }
+    }
+
+    /// Trusts root certificates trusted by Mozilla.
+    ///
+    /// See [webpki-roots](https://docs.rs/webpki-roots) for more.
+    #[cfg(feature = "tls-mozilla-roots")]
+    pub fn with_mozilla_roots(mut self) -> Self {
+        self.ca_certs.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        self
     }
 
     /// Disables hostname verification in tls handshake.
