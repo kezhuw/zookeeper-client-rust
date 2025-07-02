@@ -2051,12 +2051,12 @@ async fn test_update_ensemble() {
             network: Some("host"),
             configs: vec!["reconfigEnabled=true", "standaloneEnabled=false"],
             servers: vec![
-                (1, &vec!["server.1=localhost:2001:3001:participant;localhost:4001"]),
-                (2, &vec![
+                (1, &["server.1=localhost:2001:3001:participant;localhost:4001"]),
+                (2, &[
                     "server.1=localhost:2001:3001:participant;localhost:4001",
                     "server.2=localhost:2002:3002:observer;localhost:4002",
                 ]),
-                (3, &vec![
+                (3, &[
                     "server.1=localhost:2001:3001:participant;localhost:4001",
                     "server.3=localhost:2003:3003:observer;localhost:4003",
                 ]),
