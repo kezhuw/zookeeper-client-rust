@@ -22,7 +22,7 @@ use testcontainers::core::{Container, Healthcheck, LogStream, RunnableImage, Wai
 use testcontainers::images::generic::GenericImage;
 use zookeeper_client as zk;
 
-static ZK_IMAGE_TAG: &'static str = "3.9.0";
+static ZK_IMAGE_TAG: &str = "3.9.0";
 static PERSISTENT_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Persistent.with_acls(zk::Acls::anyone_all());
 static CONTAINER_OPEN: &zk::CreateOptions<'static> = &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all());
 
@@ -326,20 +326,20 @@ struct ClusterOptions<'a> {
 
 impl ClusterOptions<'_> {
     fn is_standalone(&self) -> bool {
-        return self.servers.len() <= 1;
+        self.servers.len() <= 1
     }
 
     fn servers(&self) -> Vec<(u32, String)> {
         let mut lines = String::new();
         for config in self.configs.iter() {
-            write!(&mut lines, "{}\n", config).unwrap();
+            writeln!(&mut lines, "{config}").unwrap();
         }
         let mut servers = vec![];
         for server in self.servers.iter() {
             let mut lines = lines.clone();
             lines += "initLimit=5\n";
             lines += "syncLimit=2\n";
-            write!(&mut lines, "{}\n", server.1.join("\n")).unwrap();
+            writeln!(&mut lines, "{}", server.1.join("\n")).unwrap();
             servers.push((server.0, lines));
         }
         if servers.is_empty() {
@@ -491,6 +491,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
             }
 
             if standalone {
+                #[allow(clippy::missing_transmute_annotations)]
                 let container = unsafe { std::mem::transmute(self.docker.run(image)) };
                 self.containers.push((1, container));
                 return;
@@ -498,7 +499,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 
             let data_dir = self.dir.tempdir().path().join(format!("zoo{id}.data"));
             std::fs::create_dir_all(data_dir.as_path()).unwrap();
-            fs::write(&data_dir.as_path().join("myid"), format!("{id}\n")).unwrap();
+            fs::write(data_dir.as_path().join("myid"), format!("{id}\n")).unwrap();
             image = image.with_volume((data_dir.to_str().unwrap(), "/data"));
             // image = image.with_env_var(("ZOO_MY_ID", id.to_string()));
 
@@ -754,7 +755,7 @@ async fn test_check_writer() {
     let mut results = check_writer.commit().await.unwrap();
     let created_stat = match results.remove(0) {
         zk::MultiWriteResult::Create { stat, .. } => stat,
-        result => panic!("expect create result, got {:?}", result),
+        result => panic!("expect create result, got {result:?}"),
     };
 
     let (data, stat) = client.get_data("/a").await.unwrap();
@@ -936,7 +937,7 @@ async fn test_data_node() {
 async fn test_create_root() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await.chroot("/a").unwrap();
-    assert_that!(client.create("/", &vec![], PERSISTENT_OPEN).await.unwrap_err())
+    assert_that!(client.create("/", &[], PERSISTENT_OPEN).await.unwrap_err())
         .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
     assert_that!(client.mkdir("/", PERSISTENT_OPEN).await.unwrap_err())
         .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
@@ -960,8 +961,8 @@ async fn test_create_sequential() {
 
     assert!(sequence2.into_i64() > sequence1.into_i64());
 
-    let path1 = format!("{}{}", prefix, sequence1);
-    let path2 = format!("{}{}", prefix, sequence2);
+    let path1 = format!("{prefix}{sequence1}");
+    let path2 = format!("{prefix}{sequence2}");
     assert_eq!((data.clone(), stat1), client.get_data(&path1).await.unwrap());
     assert_eq!((data, stat2), client.get_data(&path2).await.unwrap());
 }
@@ -976,8 +977,8 @@ async fn test_create_ttl() {
     let client = cluster.client(None).await;
 
     let ttl_options = PERSISTENT_OPEN.clone().with_ttl(Duration::from_millis(500));
-    client.create("/ttl", &vec![], &ttl_options).await.unwrap();
-    client.create("/ttl/child", &vec![], PERSISTENT_OPEN).await.unwrap();
+    client.create("/ttl", &[], &ttl_options).await.unwrap();
+    client.create("/ttl/child", &[], PERSISTENT_OPEN).await.unwrap();
     Timer::after(Duration::from_secs(4)).await;
     client.delete("/ttl/child", None).await.unwrap();
     Timer::after(Duration::from_secs(4)).await;
@@ -993,8 +994,8 @@ async fn test_create_container() {
     .await;
     let client = cluster.client(None).await;
 
-    client.create("/container", &vec![], &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all())).await.unwrap();
-    client.create("/container/child", &vec![], PERSISTENT_OPEN).await.unwrap();
+    client.create("/container", &[], &zk::CreateMode::Container.with_acls(zk::Acls::anyone_all())).await.unwrap();
+    client.create("/container/child", &[], PERSISTENT_OPEN).await.unwrap();
     Timer::after(Duration::from_secs(4)).await;
     client.delete("/container/child", None).await.unwrap();
     Timer::after(Duration::from_secs(4)).await;
@@ -1135,9 +1136,9 @@ async fn test_ephemerals() {
         let (_, sequence1) = client.create(prefix, Default::default(), &ephemeral_sequential_options).await.unwrap();
         let (_, sequence2) = client.create(prefix, Default::default(), &ephemeral_sequential_options).await.unwrap();
         let (_, sequence3) = client.create(prefix, Default::default(), &ephemeral_sequential_options).await.unwrap();
-        root_ephemerals.push(format!("{}{}", prefix, sequence1));
-        root_ephemerals.push(format!("{}{}", prefix, sequence2));
-        root_ephemerals.push(format!("{}{}", prefix, sequence3));
+        root_ephemerals.push(format!("{prefix}{sequence1}"));
+        root_ephemerals.push(format!("{prefix}{sequence2}"));
+        root_ephemerals.push(format!("{prefix}{sequence3}"));
 
         assert!(sequence2 > sequence1);
         assert!(sequence3 > sequence2);
@@ -1695,7 +1696,7 @@ async fn test_watcher_coexist_on_same_path() {
     let mut persistent_watcher = client.watch("/a", zk::AddWatchMode::Persistent).await.unwrap();
     let mut recursive_watcher = client.watch("/a", zk::AddWatchMode::PersistentRecursive).await.unwrap();
 
-    let (stat, _) = client.create("/a", &vec![], PERSISTENT_OPEN).await.unwrap();
+    let (stat, _) = client.create("/a", &[], PERSISTENT_OPEN).await.unwrap();
 
     let expected = zk::WatchedEvent::new(zk::EventType::NodeCreated, "/a".to_string()).with_zxid(stat.czxid);
     assert_that!(exist_watcher.changed().await).is_equal_to(&expected);
@@ -1706,7 +1707,7 @@ async fn test_watcher_coexist_on_same_path() {
     let (_, _, child_watcher) = client.get_and_watch_children("/a").await.unwrap();
     let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
 
-    let (stat, _) = client.create("/a/b", &vec![], PERSISTENT_OPEN).await.unwrap();
+    let (stat, _) = client.create("/a/b", &[], PERSISTENT_OPEN).await.unwrap();
     let expected = zk::WatchedEvent::new(zk::EventType::NodeChildrenChanged, "/a".to_string()).with_zxid(stat.czxid);
     assert_that!(child_watcher.changed().await).is_equal_to(&expected);
     assert_that!(persistent_watcher.changed().await).is_equal_to(&expected);
@@ -1738,7 +1739,7 @@ async fn test_watcher_coexist_on_same_path() {
     assert_that!(recursive_watcher.changed().await).is_equal_to(&expected);
 
     // persistent ones still exist
-    let (stat, _) = client.create("/a", &vec![], PERSISTENT_OPEN).await.unwrap();
+    let (stat, _) = client.create("/a", &[], PERSISTENT_OPEN).await.unwrap();
     let expected = zk::WatchedEvent::new(zk::EventType::NodeCreated, "/a".to_string()).with_zxid(stat.mzxid);
     assert_that!(persistent_watcher.changed().await).is_equal_to(&expected);
     assert_that!(recursive_watcher.changed().await).is_equal_to(&expected);
@@ -1751,7 +1752,7 @@ async fn test_remove_no_watcher() {
     let client = cluster.client(None).await;
 
     let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
-    let create = client.create("/a", &vec![], PERSISTENT_OPEN);
+    let create = client.create("/a", &[], PERSISTENT_OPEN);
 
     // Let session task issue `create` request first, oneshot watch will be removed by server.
     asyncs::task::yield_now().await;

@@ -501,8 +501,8 @@ mod tests {
     use super::DigestContext;
     use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
 
-    const USERNAME: &'static str = "username";
-    const PASSWORD: &'static str = "password";
+    const USERNAME: &str = "username";
+    const PASSWORD: &str = "password";
 
     fn session(realm: Option<&'static str>) -> SaslSession {
         let mut options = SaslOptions::digest_md5(USERNAME, PASSWORD);
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn nonce_same() {
         let nonce = "tQGS7xRmk+5sqY52MKWXK5iEOt8+Y7ikskjuNjIF";
-        let challenge = format!(r#"realm="zk-sasl-md5",nonce="{}",charset=utf-8,algorithm=md5-sess"#, nonce);
+        let challenge = format!(r#"realm="zk-sasl-md5",nonce="{nonce}",charset=utf-8,algorithm=md5-sess"#);
         let mut session = session(None);
         let response = from_utf8(session.step(challenge.as_bytes()).unwrap().unwrap()).unwrap();
         assert_that!(get_directive(response, "nonce").unwrap()).is_equal_to(nonce);

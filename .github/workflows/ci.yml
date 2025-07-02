@@ -107,7 +107,7 @@ jobs:
       run: |
         sudo apt install -y libkrb5-dev
     - name: Lint code
-      run: cargo clippy --all-features --no-deps -- -D clippy::all
+      run: cargo clippy --all-targets --all-features --no-deps -- -D clippy::all
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: [build, test, lint]
