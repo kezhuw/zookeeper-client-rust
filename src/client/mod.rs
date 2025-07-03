@@ -234,12 +234,6 @@ impl Client {
     }
 
     /// Creates a builder with configurable options in connecting to ZooKeeper cluster.
-    #[deprecated(since = "0.7.0", note = "use Client::connector instead")]
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder::new()
-    }
-
-    /// Creates a builder with configurable options in connecting to ZooKeeper cluster.
     pub fn connector() -> Connector {
         Connector::new()
     }
@@ -435,8 +429,8 @@ impl Client {
     /// * [Error::InvalidAcl] if acl is invalid or empty.
     ///
     /// # Notable behaviors
-    /// The resulting [Stat] will be [Stat::is_invalid] if assumed server version is 3.4 series or
-    /// below. See [ClientBuilder::assume_server_version] and [ZOOKEEPER-1297][].
+    /// The resulting [Stat] will be [Stat::is_invalid] if server version is 3.4 series or
+    /// below. See [Connector::server_version] and [ZOOKEEPER-1297][].
     ///
     /// [ZOOKEEPER-1297]: https://issues.apache.org/jira/browse/ZOOKEEPER-1297
     pub fn create<'a: 'f, 'b: 'f, 'f>(
@@ -1710,75 +1704,6 @@ impl Connector {
     /// success or not.
     pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
         self.connect_internally(false, cluster).await
-    }
-}
-
-/// Builder for [Client] with more options than [Client::connect].
-#[derive(Clone, Debug)]
-pub struct ClientBuilder {
-    connector: Connector,
-}
-
-impl ClientBuilder {
-    fn new() -> Self {
-        Self { connector: Connector::new() }
-    }
-
-    /// Specifies target session timeout to negotiate with ZooKeeper server.
-    ///
-    /// Defaults to 6s.
-    pub fn with_session_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.connector.session_timeout(timeout);
-        self
-    }
-
-    /// Specifies idle timeout to conclude a connection as loss.
-    ///
-    /// Defaults to `2/5` of session timeout.
-    pub fn with_connection_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.connector.connection_timeout(timeout);
-        self
-    }
-
-    /// Specifies whether readonly session is allowed.
-    pub fn with_readonly(&mut self, readonly: bool) -> &mut ClientBuilder {
-        self.connector.readonly = readonly;
-        self
-    }
-
-    /// Specifies auth info for given authentication scheme.
-    pub fn with_auth(&mut self, scheme: String, auth: Vec<u8>) -> &mut ClientBuilder {
-        self.connector.auth(scheme, auth);
-        self
-    }
-
-    /// Specifies client assumed server version of ZooKeeper cluster.
-    ///
-    /// Client will issue server compatible protocol to avoid [Error::Unimplemented] for some
-    /// operations. See [Client::create] for an example.
-    ///
-    /// See [ZOOKEEPER-1381][] and [ZOOKEEPER-3762][] for references.
-    ///
-    /// [ZOOKEEPER-1381]: https://issues.apache.org/jira/browse/ZOOKEEPER-1381
-    /// [ZOOKEEPER-3762]: https://issues.apache.org/jira/browse/ZOOKEEPER-3762
-    pub fn assume_server_version(&mut self, major: u32, minor: u32, patch: u32) -> &mut Self {
-        self.connector.server_version(major, minor, patch);
-        self
-    }
-
-    /// Detaches creating session so it will not be closed after all client instances dropped.
-    pub fn detach(&mut self) -> &mut Self {
-        self.connector.detached();
-        self
-    }
-
-    /// Connects to ZooKeeper cluster.
-    ///
-    /// # Notable errors
-    /// * [Error::NoHosts] if no host is available
-    /// * [Error::SessionExpired] if specified session expired
-    pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
-        self.connector.connect(cluster).await
     }
 }
 
