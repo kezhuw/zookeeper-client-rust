@@ -13,7 +13,7 @@ use asyncs::select;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::Rng;
-use rcgen::{Certificate, CertificateParams};
+use rcgen::{Certificate, CertificateParams, Issuer, KeyPair};
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
 use test_case::test_case;
@@ -221,30 +221,29 @@ struct Tls {
 impl Tls {
     fn new(dir: Arc<TempDir>) -> Self {
         let hostname_verification = env_toggle("ZK_TLS_HOSTNAME_VERIFICATION");
-        let (ca_cert, ca_cert_pem) = generate_ca_cert();
-        let server_cert = generate_server_cert(hostname_verification);
-        let signed_server_cert = server_cert.serialize_pem_with_signer(&ca_cert).unwrap();
 
-        // ZooKeeper needs a keystore with both key and signed cert.
-        let server_pem = server_cert.serialize_private_key_pem() + &signed_server_cert;
-
+        let (ca_issuer, ca_cert) = generate_ca_cert();
+        let ca_cert_pem = ca_cert.pem();
         let ca_cert_file = dir.path().join("ca.cert.pem");
         fs::write(&ca_cert_file, &ca_cert_pem).unwrap();
+
+        let (server_cert, server_key) = generate_server_cert(hostname_verification, &ca_issuer);
+
+        // ZooKeeper needs a keystore with both key and signed cert.
+        let server_pem = server_key.serialize_pem() + &server_cert.pem();
 
         let server_pem_file = dir.path().join("server.pem");
         fs::write(&server_pem_file, &server_pem).unwrap();
 
-        let client_cert = generate_client_cert("client");
-        let signed_client_cert = client_cert.serialize_pem_with_signer(&ca_cert).unwrap();
-        let client_key = client_cert.serialize_private_key_pem();
-        let client_pem = client_key.clone() + &signed_client_cert;
+        let (client_cert, client_key) = generate_client_cert("client", &ca_issuer);
+        let client_cert_pem = client_cert.pem();
+        let client_key_pem = client_key.serialize_pem();
+        let client_pem = client_key_pem.clone() + &client_cert_pem;
 
         let client_pem_file = dir.path().join("client.pem");
         fs::write(&client_pem_file, &client_pem).unwrap();
 
-        let client_cert_x = generate_client_cert("client_x");
-        let signed_client_cert_x = client_cert_x.serialize_pem_with_signer(&ca_cert).unwrap();
-        let client_key_x = client_cert_x.serialize_private_key_pem();
+        let (client_x_cert, client_x_key) = generate_client_cert("client_x", &ca_issuer);
 
         Self {
             _dir: dir,
@@ -252,11 +251,11 @@ impl Tls {
             ca_cert_pem,
             ca_cert_file,
             server_identity_file: server_pem_file,
-            client_cert_pem: signed_client_cert,
-            client_cert_key: client_key,
+            client_cert_pem,
+            client_cert_key: client_key_pem,
             client_identity_file: client_pem_file,
-            client_x_cert_pem: signed_client_cert_x,
-            client_x_cert_key: client_key_x,
+            client_x_cert_pem: client_x_cert.pem(),
+            client_x_cert_key: client_x_key.serialize_pem(),
             hostname_verification,
         }
     }
@@ -1894,32 +1893,41 @@ Server {
 }
 
 #[allow(dead_code)]
-fn generate_ca_cert() -> (Certificate, String) {
+fn generate_ca_cert() -> (Issuer<'static, KeyPair>, Certificate) {
     let mut params = CertificateParams::default();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     params.distinguished_name.push(rcgen::DnType::CommonName, "ca");
-    let ca_cert = Certificate::from_params(params).unwrap();
-    let ca_cert_pem = ca_cert.serialize_pem().unwrap();
-    let ca_cert_key = rcgen::KeyPair::from_pem(&ca_cert.get_key_pair().serialize_pem()).unwrap();
-    let ca_cert_params = CertificateParams::from_ca_cert_pem(&ca_cert_pem, ca_cert_key).unwrap();
-    (Certificate::from_params(ca_cert_params).unwrap(), ca_cert_pem)
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+        rcgen::KeyUsagePurpose::CrlSign,
+    ];
+    let key = KeyPair::generate().unwrap();
+    let ca_cert = params.self_signed(&key).unwrap();
+    let ca_issuer = Issuer::from_ca_cert_der(ca_cert.der(), key).unwrap();
+    (ca_issuer, ca_cert)
 }
 
 #[allow(dead_code)]
-fn generate_server_cert(hostname_verification: bool) -> Certificate {
+fn generate_server_cert(hostname_verification: bool, issuer: &Issuer<'_, KeyPair>) -> (Certificate, KeyPair) {
     let san = if hostname_verification { vec!["127.0.0.1".to_string()] } else { vec![] };
-    let mut params = CertificateParams::new(san);
+    let mut params = CertificateParams::new(san).unwrap();
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature, rcgen::KeyUsagePurpose::KeyEncipherment];
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     params.distinguished_name.push(rcgen::DnType::CommonName, "server");
-    Certificate::from_params(params).unwrap()
+
+    let key = KeyPair::generate().unwrap();
+    let cert = params.signed_by(&key, issuer).unwrap();
+    (cert, key)
 }
 
 #[allow(dead_code)]
-fn generate_client_cert(cn: &str) -> Certificate {
+fn generate_client_cert(cn: &str, issuer: &Issuer<'_, KeyPair>) -> (Certificate, KeyPair) {
     let mut params = CertificateParams::default();
     params.distinguished_name.push(rcgen::DnType::CommonName, cn);
-    Certificate::from_params(params).unwrap()
+    let key = KeyPair::generate().unwrap();
+    let cert = params.signed_by(&key, issuer).unwrap();
+    (cert, key)
 }
 
 #[cfg(feature = "tls")]
