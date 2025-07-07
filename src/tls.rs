@@ -40,28 +40,23 @@ impl Default for TlsOptions {
 // * Allow disabling Hostname Verification: https://github.com/rustls/rustls/issues/578
 // * Dangerous verifiers API proposal: https://github.com/rustls/rustls/pull/1197
 #[derive(Debug)]
-struct TlsServerCertVerifier {
+struct NoHostnameVerificationServerCertVerifier {
     roots: RootCertStore,
     supported: WebPkiSupportedAlgorithms,
-    hostname_verification: bool,
 }
 
-impl TlsServerCertVerifier {
-    fn new(roots: RootCertStore, hostname_verification: bool) -> Self {
-        Self {
-            roots,
-            supported: CryptoProvider::get_default().unwrap().signature_verification_algorithms,
-            hostname_verification,
-        }
+impl NoHostnameVerificationServerCertVerifier {
+    unsafe fn new(roots: RootCertStore) -> Self {
+        Self { roots, supported: CryptoProvider::get_default().unwrap().signature_verification_algorithms }
     }
 }
 
-impl ServerCertVerifier for TlsServerCertVerifier {
+impl ServerCertVerifier for NoHostnameVerificationServerCertVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
-        server_name: &ServerName<'_>,
+        _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, TlsError> {
@@ -74,9 +69,6 @@ impl ServerCertVerifier for TlsServerCertVerifier {
             self.supported.all,
         )?;
 
-        if self.hostname_verification {
-            rustls::client::verify_server_name(&cert, server_name)?;
-        }
         Ok(ServerCertVerified::assertion())
     }
 
@@ -168,10 +160,16 @@ impl TlsOptions {
     }
 
     pub(crate) fn into_config(mut self) -> Result<ClientConfig> {
+        let roots = self.take_roots();
         // This has to be called before server cert verifier to install default crypto provider.
         let builder = ClientConfig::builder();
-        let verifier = TlsServerCertVerifier::new(self.take_roots(), self.hostname_verification);
-        let builder = builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier));
+        let builder = match self.hostname_verification {
+            true => builder.with_root_certificates(roots),
+            false => unsafe {
+                let verifier = NoHostnameVerificationServerCertVerifier::new(roots);
+                builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier))
+            },
+        };
         if let Some((client_cert, client_key)) = self.identity.take() {
             match builder.with_client_auth_cert(client_cert, client_key) {
                 Ok(config) => Ok(config),
