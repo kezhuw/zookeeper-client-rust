@@ -273,7 +273,8 @@ impl Tls {
     }
 
     fn options_x(&self) -> zk::TlsOptions {
-        self.options().with_pem_identity(&self.client_x_cert_pem, &self.client_x_cert_key).unwrap()
+        let certs = zk::TlsCerts::new().with_pem_identity(&self.client_x_cert_pem, &self.client_x_cert_key).unwrap();
+        self.options().with_certs(zk::TlsDynamicCerts::new(certs))
     }
 }
 
