@@ -107,15 +107,6 @@ impl TlsOptions {
         Self { ca_certs: RootCertStore::empty(), identity: None, hostname_verification: true }
     }
 
-    /// Trusts root certificates trusted by Mozilla.
-    ///
-    /// See [webpki-roots](https://docs.rs/webpki-roots) for more.
-    #[cfg(feature = "tls-mozilla-roots")]
-    pub fn with_mozilla_roots(mut self) -> Self {
-        self.ca_certs.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        self
-    }
-
     /// Disables hostname verification in tls handshake.
     ///
     /// # Safety

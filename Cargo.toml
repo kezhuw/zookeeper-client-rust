@@ -17,7 +17,6 @@ rust-version = "1.76"
 [features]
 default = []
 tls = ["rustls", "rustls-pemfile", "futures-rustls"]
-tls-mozilla-roots = ["tls", "webpki-roots"]
 sasl = ["sasl-gssapi", "sasl-digest-md5"]
 sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
 sasl-gssapi = ["rsasl/gssapi"]
@@ -40,7 +39,6 @@ either = "1.9.0"
 uuid = { version = "1.4.1", features = ["v4"] }
 rustls = { version =  "0.23.2", optional = true }
 rustls-pemfile = { version = "2", optional = true }
-webpki-roots = { version = "1.0.1", optional = true }
 derive-where = "1.2.7"
 fastrand = "2.0.2"
 tracing = "0.1.40"
