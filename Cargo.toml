@@ -17,6 +17,7 @@ rust-version = "1.76"
 [features]
 default = []
 tls = ["rustls", "rustls-pemfile", "futures-rustls"]
+fips = ["rustls?/fips"]
 sasl = ["sasl-gssapi", "sasl-digest-md5"]
 sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
 sasl-gssapi = ["rsasl/gssapi"]
