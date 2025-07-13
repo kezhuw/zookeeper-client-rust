@@ -18,4 +18,4 @@ test:
 	cargo test --all-features
 
 doc:
-	cargo doc --all-features
+	RUSTDOCFLAGS='--cfg docsrs' cargo +nightly doc --all-features
