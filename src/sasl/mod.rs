@@ -45,12 +45,14 @@ impl SaslOptions {
     /// provides no mean to grant ticket from KDC but simply utilizes whatever the ticket cache
     /// have.
     #[cfg(feature = "sasl-gssapi")]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi"))))]
     pub fn gssapi() -> GssapiSaslOptions {
         GssapiSaslOptions::new()
     }
 
     /// Construct a [DigestMd5SaslOptions] for further customization.
     #[cfg(feature = "sasl-digest-md5")]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-digest-md5"))))]
     pub fn digest_md5(
         username: impl Into<Cow<'static, str>>,
         password: impl Into<Cow<'static, str>>,

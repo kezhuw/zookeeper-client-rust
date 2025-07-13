@@ -27,6 +27,8 @@
 //! * `smol`: Toggle support for [smol](https://docs.rs/smol) builtin global executor.
 //! * `async-global-executor`: Toggle support for [async-global-executor](https://docs.rs/async-global-executor).
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod acl;
 mod chroot;
 mod client;
@@ -45,11 +47,15 @@ mod util;
 pub use self::acl::{Acl, Acls, AuthId, AuthUser, Permission};
 pub use self::error::Error;
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use self::tls::{TlsCa, TlsCerts, TlsCertsBuilder, TlsCertsOptions, TlsDynamicCerts, TlsIdentity, TlsOptions};
 pub use crate::client::*;
 #[cfg(feature = "sasl-digest-md5")]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-digest-md5"))))]
 pub use crate::sasl::DigestMd5SaslOptions;
 #[cfg(feature = "sasl-gssapi")]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi"))))]
 pub use crate::sasl::GssapiSaslOptions;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi", feature = "sasl-digest-md5"))))]
 pub use crate::sasl::SaslOptions;
