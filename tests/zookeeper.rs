@@ -262,7 +262,7 @@ impl Tls {
 
     fn options(&self) -> zk::TlsOptions {
         let mut options = zk::TlsOptions::default()
-            .with_pem_ca_certs(&self.ca_cert_pem)
+            .with_pem_ca(&self.ca_cert_pem)
             .unwrap()
             .with_pem_identity(&self.client_cert_pem, &self.client_cert_key)
             .unwrap();
@@ -273,7 +273,12 @@ impl Tls {
     }
 
     fn options_x(&self) -> zk::TlsOptions {
-        self.options().with_pem_identity(&self.client_x_cert_pem, &self.client_x_cert_key).unwrap()
+        let certs = zk::TlsCerts::builder()
+            .with_ca(zk::TlsCa::from_pem(&self.ca_cert_pem).unwrap())
+            .with_identity(zk::TlsIdentity::from_pem(&self.client_x_cert_pem, &self.client_x_cert_key).unwrap())
+            .build()
+            .unwrap();
+        self.options().with_certs(zk::TlsDynamicCerts::new(certs))
     }
 }
 

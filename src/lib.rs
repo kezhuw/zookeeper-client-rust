@@ -45,7 +45,7 @@ mod util;
 pub use self::acl::{Acl, Acls, AuthId, AuthUser, Permission};
 pub use self::error::Error;
 #[cfg(feature = "tls")]
-pub use self::tls::TlsOptions;
+pub use self::tls::{TlsCa, TlsCerts, TlsCertsBuilder, TlsCertsOptions, TlsDynamicCerts, TlsIdentity, TlsOptions};
 pub use crate::client::*;
 #[cfg(feature = "sasl-digest-md5")]
 pub use crate::sasl::DigestMd5SaslOptions;
