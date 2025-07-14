@@ -40,11 +40,28 @@ jobs:
       run: cargo install cargo-all-features
     - name: Build code
       run: cargo build-all-features
-  test:
-    needs: [build]
+  features:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute-matrix.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: romnn/cargo-feature-combinations@main
+    - name: Compute feature matrix
+      id: compute-matrix
+      run: |-
+        MATRIX="$(cargo fc matrix)"
+        echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+  test-matrix:
+    needs: [build, features]
+    runs-on: ubuntu-latest
+    name: "Test features: [${{ matrix.package.features }}]"
     env:
       RUST_LOG: debug
+    strategy:
+      fail-fast: false
+      matrix:
+          package: ${{ fromJson(needs.features.outputs.matrix) }}
     steps:
     - uses: actions/checkout@v2
     - uses: Swatinem/rust-cache@v1
@@ -57,7 +74,14 @@ jobs:
       run: |
         sudo apt install -y libkrb5-dev
     - name: Test code
-      run: cargo test --all-features -- --nocapture
+      run: cargo test --features "${{ matrix.package.features }}" -- --nocapture
+  test:
+    needs: [test-matrix]
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - if: ${{ contains(needs.*.result, 'failure') }}
+        run: exit 1
   coverage:
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'master')
     needs: [test]
