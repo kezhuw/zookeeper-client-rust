@@ -23,6 +23,8 @@ impl TlsDynamicConnector {
         let config = TlsClient::create_config(TlsClientOptions {
             certs: (*certs).clone(),
             hostname_verification: options.hostname_verification,
+            #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+            fips: options.fips,
         })?;
         Ok(Arc::new(Self { config: RwLock::new((version, config)), options }))
     }
@@ -30,8 +32,12 @@ impl TlsDynamicConnector {
     pub fn get(&self) -> TlsConnector {
         let (version, mut config) = self.config.read().unwrap().clone();
         if let Some((updated_version, certs)) = self.options.certs.get_updated(version) {
-            let options =
-                TlsClientOptions { certs: (*certs).clone(), hostname_verification: self.options.hostname_verification };
+            let options = TlsClientOptions {
+                certs: (*certs).clone(),
+                hostname_verification: self.options.hostname_verification,
+                #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+                fips: self.options.fips,
+            };
             config = match TlsClient::create_config(options) {
                 Ok(config) => self.update_config(updated_version, config),
                 Err(err) => {
@@ -90,12 +96,22 @@ impl TlsClient {
     pub(super) fn new(options: TlsClientOptions<TlsInnerCerts>) -> Result<TlsClient> {
         let inner = match options.certs {
             TlsInnerCerts::Static(certs) => {
-                let options = TlsClientOptions { certs, hostname_verification: options.hostname_verification };
+                let options = TlsClientOptions {
+                    certs,
+                    hostname_verification: options.hostname_verification,
+                    #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+                    fips: options.fips,
+                };
                 let config = Self::create_config(options)?;
                 TlsInnerClient::Static(TlsConnector::from(config))
             },
             TlsInnerCerts::Dynamic(certs) => {
-                let options = TlsClientOptions { certs, hostname_verification: options.hostname_verification };
+                let options = TlsClientOptions {
+                    certs,
+                    hostname_verification: options.hostname_verification,
+                    #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+                    fips: options.fips,
+                };
                 TlsDynamicConnector::new(options).map(TlsInnerClient::Dynamic)?
             },
         };
@@ -104,6 +120,18 @@ impl TlsClient {
 
     fn create_config(options: TlsClientOptions<TlsCerts>) -> Result<Arc<ClientConfig>> {
         let certs = options.certs;
+        #[cfg(feature = "fips-only")]
+        let builder = ClientConfig::builder_with_provider(rustls::crypto::default_fips_provider().into())
+            .with_safe_default_protocol_versions()
+            .map_err(|err| Error::with_other("fail to set tls version for FIPS mode", err))?;
+        #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+        let builder = match options.fips {
+            true => ClientConfig::builder_with_provider(rustls::crypto::default_fips_provider().into())
+                .with_safe_default_protocol_versions()
+                .map_err(|err| Error::with_other("fail to set tls version for FIPS mode", err))?,
+            false => ClientConfig::builder(),
+        };
+        #[cfg(not(feature = "fips"))]
         let builder = ClientConfig::builder();
         let builder = match options.hostname_verification {
             true => {
@@ -364,6 +392,51 @@ mod tests {
         let cert = X509Certificate::from_der(peer_cert[0].as_ref()).unwrap().1;
         let name = cert.subject().iter_common_name().next().unwrap();
         assert_eq!(name.as_str().unwrap(), client_name);
+    }
+
+    #[cfg(feature = "fips")]
+    #[rstest::rstest]
+    #[case::fips_force(true)]
+    #[case::fips_none(false)]
+    #[asyncs::test]
+    #[test_fork::fork]
+    async fn with_fips(#[case] fips: bool) {
+        rustls::crypto::CryptoProvider {
+            cipher_suites: rustls::crypto::aws_lc_rs::ALL_CIPHER_SUITES.to_vec(),
+            ..rustls::crypto::aws_lc_rs::default_provider()
+        }
+        .install_default()
+        .unwrap();
+
+        let (ca, _listener) = listen().await;
+        let client_cert = generate_client_cert("client1", &ca.issuer);
+        let certs = TlsCerts::builder()
+            .with_ca(TlsCa::from_pem(&ca.pem()).unwrap())
+            .with_identity(
+                TlsIdentity::from_pem(&client_cert.cert.pem(), &client_cert.signing_key.serialize_pem()).unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        let options = match fips {
+            true => TlsOptions::new().with_certs(certs).with_fips(),
+            false => TlsOptions::new().with_certs(certs),
+        };
+
+        let options = options.into_client_options().unwrap();
+        let options = match options.certs {
+            super::TlsInnerCerts::Static(certs) => super::TlsClientOptions {
+                certs,
+                hostname_verification: options.hostname_verification,
+                #[cfg(not(feature = "fips-only"))]
+                fips: options.fips,
+            },
+            _ => unreachable!(),
+        };
+        let config = TlsClient::create_config(options).unwrap();
+        #[cfg(feature = "fips-only")]
+        let fips = true;
+        assert_eq!(fips, config.fips());
     }
 
     #[asyncs::test]
