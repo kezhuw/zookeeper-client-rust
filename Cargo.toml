@@ -18,6 +18,7 @@ rust-version = "1.76"
 default = []
 tls = ["rustls", "rustls-webpki", "rustls-pemfile", "futures-rustls"]
 fips = ["rustls?/fips"]
+fips-only = ["fips"]
 sasl = ["sasl-gssapi", "sasl-digest-md5"]
 sasl-digest-md5 = ["rsasl/unstable_custom_mechanism", "md5", "linkme", "hex"]
 sasl-gssapi = ["rsasl/gssapi"]
@@ -73,6 +74,8 @@ rustls-pki-types = "1.12.0"
 x509-parser = "0.17.0"
 atomic-write-file = "0.2.3"
 notify = "7.0.0"
+test-fork = "0.1.3"
+rstest = "0.25.0"
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
@@ -81,6 +84,10 @@ denylist = ["tokio", "smol", "async-global-executor"]
 [package.metadata.cargo-feature-combinations]
 isolated_feature_sets = [
     ["tls", "sasl"],
+]
+include_feature_sets = [
+    ["tls", "fips"],
+    ["tls", "fips-only"],
 ]
 
 [package.metadata.docs.rs]

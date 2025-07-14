@@ -244,6 +244,8 @@ pub struct TlsOptions {
     identity: Option<TlsIdentity>,
     certs: Option<TlsCertsOptions>,
     hostname_verification: bool,
+    #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+    fips: bool,
 }
 
 impl Default for TlsOptions {
@@ -262,7 +264,14 @@ impl TlsOptions {
 
     /// Tls options with no ca certificates.
     pub fn new() -> Self {
-        Self { ca: None, identity: None, certs: None, hostname_verification: true }
+        Self {
+            ca: None,
+            identity: None,
+            certs: None,
+            hostname_verification: true,
+            #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+            fips: false,
+        }
     }
 
     /// Disables hostname verification in tls handshake.
@@ -271,6 +280,26 @@ impl TlsOptions {
     /// This exposes risk to man-in-the-middle attacks.
     pub unsafe fn with_no_hostname_verification(mut self) -> Self {
         self.hostname_verification = false;
+        self
+    }
+
+    /// Enables FIPS mode at runtime for tls connection.
+    ///
+    /// This is a nop in case of "fips-only" feature is enabled.
+    #[cfg(feature = "fips")]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "fips", feature = "fips-only"))))]
+    pub fn with_fips(self) -> Self {
+        self.with_fips_internal()
+    }
+
+    #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+    fn with_fips_internal(mut self) -> Self {
+        self.fips = true;
+        self
+    }
+
+    #[cfg(feature = "fips-only")]
+    fn with_fips_internal(self) -> Self {
         self
     }
 
@@ -313,7 +342,7 @@ impl TlsOptions {
         self
     }
 
-    pub(crate) fn into_client(self) -> Result<TlsClient> {
+    pub(super) fn into_client_options(self) -> Result<TlsClientOptions<TlsInnerCerts>> {
         let certs = match self.certs.map(TlsInnerCerts::from) {
             None => {
                 let certs = TlsCertsBuilder { ca: self.ca, identity: self.identity }.build()?;
@@ -321,7 +350,16 @@ impl TlsOptions {
             },
             Some(certs) => certs,
         };
-        let options = TlsClientOptions { certs, hostname_verification: self.hostname_verification };
+        Ok(TlsClientOptions {
+            certs,
+            hostname_verification: self.hostname_verification,
+            #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+            fips: self.fips,
+        })
+    }
+
+    pub(crate) fn into_client(self) -> Result<TlsClient> {
+        let options = self.into_client_options()?;
         TlsClient::new(options)
     }
 }
@@ -329,4 +367,6 @@ impl TlsOptions {
 pub(super) struct TlsClientOptions<Certs> {
     pub certs: Certs,
     pub hostname_verification: bool,
+    #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+    pub fips: bool,
 }

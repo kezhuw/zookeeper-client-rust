@@ -15,6 +15,9 @@
 //!
 //! ## Feature flags
 //! * `tls`: Toggle TLS support.
+//! * `fips`: Toggle TLS FIPS mode support. See also [TlsOptions::with_fips].
+//! * `fips-only`: Force TLS FIPS mode. This should be considered as an application only feature to
+//!   fulfill security requirement at global level.
 //! * `sasl`: Toggle SASL support.
 //! * `sasl-gssapi`: Toggle only GSSAPI SASL support. This relies on binding package `libgssapi-sys`.
 //! * `sasl-digest-md5`: Toggle only DIGEST-MD5 SASL support.
