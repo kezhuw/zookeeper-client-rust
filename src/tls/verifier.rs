@@ -37,13 +37,17 @@ pub(super) struct NoHostnameVerificationServerCertVerifier {
 }
 
 impl NoHostnameVerificationServerCertVerifier {
-    pub unsafe fn new(roots: RootCertStore, crls: Vec<CertificateRevocationListDer<'static>>) -> Self {
+    pub unsafe fn new(
+        roots: RootCertStore,
+        crls: Vec<CertificateRevocationListDer<'static>>,
+        provider: &Arc<CryptoProvider>,
+    ) -> Self {
         let crls: Vec<_> = crls
             .iter()
             .map(|crl| BorrowedCertRevocationList::from_der(crl.as_ref()).unwrap().to_owned().unwrap())
             .map(CertRevocationList::Owned)
             .collect();
-        Self { roots, crls, supported: CryptoProvider::get_default().unwrap().signature_verification_algorithms }
+        Self { roots, crls, supported: provider.signature_verification_algorithms }
     }
 }
 

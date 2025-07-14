@@ -76,7 +76,6 @@ impl TlsClient {
     }
 
     fn create_config(certs: TlsCerts, hostname_verification: bool) -> Result<Arc<ClientConfig>> {
-        // This has to be called before server cert verifier to install default crypto provider.
         let builder = ClientConfig::builder();
         let builder = match hostname_verification {
             true => {
@@ -90,7 +89,11 @@ impl TlsClient {
                 builder.with_webpki_verifier(verifier)
             },
             false => unsafe {
-                let verifier = NoHostnameVerificationServerCertVerifier::new(certs.ca.roots, certs.ca.crls);
+                let verifier = NoHostnameVerificationServerCertVerifier::new(
+                    certs.ca.roots,
+                    certs.ca.crls,
+                    builder.crypto_provider(),
+                );
                 builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier))
             },
         };
