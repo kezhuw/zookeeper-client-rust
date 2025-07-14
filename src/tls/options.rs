@@ -135,7 +135,7 @@ pub struct TlsCertsOptions {
 }
 
 #[derive(Clone, Debug)]
-enum TlsInnerCerts {
+pub(super) enum TlsInnerCerts {
     Static(TlsCerts),
     Dynamic(TlsDynamicCerts),
 }
@@ -314,14 +314,19 @@ impl TlsOptions {
     }
 
     pub(crate) fn into_client(self) -> Result<TlsClient> {
-        let hostname_verification = self.hostname_verification;
-        match self.certs.map(TlsInnerCerts::from) {
+        let certs = match self.certs.map(TlsInnerCerts::from) {
             None => {
                 let certs = TlsCertsBuilder { ca: self.ca, identity: self.identity }.build()?;
-                TlsClient::new_static(certs, hostname_verification)
+                TlsInnerCerts::Static(certs)
             },
-            Some(TlsInnerCerts::Static(certs)) => TlsClient::new_static(certs, hostname_verification),
-            Some(TlsInnerCerts::Dynamic(certs)) => TlsClient::new_dynamic(certs, hostname_verification),
-        }
+            Some(certs) => certs,
+        };
+        let options = TlsClientOptions { certs, hostname_verification: self.hostname_verification };
+        TlsClient::new(options)
     }
+}
+
+pub(super) struct TlsClientOptions<Certs> {
+    pub certs: Certs,
+    pub hostname_verification: bool,
 }

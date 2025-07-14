@@ -8,27 +8,31 @@ use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
 use tracing::warn;
 
-use super::{NoHostnameVerificationServerCertVerifier, TlsCerts, TlsDynamicCerts};
+use super::{NoHostnameVerificationServerCertVerifier, TlsCerts, TlsClientOptions, TlsDynamicCerts, TlsInnerCerts};
 use crate::client::Result;
 use crate::error::Error;
 
-pub(crate) struct TlsDynamicConnector {
+struct TlsDynamicConnector {
     config: RwLock<(u64, Arc<ClientConfig>)>,
-    dynamic_certs: TlsDynamicCerts,
-    hostname_verification: bool,
+    options: TlsClientOptions<TlsDynamicCerts>,
 }
 
 impl TlsDynamicConnector {
-    pub fn new(dynamic_certs: TlsDynamicCerts, hostname_verification: bool) -> Result<Arc<TlsDynamicConnector>> {
-        let (version, certs) = dynamic_certs.get_versioned();
-        let config = TlsClient::create_config((*certs).clone(), hostname_verification)?;
-        Ok(Arc::new(Self { config: RwLock::new((version, config)), dynamic_certs, hostname_verification }))
+    pub fn new(options: TlsClientOptions<TlsDynamicCerts>) -> Result<Arc<TlsDynamicConnector>> {
+        let (version, certs) = options.certs.get_versioned();
+        let config = TlsClient::create_config(TlsClientOptions {
+            certs: (*certs).clone(),
+            hostname_verification: options.hostname_verification,
+        })?;
+        Ok(Arc::new(Self { config: RwLock::new((version, config)), options }))
     }
 
     pub fn get(&self) -> TlsConnector {
         let (version, mut config) = self.config.read().unwrap().clone();
-        if let Some((updated_version, certs)) = self.dynamic_certs.get_updated(version) {
-            config = match TlsClient::create_config((*certs).clone(), self.hostname_verification) {
+        if let Some((updated_version, certs)) = self.options.certs.get_updated(version) {
+            let options =
+                TlsClientOptions { certs: (*certs).clone(), hostname_verification: self.options.hostname_verification };
+            config = match TlsClient::create_config(options) {
                 Ok(config) => self.update_config(updated_version, config),
                 Err(err) => {
                     if self.skip_version(version, updated_version) {
@@ -60,24 +64,48 @@ impl TlsDynamicConnector {
 }
 
 #[derive(Clone)]
-pub(crate) enum TlsClient {
+enum TlsInnerClient {
     Static(TlsConnector),
     Dynamic(Arc<TlsDynamicConnector>),
 }
 
+impl TlsInnerClient {
+    async fn connect(&self, domain: ServerName<'static>, stream: TcpStream) -> std::io::Result<TlsStream<TcpStream>> {
+        match self {
+            Self::Static(connector) => connector.connect(domain, stream).await,
+            Self::Dynamic(connector) => {
+                let connector = connector.get();
+                connector.connect(domain, stream).await
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TlsClient {
+    inner: TlsInnerClient,
+}
+
 impl TlsClient {
-    pub(super) fn new_static(certs: TlsCerts, hostname_verification: bool) -> Result<TlsClient> {
-        let config = Self::create_config(certs, hostname_verification)?;
-        Ok(Self::Static(TlsConnector::from(config)))
+    pub(super) fn new(options: TlsClientOptions<TlsInnerCerts>) -> Result<TlsClient> {
+        let inner = match options.certs {
+            TlsInnerCerts::Static(certs) => {
+                let options = TlsClientOptions { certs, hostname_verification: options.hostname_verification };
+                let config = Self::create_config(options)?;
+                TlsInnerClient::Static(TlsConnector::from(config))
+            },
+            TlsInnerCerts::Dynamic(certs) => {
+                let options = TlsClientOptions { certs, hostname_verification: options.hostname_verification };
+                TlsDynamicConnector::new(options).map(TlsInnerClient::Dynamic)?
+            },
+        };
+        Ok(Self { inner })
     }
 
-    pub(super) fn new_dynamic(dynamic_certs: TlsDynamicCerts, hostname_verification: bool) -> Result<TlsClient> {
-        TlsDynamicConnector::new(dynamic_certs, hostname_verification).map(TlsClient::Dynamic)
-    }
-
-    fn create_config(certs: TlsCerts, hostname_verification: bool) -> Result<Arc<ClientConfig>> {
+    fn create_config(options: TlsClientOptions<TlsCerts>) -> Result<Arc<ClientConfig>> {
+        let certs = options.certs;
         let builder = ClientConfig::builder();
-        let builder = match hostname_verification {
+        let builder = match options.hostname_verification {
             true => {
                 let verifier = WebPkiServerVerifier::builder_with_provider(
                     certs.ca.roots.into(),
@@ -106,24 +134,10 @@ impl TlsClient {
         }
     }
 
-    async fn connect_tls(
-        &self,
-        domain: ServerName<'static>,
-        stream: TcpStream,
-    ) -> std::io::Result<TlsStream<TcpStream>> {
-        match self {
-            Self::Static(connector) => connector.connect(domain, stream).await,
-            Self::Dynamic(connector) => {
-                let connector = connector.get();
-                connector.connect(domain, stream).await
-            },
-        }
-    }
-
     pub async fn connect(&self, host: &str, port: u16) -> std::io::Result<TlsStream<TcpStream>> {
         let stream = TcpStream::connect((host, port)).await?;
         let domain = ServerName::try_from(host).unwrap().to_owned();
-        self.connect_tls(domain, stream).await
+        self.inner.connect(domain, stream).await
     }
 }
 
