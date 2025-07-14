@@ -76,6 +76,12 @@ notify = "7.0.0"
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
+denylist = ["tokio", "smol", "async-global-executor"]
+
+[package.metadata.cargo-feature-combinations]
+isolated_feature_sets = [
+    ["tls", "sasl"],
+]
 
 [package.metadata.docs.rs]
 all-features = true
