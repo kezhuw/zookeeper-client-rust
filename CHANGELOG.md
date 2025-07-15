@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] = 2025-07-15
+### Added
+- Support tls certificates reload and crls ([#66](https://github.com/kezhuw/zookeeper-client-rust/pull/66))
+- Doc required features to enable tls and sasl types ([#70](https://github.com/kezhuw/zookeeper-client-rust/pull/70))
+- Add feature and option to enable TLS FIPS mode ([#69](https://github.com/kezhuw/zookeeper-client-rust/pull/69), [#71](https://github.com/kezhuw/zookeeper-client-rust/pull/71))
+
+### Fixed
+- Mark `futures-rustls` as an optional dependency ([#56](https://github.com/kezhuw/zookeeper-client-rust/pull/56))
+- Restrict dangerous path to no hostname verification ([#65](https://github.com/kezhuw/zookeeper-client-rust/pull/65))
+
+### Changed
+- **Breaking:** Force explicit tls configuration to connect to tls endpoint ([#61](https://github.com/kezhuw/zookeeper-client-rust/pull/61))
+- **Breaking:** Default to empty ca roots for tls connections ([#62](https://github.com/kezhuw/zookeeper-client-rust/pull/62))
+- Deprecate Watcher::remove in favor of Drop ([#76](https://github.com/kezhuw/zookeeper-client-rust/pull/76))
+
+### Removed
+- **Breaking:** Drop deprecated Client::builder ([#63](https://github.com/kezhuw/zookeeper-client-rust/pull/63))
+- **Breaking:** Drop Mozilla tls roots ([#68](https://github.com/kezhuw/zookeeper-client-rust/pull/68))
+
 ## [0.9.1] = 2025-04-17
 ### Fixed
 - Mark `futures-rustls` as an optional dependency ([#56](https://github.com/kezhuw/zookeeper-client-rust/pull/56))
