@@ -7,10 +7,11 @@ mod watch;
 mod xid;
 
 use std::pin::pin;
+use std::sync::Weak;
 use std::time::{Duration, Instant};
 
 use async_io::Timer;
-use asyncs::select;
+use asyncs::{select, sync};
 use futures::channel::mpsc;
 use futures::{AsyncWriteExt, StreamExt};
 use ignore_result::Ignore;
@@ -25,13 +26,13 @@ pub use self::request::{
     MarshalledRequest,
     OpStat,
     Operation,
+    Request,
     SessionOperation,
     StateReceiver,
-    StateResponser,
 };
 pub use self::types::{EventType, SessionId, SessionInfo, SessionState, WatchedEvent};
+use self::watch::WatchManager;
 pub use self::watch::{OneshotReceiver, PersistentReceiver, WatchReceiver};
-use self::watch::{WatchManager, WatcherId};
 use crate::deadline::Deadline;
 use crate::endpoint::IterableEndpoints;
 use crate::error::Error;
@@ -44,22 +45,6 @@ use crate::tls::TlsOptions;
 
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
-
-trait RequestOperation {
-    fn into_responser(self) -> StateResponser;
-}
-
-impl RequestOperation for SessionOperation {
-    fn into_responser(self) -> StateResponser {
-        self.responser
-    }
-}
-
-impl RequestOperation for (WatcherId, StateResponser) {
-    fn into_responser(self) -> StateResponser {
-        self.1
-    }
-}
 
 #[derive(Default)]
 pub struct Builder {
@@ -110,7 +95,7 @@ impl Builder {
         Self { connection_timeout, ..self }
     }
 
-    pub fn build(self) -> Result<(Session, asyncs::sync::watch::Receiver<SessionState>), Error> {
+    pub fn build(self, requester: Weak<mpsc::UnboundedSender<Request>>) -> Result<Session, Error> {
         let session = match self.session {
             Some(session) => {
                 if session.is_readonly() {
@@ -136,9 +121,9 @@ impl Builder {
         };
         #[cfg(not(feature = "tls"))]
         let connector = Connector::new();
-        let (state_sender, state_receiver) = asyncs::sync::watch::channel(SessionState::Disconnected);
+        let (state_sender, state_receiver) = sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
-        let (watch_manager, unwatch_receiver) = WatchManager::new();
+        let watch_manager = WatchManager::new(requester, state_receiver);
         let mut session = Session {
             readonly: self.readonly,
             detached: self.detached,
@@ -165,11 +150,10 @@ impl Builder {
             authes: self.authes,
             state_sender,
             watch_manager,
-            unwatch_receiver: Some(unwatch_receiver),
         };
         let timeout = if self.session_timeout.is_zero() { DEFAULT_SESSION_TIMEOUT } else { self.session_timeout };
         session.reset_timeout(timeout);
-        Ok((session, state_receiver))
+        Ok(session)
     }
 }
 
@@ -199,10 +183,9 @@ pub struct Session {
     sasl_session: Option<SaslSession>,
 
     pub authes: Vec<MarshalledRequest>,
-    state_sender: asyncs::sync::watch::Sender<SessionState>,
+    state_sender: sync::watch::Sender<SessionState>,
 
     watch_manager: WatchManager,
-    unwatch_receiver: Option<mpsc::UnboundedReceiver<(WatcherId, StateResponser)>>,
 }
 
 impl Session {
@@ -215,12 +198,16 @@ impl Session {
         self.readonly && self.session.readonly
     }
 
-    async fn close_requester<T: RequestOperation>(mut requester: mpsc::UnboundedReceiver<T>, err: &Error) {
+    async fn close_requester(mut requester: mpsc::UnboundedReceiver<Request>, err: &Error) {
         requester.close();
-        while let Some(operation) = requester.next().await {
-            let responser = operation.into_responser();
+        while let Some(request) = requester.next().await {
+            let responser = request.into_responser();
             responser.send(Err(err.clone()));
         }
+    }
+
+    pub fn subscribe_state(&self) -> sync::watch::Receiver<SessionState> {
+        self.state_sender.subscribe()
     }
 
     #[instrument(name = "serve", skip_all, fields(session = display(self.session.id)))]
@@ -230,12 +217,11 @@ impl Session {
         conn: Connection,
         mut buf: Vec<u8>,
         mut depot: Depot,
-        mut requester: mpsc::UnboundedReceiver<SessionOperation>,
+        mut requester: mpsc::UnboundedReceiver<Request>,
     ) {
-        let mut unwatch_requester = self.unwatch_receiver.take().unwrap();
         endpoints.cycle();
         endpoints.reset();
-        self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
+        self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester).await;
         while !self.session_state.is_terminated() {
             let conn = match self.start(&mut endpoints, &mut buf, &mut depot).await {
                 Err(err) => {
@@ -246,11 +232,10 @@ impl Session {
                 Ok(conn) => conn,
             };
             endpoints.reset();
-            self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester, &mut unwatch_requester).await;
+            self.serve_once(conn, &mut endpoints, &mut buf, &mut depot, &mut requester).await;
         }
         let err = self.state_error();
         Self::close_requester(requester, &err).await;
-        Self::close_requester(unwatch_requester, &err).await;
         depot.terminate(err);
     }
 
@@ -292,10 +277,9 @@ impl Session {
         endpoints: &mut IterableEndpoints,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
-        requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
-        unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
+        requester: &mut mpsc::UnboundedReceiver<Request>,
     ) {
-        let err = self.serve_session(endpoints, &mut conn, buf, depot, requester, unwatch_requester).await.unwrap_err();
+        let err = self.serve_session(endpoints, &mut conn, buf, depot, requester).await.unwrap_err();
         self.resolve_serve_error(&err);
         info!("enter state {} due to {}", self.session_state, err);
         depot.error(&err);
@@ -550,8 +534,7 @@ impl Session {
         conn: &mut Connection,
         buf: &mut Vec<u8>,
         depot: &mut Depot,
-        requester: &mut mpsc::UnboundedReceiver<SessionOperation>,
-        unwatch_requester: &mut mpsc::UnboundedReceiver<(WatcherId, StateResponser)>,
+        requester: &mut mpsc::UnboundedReceiver<Request>,
     ) -> Result<(), Error> {
         #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
         self.sasl_session.take();
@@ -577,20 +560,19 @@ impl Session {
                     r?;
                     self.last_send = Instant::now();
                 },
-                r = requester.next(), if !channel_halted => {
-                    let operation = if let Some(operation) = r {
-                        operation
-                    } else {
+                r = requester.next(), if !channel_halted => match r {
+                    None => {
                         if !self.detached {
                             depot.push_session(SessionOperation::new_without_body(OpCode::CloseSession));
                         }
                         channel_halted = true;
-                        continue;
-                    };
-                    depot.push_session(operation);
-                },
-                r = unwatch_requester.next() => if let Some((watcher_id, responser)) = r {
-                    self.watch_manager.remove_watcher(watcher_id, responser, depot);
+                    }
+                    Some(Request::Session(operation)) => depot.push_session(operation),
+                    Some(Request::RemoveWatcher {
+                        id, responser
+                    }) => {
+                        self.watch_manager.remove_watcher(id, responser, depot);
+                    }
                 },
                 now = tick.as_mut() => {
                     if now >= self.last_recv + self.connector.timeout() {
