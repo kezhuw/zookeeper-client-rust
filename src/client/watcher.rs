@@ -68,6 +68,7 @@ impl OneshotWatcher {
     }
 
     /// Removes this watcher.
+    #[deprecated(since = "0.10.0", note = "Rust has Drop")]
     pub async fn remove(self) -> Result<(), Error> {
         self.receiver.remove().await
     }
@@ -110,6 +111,7 @@ impl PersistentWatcher {
     /// removing individually.
     ///
     /// [ZOOKEEPER-4472]: https://issues.apache.org/jira/browse/ZOOKEEPER-4472
+    #[deprecated(since = "0.10.0", note = "Rust has Drop")]
     pub async fn remove(self) -> Result<(), Error> {
         self.receiver.remove().await
     }

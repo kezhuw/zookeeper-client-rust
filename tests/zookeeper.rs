@@ -1339,6 +1339,7 @@ async fn test_delete() {
 
 #[asyncs::test]
 #[test_log::test]
+#[allow(deprecated)]
 async fn test_oneshot_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1611,6 +1612,7 @@ async fn test_fail_watch_with_concurrent_passive_remove() {
 
 #[asyncs::test]
 #[test_log::test]
+#[allow(deprecated)]
 async fn test_persistent_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1791,6 +1793,7 @@ async fn test_watcher_coexist_on_same_path() {
 
 #[asyncs::test]
 #[test_log::test]
+#[allow(deprecated)]
 async fn test_watcher_remove_after_client_closed() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1811,6 +1814,7 @@ async fn test_watcher_remove_after_client_closed() {
 
 #[asyncs::test]
 #[test_log::test]
+#[allow(deprecated)]
 async fn test_watcher_remove_session_expired() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1841,6 +1845,7 @@ async fn test_watcher_remove_session_expired() {
 // Use a single thread executor to predict request process order.
 #[asyncs::test(parallelism = 1)]
 #[test_log::test]
+#[allow(deprecated)]
 async fn test_watcher_remove_no_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
