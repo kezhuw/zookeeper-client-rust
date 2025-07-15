@@ -1,3 +1,6 @@
+use std::sync::{Arc, Weak};
+
+use asyncs::sync;
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
 use hashbrown::HashMap;
@@ -6,7 +9,7 @@ use ignore_result::Ignore;
 
 use super::depot::Depot;
 use super::event::WatcherEvent;
-use super::request::{Operation, SessionOperation, StateReceiver, StateResponser};
+use super::request::{Operation, Request, SessionOperation, StateReceiver, StateResponser};
 use super::types::{EventType, SessionState, WatchMode, WatchedEvent};
 use crate::error::Error;
 use crate::proto::{ErrorCode, OpCode, SetWatchesRequest};
@@ -37,9 +40,67 @@ impl WatchReceiver {
 }
 
 #[derive(Debug)]
-pub struct OneshotReceiver {
+struct RemovableWatcher {
     id: WatcherId,
-    unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    state: Arc<sync::watch::Receiver<SessionState>>,
+    unwatch: Weak<mpsc::UnboundedSender<Request>>,
+}
+
+impl RemovableWatcher {
+    fn new(
+        id: WatcherId,
+        state: Arc<sync::watch::Receiver<SessionState>>,
+        unwatch: Weak<mpsc::UnboundedSender<Request>>,
+    ) -> Self {
+        Self { id, state, unwatch }
+    }
+
+    fn into_parts(self) -> (WatcherId, Arc<sync::watch::Receiver<SessionState>>, Weak<mpsc::UnboundedSender<Request>>) {
+        unsafe {
+            let id = self.id;
+            let state = std::ptr::read(&self.state);
+            let unwatch = std::ptr::read(&self.unwatch);
+            std::mem::forget(self);
+            (id, state, unwatch)
+        }
+    }
+
+    fn discard(self) {
+        self.into_parts();
+    }
+
+    pub async fn remove(self) -> Result<(), Error> {
+        let (id, state, unwatch) = self.into_parts();
+        match unwatch.upgrade() {
+            None => Err(Error::ClientClosed),
+            Some(unwatch) => {
+                let (sender, receiver) = oneshot::channel();
+                if unwatch
+                    .unbounded_send(Request::RemoveWatcher { id, responser: StateResponser::new(sender) })
+                    .is_err()
+                {
+                    return Err(state.borrow().to_error());
+                }
+
+                let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
+                receiver.await?;
+                Ok(())
+            },
+        }
+    }
+}
+
+impl Drop for RemovableWatcher {
+    fn drop(&mut self) {
+        if let Some(unwatch) = self.unwatch.upgrade() {
+            unwatch.unbounded_send(Request::RemoveWatcher { id: self.id, responser: Default::default() }).ignore();
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct OneshotReceiver {
+    watcher: RemovableWatcher,
     receiver: Option<oneshot::Receiver<WatchedEvent>>,
 }
 
@@ -47,46 +108,27 @@ impl OneshotReceiver {
     pub fn new(
         id: WatcherId,
         receiver: oneshot::Receiver<WatchedEvent>,
-        unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+        unwatch: Weak<mpsc::UnboundedSender<Request>>,
+        state: Arc<sync::watch::Receiver<SessionState>>,
     ) -> Self {
-        OneshotReceiver { id, receiver: Some(receiver), unwatch }
-    }
-
-    unsafe fn into_unwatch(self) -> mpsc::UnboundedSender<(WatcherId, StateResponser)> {
-        let unwatch = std::ptr::read(&self.unwatch);
-        std::ptr::read(&self.receiver);
-        std::mem::forget(self);
-        unwatch
+        OneshotReceiver { watcher: RemovableWatcher::new(id, state, unwatch), receiver: Some(receiver) }
     }
 
     pub async fn recv(mut self) -> WatchedEvent {
         let receiver = self.receiver.take().unwrap();
         let event = receiver.await.unwrap();
-        unsafe { self.into_unwatch() };
+        self.watcher.discard();
         event
     }
 
     pub async fn remove(self) -> Result<(), Error> {
-        let id = self.id;
-        let unwatch = unsafe { self.into_unwatch() };
-        let (sender, receiver) = oneshot::channel();
-        unwatch.unbounded_send((id, StateResponser::new(sender))).ignore();
-        let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
-        receiver.await?;
-        Ok(())
-    }
-}
-
-impl Drop for OneshotReceiver {
-    fn drop(&mut self) {
-        self.unwatch.unbounded_send((self.id, Default::default())).ignore();
+        self.watcher.remove().await
     }
 }
 
 #[derive(Debug)]
 pub struct PersistentReceiver {
-    id: WatcherId,
-    unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    watcher: RemovableWatcher,
     receiver: mpsc::UnboundedReceiver<WatchedEvent>,
 }
 
@@ -94,16 +136,10 @@ impl PersistentReceiver {
     pub fn new(
         id: WatcherId,
         receiver: mpsc::UnboundedReceiver<WatchedEvent>,
-        unwatch: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+        unwatch: Weak<mpsc::UnboundedSender<Request>>,
+        state: Arc<sync::watch::Receiver<SessionState>>,
     ) -> Self {
-        PersistentReceiver { id, receiver, unwatch }
-    }
-
-    unsafe fn into_unwatch(self) -> mpsc::UnboundedSender<(WatcherId, StateResponser)> {
-        let unwatch = std::ptr::read(&self.unwatch);
-        std::ptr::read(&self.receiver);
-        std::mem::forget(self);
-        unwatch
+        PersistentReceiver { watcher: RemovableWatcher::new(id, state, unwatch), receiver }
     }
 
     pub async fn recv(&mut self) -> WatchedEvent {
@@ -111,19 +147,7 @@ impl PersistentReceiver {
     }
 
     pub async fn remove(self) -> Result<(), Error> {
-        let id = self.id;
-        let unwatch = unsafe { self.into_unwatch() };
-        let (sender, receiver) = oneshot::channel();
-        unwatch.unbounded_send((id, StateResponser::new(sender))).ignore();
-        let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
-        receiver.await?;
-        Ok(())
-    }
-}
-
-impl Drop for PersistentReceiver {
-    fn drop(&mut self) {
-        self.unwatch.unbounded_send((self.id, Default::default())).ignore();
+        self.watcher.remove().await
     }
 }
 
@@ -215,13 +239,16 @@ pub struct WatchManager {
     cached_paths: LinkedHashSet<String>,
     cached_watches: Vec<Watch>,
 
-    unwatch_sender: mpsc::UnboundedSender<(WatcherId, StateResponser)>,
+    requester: Weak<mpsc::UnboundedSender<Request>>,
+    state_receiver: Arc<sync::watch::Receiver<SessionState>>,
 }
 
 impl WatchManager {
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<(WatcherId, StateResponser)>) {
-        let (unwatch_sender, unwatch_receiver) = mpsc::unbounded();
-        let manager = WatchManager {
+    pub fn new(
+        requester: Weak<mpsc::UnboundedSender<Request>>,
+        state_receiver: sync::watch::Receiver<SessionState>,
+    ) -> Self {
+        WatchManager {
             cached_paths: LinkedHashSet::with_capacity(1000),
             cached_watches: Vec::with_capacity(100),
 
@@ -229,9 +256,9 @@ impl WatchManager {
             watches: HashMap::with_capacity(20),
             watching_paths: HashMap::with_capacity(20),
 
-            unwatch_sender,
-        };
-        (manager, unwatch_receiver)
+            requester,
+            state_receiver: state_receiver.into(),
+        }
     }
 
     fn new_watcher_id(&mut self) -> WatcherId {
@@ -261,7 +288,7 @@ impl WatchManager {
         let (sender, receiver) = oneshot::channel();
         let watcher = Watcher { id, kind, sender: WatchSender::Oneshot(sender) };
         self.add_watch(path, watcher);
-        OneshotReceiver::new(id, receiver, self.unwatch_sender.clone())
+        OneshotReceiver::new(id, receiver, self.requester.clone(), self.state_receiver.clone())
     }
 
     fn add_persistent_watch(&mut self, path: &str, kind: WatcherKind) -> PersistentReceiver {
@@ -269,7 +296,7 @@ impl WatchManager {
         let (sender, receiver) = mpsc::unbounded();
         let watcher = Watcher { id, kind, sender: WatchSender::Persistent(sender) };
         self.add_watch(path, watcher);
-        PersistentReceiver::new(id, receiver, self.unwatch_sender.clone())
+        PersistentReceiver::new(id, receiver, self.requester.clone(), self.state_receiver.clone())
     }
 
     fn add_data_watch(&mut self, path: &str) -> OneshotReceiver {

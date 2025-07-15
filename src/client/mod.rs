@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use std::time::Duration;
 
 use const_format::formatcp;
@@ -14,7 +15,7 @@ use thiserror::Error;
 use tracing::instrument;
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
-use super::session::{Depot, MarshalledRequest, Session, SessionOperation, WatchReceiver};
+use super::session::{Depot, MarshalledRequest, Request, Session, SessionOperation, WatchReceiver};
 use crate::acl::{Acl, Acls, AuthUser};
 use crate::chroot::{Chroot, ChrootPath, OwnedChroot};
 use crate::endpoint::{self, IterableEndpoints};
@@ -221,7 +222,7 @@ pub struct Client {
     version: Version,
     session: SessionInfo,
     session_timeout: Duration,
-    requester: mpsc::UnboundedSender<SessionOperation>,
+    requester: Arc<mpsc::UnboundedSender<Request>>,
     state_watcher: StateWatcher,
 }
 
@@ -243,7 +244,7 @@ impl Client {
         version: Version,
         session: SessionInfo,
         timeout: Duration,
-        requester: mpsc::UnboundedSender<SessionOperation>,
+        requester: Arc<mpsc::UnboundedSender<Request>>,
         state_watcher: StateWatcher,
     ) -> Client {
         Client { chroot, version, session, session_timeout: timeout, requester, state_watcher }
@@ -316,9 +317,9 @@ impl Client {
 
     fn send_marshalled_request(&self, request: MarshalledRequest) -> StateReceiver {
         let (operation, receiver) = SessionOperation::new_marshalled(request).with_responser();
-        if let Err(err) = self.requester.unbounded_send(operation) {
+        if let Err(err) = self.requester.unbounded_send(operation.into()) {
             let state = self.state();
-            err.into_inner().responser.send(Err(state.to_error()));
+            err.into_inner().into_responser().send(Err(state.to_error()));
         }
         receiver
     }
@@ -1655,7 +1656,9 @@ impl Connector {
         let builder = builder.with_tls(self.tls.take());
         #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
         let builder = builder.with_sasl(self.sasl.take());
-        let (mut session, state_receiver) = builder.build()?;
+        let (sender, receiver) = mpsc::unbounded();
+        let sender = Arc::new(sender);
+        let mut session = builder.build(Arc::downgrade(&sender))?;
         let mut endpoints = IterableEndpoints::from(endpoints.as_slice());
         endpoints.reset();
         if !self.fail_eagerly {
@@ -1664,10 +1667,9 @@ impl Connector {
         let mut buf = Vec::with_capacity(4096);
         let mut depot = Depot::new();
         let conn = session.start(&mut endpoints, &mut buf, &mut depot).await?;
-        let (sender, receiver) = mpsc::unbounded();
         let session_info = session.session.clone();
         let session_timeout = session.session_timeout;
-        let mut state_watcher = StateWatcher::new(state_receiver);
+        let mut state_watcher = StateWatcher::new(session.subscribe_state());
         // Consume all state changes so far.
         state_watcher.state();
         asyncs::spawn(async move {

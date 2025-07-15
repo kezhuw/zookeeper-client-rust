@@ -1789,28 +1789,82 @@ async fn test_watcher_coexist_on_same_path() {
     assert_that!(recursive_watcher.changed().await).is_equal_to(&expected);
 }
 
-// Use "current_thread" explicitly.
+#[asyncs::test]
+#[test_log::test]
+async fn test_watcher_remove_after_client_closed() {
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
+    let mut state_watcher = client.state_watcher();
+
+    // given: watchers
+    let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
+    let persistent_watcher = client.watch("/a", zk::AddWatchMode::Persistent).await.unwrap();
+
+    // when: all client dropped
+    drop(client);
+    assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
+
+    // then: watcher remove will get Error::ClientClosed.
+    assert_eq!(zk::Error::ClientClosed, exist_watcher.remove().await.unwrap_err());
+    assert_eq!(zk::Error::ClientClosed, persistent_watcher.remove().await.unwrap_err());
+}
+
+#[asyncs::test]
+#[test_log::test]
+async fn test_watcher_remove_session_expired() {
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
+    let mut state_watcher = client.state_watcher();
+
+    // given: watchers
+    let (_, oneshot_watcher1) = client.check_and_watch_stat("/").await.unwrap();
+    let (_, _, oneshot_watcher2) = client.get_and_watch_data("/").await.unwrap();
+    let (_, oneshot_watcher3) = client.list_and_watch_children("/").await.unwrap();
+    let (_, _, oneshot_watcher4) = client.get_and_watch_children("/").await.unwrap();
+
+    let persistent_watcher1 = client.watch("/", zk::AddWatchMode::Persistent).await.unwrap();
+    let persistent_watcher2 = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
+
+    // when: session expired
+    cluster.stop();
+    state_watcher.wait(zk::SessionState::Expired, None).await;
+
+    // then: watcher remove will get Error::SessionExpired
+    assert_eq!(oneshot_watcher1.remove().await.unwrap_err(), zk::Error::SessionExpired,);
+    assert_eq!(oneshot_watcher2.remove().await.unwrap_err(), zk::Error::SessionExpired,);
+    assert_eq!(oneshot_watcher3.remove().await.unwrap_err(), zk::Error::SessionExpired,);
+    assert_eq!(oneshot_watcher4.remove().await.unwrap_err(), zk::Error::SessionExpired,);
+    assert_eq!(persistent_watcher1.remove().await.unwrap_err(), zk::Error::SessionExpired,);
+    assert_eq!(persistent_watcher2.remove().await.unwrap_err(), zk::Error::SessionExpired,);
+}
+
+// Use a single thread executor to predict request process order.
 #[asyncs::test(parallelism = 1)]
 #[test_log::test]
-async fn test_remove_no_watcher() {
+async fn test_watcher_remove_no_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
 
+    // given: an exist watcher
     let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
+
+    // when: create a node to fire above watcher and remove that watcher immediately
     let create = client.create("/a", &[], PERSISTENT_OPEN);
+    let err = exist_watcher.remove().await.unwrap_err();
 
-    // Let session task issue `create` request first, oneshot watch will be removed by server.
-    asyncs::task::yield_now().await;
-
-    // Issue `RemoveWatches` which likely happen before watch event notification as it involves
-    // several IO paths.
-    assert_that!(exist_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
+    // then: watcher remove will get Error::NoWatcher
+    assert_that!(err).is_equal_to(zk::Error::NoWatcher);
     create.await.unwrap();
 
+    // given: a data watcher
     let (_, _, data_watcher) = client.get_and_watch_data("/a").await.unwrap();
+
+    // when: delete node to fire above watcher and remove that watcher immediately
     let delete = client.delete("/a", None);
-    asyncs::task::yield_now().await;
-    assert_that!(data_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
+    let err = data_watcher.remove().await.unwrap_err();
+
+    // then: watcher remove will get Error::NoWatcher
+    assert_that!(err).is_equal_to(zk::Error::NoWatcher);
     delete.await.unwrap();
 }
 
@@ -1820,6 +1874,8 @@ async fn test_session_event() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
 
+    let mut state_watcher = client.state_watcher();
+
     let (_, oneshot_watcher1) = client.check_and_watch_stat("/").await.unwrap();
     let (_, _, oneshot_watcher2) = client.get_and_watch_data("/").await.unwrap();
     let (_, oneshot_watcher3) = client.list_and_watch_children("/").await.unwrap();
@@ -1828,6 +1884,9 @@ async fn test_session_event() {
     let mut persistent_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
 
     cluster.stop();
+
+    assert_eq!(state_watcher.changed().await, zk::SessionState::Disconnected);
+    assert_eq!(state_watcher.changed().await, zk::SessionState::Expired);
 
     let event = persistent_watcher.changed().await;
     assert_eq!(event.event_type, zk::EventType::Session);

@@ -7,7 +7,7 @@ use futures::channel::oneshot;
 use ignore_result::Ignore;
 
 use super::types::WatchMode;
-use super::watch::WatchReceiver;
+use super::watch::{WatchReceiver, WatcherId};
 use crate::error::Error;
 use crate::proto::{self, AddWatchMode, ConnectRequest, OpCode, RequestHeader};
 use crate::record::{self, Record, StaticRecord};
@@ -124,6 +124,26 @@ impl MarshalledRequest {
 pub enum Operation {
     Connect(ConnectOperation),
     Session(SessionOperation),
+}
+
+pub enum Request {
+    Session(SessionOperation),
+    RemoveWatcher { id: WatcherId, responser: StateResponser },
+}
+
+impl From<SessionOperation> for Request {
+    fn from(operation: SessionOperation) -> Self {
+        Self::Session(operation)
+    }
+}
+
+impl Request {
+    pub fn into_responser(self) -> StateResponser {
+        match self {
+            Self::Session(operation) => operation.responser,
+            Self::RemoveWatcher { responser, .. } => responser,
+        }
+    }
 }
 
 impl Operation {
