@@ -14,9 +14,9 @@ use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::Rng;
 use rcgen::{Certificate, CertificateParams, Issuer, KeyPair};
+use rstest::rstest;
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
-use test_case::test_case;
 use testcontainers::clients::Cli as DockerCli;
 use testcontainers::core::{Container, Healthcheck, LogStream, RunnableImage, WaitFor};
 use testcontainers::images::generic::GenericImage;
@@ -131,7 +131,8 @@ async fn example() {
     assert_eq!(session_event.session_state, zk::SessionState::Closed);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_example() {
     asyncs::spawn(async move { example().await }).await.unwrap()
 }
@@ -157,7 +158,8 @@ async fn connect(cluster: &Cluster, chroot: &str) -> zk::Client {
     client.chroot(chroot).unwrap()
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_connect_nohosts() {
     assert_that!(zk::Client::connector()
         .session_timeout(Duration::from_secs(24 * 3600))
@@ -168,7 +170,8 @@ async fn test_connect_nohosts() {
     .is_equal_to(zk::Error::NoHosts);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_connect_timeout() {
     assert_that!(zk::Client::connector()
         .session_timeout(Duration::from_secs(1))
@@ -178,7 +181,8 @@ async fn test_connect_timeout() {
     .is_equal_to(zk::Error::Timeout);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_connect_session_expired() {
     let cluster = Cluster::new().await;
     let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
@@ -603,11 +607,13 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     }
 }
 
-#[test_case("/"; "no_chroot")]
-#[test_case("/x"; "chroot_x")]
-#[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(asyncs::test)]
-async fn test_multi(chroot: &str) {
+#[rstest]
+#[case::no_chroot("/")]
+#[case::chroot_x("/x")]
+#[case::chroot_x_y("/x/y")]
+#[asyncs::test]
+#[test_log::test]
+async fn test_multi(#[case] chroot: &str) {
     let cluster = Cluster::new().await;
     let client = connect(&cluster, chroot).await;
 
@@ -707,7 +713,8 @@ async fn test_multi(chroot: &str) {
     assert_that!(results).is_empty();
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_multi_async_order() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -732,7 +739,8 @@ async fn test_multi_async_order() {
     assert_that!(stat).is_equal_to(set_stat);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_check_writer() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -762,10 +770,12 @@ async fn test_check_writer() {
     assert_that!(data).is_equal_to(b"a".to_vec());
 }
 
-#[test_case("/x"; "chroot_x")]
-#[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(asyncs::test)]
-async fn test_lock_shared(chroot: &str) {
+#[rstest]
+#[case::chroot_x("/x")]
+#[case::chroot_x_y("/x/y")]
+#[asyncs::test]
+#[test_log::test]
+async fn test_lock_shared(#[case] chroot: &str) {
     let cluster = Cluster::new().await;
 
     test_lock_with_path(
@@ -777,10 +787,12 @@ async fn test_lock_shared(chroot: &str) {
     .await;
 }
 
-#[test_case("/x"; "chroot_x")]
-#[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(asyncs::test)]
-async fn test_lock_custom(chroot: &str) {
+#[rstest]
+#[case::chroot_x("/x")]
+#[case::chroot_x_y("/x/y")]
+#[asyncs::test]
+#[test_log::test]
+async fn test_lock_custom(#[case] chroot: &str) {
     let cluster = Cluster::new().await;
 
     let lock1_prefix = zk::LockPrefix::new_custom("/locks/custom/n-abc-".to_string(), "n-").unwrap();
@@ -788,10 +800,12 @@ async fn test_lock_custom(chroot: &str) {
     test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
 }
 
-#[test_case("/x"; "chroot_x")]
-#[test_case("/x/y"; "chroot_x_y")]
-#[test_log::test(asyncs::test)]
-async fn test_lock_curator(chroot: &str) {
+#[rstest]
+#[case::chroot_x("/x")]
+#[case::chroot_x_y("/x/y")]
+#[asyncs::test]
+#[test_log::test]
+async fn test_lock_curator(#[case] chroot: &str) {
     let cluster = Cluster::new().await;
 
     let lock1_prefix = zk::LockPrefix::new_curator("/locks/curator", "latch-").unwrap();
@@ -799,7 +813,8 @@ async fn test_lock_curator(chroot: &str) {
     test_lock_with_path(&cluster, chroot, lock1_prefix, lock2_prefix).await;
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_lock_no_node() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -807,7 +822,8 @@ async fn test_lock_no_node() {
     assert_eq!(client.lock(prefix, b"", zk::Acls::anyone_all()).await.unwrap_err(), zk::Error::NoNode);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_lock_curator_filter() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -867,7 +883,8 @@ async fn test_lock_with_path(
     assert_that!(client1.check_stat(&lock2_path).await.unwrap()).is_equal_to(None);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_no_node() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -885,7 +902,8 @@ async fn test_no_node() {
     );
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_request_order() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -913,7 +931,8 @@ async fn test_request_order() {
     assert_that!(get_child_data.await).is_equal_to(Err(zk::Error::NoNode));
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_data_node() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -932,7 +951,8 @@ async fn test_data_node() {
     assert_eq!(client.check_stat(path).await.unwrap(), None);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_create_root() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await.chroot("/a").unwrap();
@@ -942,7 +962,8 @@ async fn test_create_root() {
         .is_equal_to(zk::Error::BadArguments(&"can not create root node"));
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_create_sequential() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -966,7 +987,8 @@ async fn test_create_sequential() {
     assert_eq!((data, stat2), client.get_data(&path2).await.unwrap());
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_create_ttl() {
     let cluster = Cluster::with_properties(vec![
         "-Dzookeeper.extendedTypesEnabled=true",
@@ -984,7 +1006,8 @@ async fn test_create_ttl() {
     assert_that!(client.delete("/ttl", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_create_container() {
     let cluster = Cluster::with_properties(vec![
         "-Dzookeeper.extendedTypesEnabled=true",
@@ -1001,10 +1024,12 @@ async fn test_create_container() {
     assert_that!(client.delete("/container", None).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[test_case("3.3"; "3.3")]
-#[test_case("3.4"; "3.4")]
-#[test_log::test(asyncs::test)]
-async fn test_zookeeper_old_server(tag: &'static str) {
+#[rstest::rstest]
+#[case::version_3_3("3.3")]
+#[case::version_3_4("3.4")]
+#[asyncs::test]
+#[test_log::test]
+async fn test_zookeeper_old_server(#[case] tag: &'static str) {
     let cluster = Cluster::with_options(ClusterOptions { tag, ..Default::default() }, Some(Encryption::Raw)).await;
 
     let client = cluster.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
@@ -1039,7 +1064,8 @@ async fn test_zookeeper_old_server(tag: &'static str) {
     assert_eq!(event.event_type, zk::EventType::NodeDeleted);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_mkdir() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1055,7 +1081,8 @@ async fn test_mkdir() {
     assert_that!(_client.mkdir("/a/b/c", PERSISTENT_OPEN).await.unwrap_err()).is_equal_to(zk::Error::NoNode);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_descendants_number() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1103,7 +1130,8 @@ where
     }
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_ephemerals() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1165,7 +1193,8 @@ async fn test_ephemerals() {
     assert_eq!(vec!["/"], child_root_client.list_ephemerals("/").await.unwrap().into_sorted());
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_chroot() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1210,7 +1239,8 @@ async fn test_chroot() {
     assert_eq!(relative_grandchild_event.path, relative_grandchild_path);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_auth() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1232,7 +1262,8 @@ async fn test_auth() {
     assert!(authed_users.contains(&authed_user));
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_no_auth() {
     let cluster = Cluster::with_options(Default::default(), Some(Encryption::Raw)).await;
     let client = cluster.client(None).await;
@@ -1262,7 +1293,8 @@ async fn test_no_auth() {
     assert_eq!(no_auth_client.set_data("/acl_test_2", b"set_my_data", None).await.unwrap_err(), zk::Error::NoAuth);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 #[should_panic(expected = "AuthFailed")]
 async fn test_auth_failed() {
     let cluster = Cluster::with_options(
@@ -1281,7 +1313,8 @@ async fn test_auth_failed() {
     cluster.client(None).await;
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_delete() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1299,7 +1332,8 @@ async fn test_delete() {
     client.delete(path, Some(stat.version)).await.unwrap();
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_oneshot_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1471,7 +1505,8 @@ async fn test_oneshot_watcher() {
     eprintln!("node deletion done");
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_config_watch() {
     let cluster = Cluster::new().await;
 
@@ -1487,7 +1522,8 @@ async fn test_config_watch() {
     assert_eq!(event.path, "/zookeeper/config");
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_persistent_watcher_passive_remove() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1521,7 +1557,8 @@ async fn test_persistent_watcher_passive_remove() {
     assert_eq!(child_event.path, "/");
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_fail_watch_with_multiple_unwatching() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1546,7 +1583,8 @@ async fn test_fail_watch_with_multiple_unwatching() {
     }
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_fail_watch_with_concurrent_passive_remove() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1566,7 +1604,8 @@ async fn test_fail_watch_with_concurrent_passive_remove() {
     assert_that!(event.path).is_same_string_to("/a");
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_persistent_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1686,7 +1725,8 @@ async fn test_persistent_watcher() {
     assert_eq!(event, path_persistent_watcher.changed().await);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_watcher_coexist_on_same_path() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1745,7 +1785,8 @@ async fn test_watcher_coexist_on_same_path() {
 }
 
 // Use "current_thread" explicitly.
-#[test_log::test(asyncs::test(parallelism = 1))]
+#[asyncs::test(parallelism = 1)]
+#[test_log::test]
 async fn test_remove_no_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1768,7 +1809,8 @@ async fn test_remove_no_watcher() {
     delete.await.unwrap();
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_session_event() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1799,7 +1841,8 @@ async fn test_session_event() {
     assert_eq!(client.get_data("/a/no-exist-path").await.unwrap_err(), zk::Error::SessionExpired);
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_state_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1817,7 +1860,8 @@ async fn test_state_watcher() {
     }
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_client_drop() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1829,7 +1873,8 @@ async fn test_client_drop() {
     cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err();
 }
 
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_client_detach() {
     let cluster = Cluster::new().await;
     let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
@@ -1842,7 +1887,8 @@ async fn test_client_detach() {
 }
 
 #[cfg(feature = "sasl-digest-md5")]
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_sasl_digest_md5() {
     let cluster = Cluster::with_options(
         ClusterOptions {
@@ -1931,7 +1977,8 @@ fn generate_client_cert(cn: &str, issuer: &Issuer<'_, KeyPair>) -> (Certificate,
 }
 
 #[cfg(feature = "tls")]
-#[test_log::test(asyncs::test)]
+#[asyncs::test]
+#[test_log::test]
 async fn test_tls() {
     let cluster = Cluster::with_options(Default::default(), Some(Encryption::Tls)).await;
     let client = cluster.client(None).await;
@@ -1970,7 +2017,8 @@ impl StateWaiter for zk::StateWatcher {
 }
 
 #[cfg(target_os = "linux")]
-#[test_log::test(asyncs::test(send = false))]
+#[asyncs::test(send = false)]
+#[test_log::test]
 #[serial_test::serial(network_host)]
 async fn test_readonly_plaintext() {
     test_readonly(Encryption::Raw).await
@@ -1978,7 +2026,8 @@ async fn test_readonly_plaintext() {
 
 #[cfg(feature = "tls")]
 #[cfg(target_os = "linux")]
-#[test_log::test(asyncs::test(send = false))]
+#[asyncs::test(send = false)]
+#[test_log::test]
 #[serial_test::serial(network_host)]
 async fn test_readonly_tls() {
     test_readonly(Encryption::Tls).await
@@ -2052,7 +2101,8 @@ async fn test_readonly(encryption: Encryption) {
 /// * https://docs.docker.com/network/links/
 #[cfg(target_os = "linux")]
 #[serial_test::serial(network_host)]
-#[test_log::test(asyncs::test(send = false))]
+#[asyncs::test(send = false)]
+#[test_log::test]
 async fn test_update_ensemble() {
     let _cluster = Cluster::with_options(
         ClusterOptions {

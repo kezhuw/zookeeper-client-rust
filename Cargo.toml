@@ -55,7 +55,7 @@ futures-lite = "2.3.0"
 asyncs = "0.3.1"
 
 [dev-dependencies]
-test-log = { version = "0.2.15", features = ["log", "trace"] }
+test-log = { version = "0.2.18", features = ["log", "trace"] }
 env_logger = "0.10.0"
 rand = "0.8.4"
 pretty_assertions = "1.1.0"
@@ -68,6 +68,7 @@ rcgen = { version = "0.14.1", features = ["default", "x509-parser"] }
 serial_test = "3.0.0"
 asyncs = { version = "0.3.1", features = ["test"] }
 blocking = "1.6.0"
+rstest = "0.26.1"
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
