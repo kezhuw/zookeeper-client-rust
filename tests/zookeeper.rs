@@ -1789,29 +1789,29 @@ async fn test_watcher_coexist_on_same_path() {
     assert_that!(recursive_watcher.changed().await).is_equal_to(&expected);
 }
 
-// Use "current_thread" explicitly.
-#[asyncs::test(parallelism = 1)]
+#[asyncs::test]
 #[test_log::test]
 async fn test_remove_no_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
 
+    // given: a oneshot exist watcher
     let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
-    let create = client.create("/a", &[], PERSISTENT_OPEN);
 
-    // Let session task issue `create` request first, oneshot watch will be removed by server.
-    asyncs::task::yield_now().await;
+    // when: watch event fired
+    client.create("/a", &[], PERSISTENT_OPEN).await.unwrap();
 
-    // Issue `RemoveWatches` which likely happen before watch event notification as it involves
-    // several IO paths.
+    // then: watcher remove will get Error::NoWatcher
     assert_that!(exist_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
-    create.await.unwrap();
 
+    // given: a oneshot data watcher
     let (_, _, data_watcher) = client.get_and_watch_data("/a").await.unwrap();
-    let delete = client.delete("/a", None);
-    asyncs::task::yield_now().await;
+
+    // when: watch event fired
+    client.delete("/a", None).await.unwrap();
+
+    // then: watcher remove will get Error::NoWatcher
     assert_that!(data_watcher.remove().await.unwrap_err()).is_equal_to(zk::Error::NoWatcher);
-    delete.await.unwrap();
 }
 
 #[asyncs::test]

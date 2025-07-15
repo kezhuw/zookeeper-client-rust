@@ -386,7 +386,7 @@ impl WatchManager {
         if let Some((path, mode)) = self.try_remove_watcher(watcher_id, depot) {
             depot.push_remove_watch(path, mode, responser);
         } else {
-            responser.send_empty();
+            responser.send(Err(Error::NoWatcher));
         }
     }
 
