@@ -1961,7 +1961,7 @@ impl From<CheckWriteError> for Error {
     }
 }
 
-/// Similar to [MultiWriter] expect for [CheckWriter::commit].
+/// Similar to [MultiWriter] except for [CheckWriter::commit].
 pub struct CheckWriter<'a> {
     writer: MultiWriter<'a>,
 }

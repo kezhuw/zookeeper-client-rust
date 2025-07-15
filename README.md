@@ -19,6 +19,15 @@ This library is written from scratch. Its API is pretty different from Java coun
 * Most data operations are ordered at future creation time but not polling time.
 * Cloneable `Client` and `Client::chroot` enables session sharing cross multiple different rooted clients.
 
+## Features
+* TLS support.
+* FIPS mode support with compile-time and runtime toggle.
+* SASL support.
+* Async runtime agnostic.
+* [Curator compatible lock recipes](https://docs.rs/zookeeper-client/latest/zookeeper_client/struct.Client.html#method.lock).
+* Versatile transactional like APIs [`LockClient`](https://docs.rs/zookeeper-client/latest/zookeeper_client/struct.LockClient.html),  [`MultiWriter`](https://docs.rs/zookeeper-client/latest/zookeeper_client/struct.MultiWriter.html), [`MultiReader`](https://docs.rs/zookeeper-client/latest/zookeeper_client/struct.MultiReader.html) and [`CheckWriter`](https://docs.rs/zookeeper-client/latest/zookeeper_client/struct.CheckWriter.html).
+* Up to date API set comparing to official Java client.
+
 ## Examples
 
 ### Basics
