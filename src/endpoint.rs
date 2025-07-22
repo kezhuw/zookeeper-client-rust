@@ -212,17 +212,18 @@ impl IterableEndpoints {
     }
 
     pub async fn next(&mut self, max_delay: Duration) -> Option<EndpointRef<'_>> {
-        let index = self.index()?;
-        self.delay(index, max_delay).await;
-        self.step();
-        Some(self.endpoints[index.offset].to_ref())
-    }
-
-    async fn delay(&self, index: Index, max_delay: Duration) {
-        let timeout = max_delay.min(Self::timeout(index, self.endpoints.len()));
+        let (endpoint, timeout) = self.next_with_delay(max_delay)?;
         if timeout != Duration::ZERO {
             Timer::after(timeout).await;
         }
+        Some(endpoint)
+    }
+
+    fn next_with_delay(&mut self, max_delay: Duration) -> Option<(EndpointRef<'_>, Duration)> {
+        let index = self.index()?;
+        let timeout = max_delay.min(Self::timeout(index, self.endpoints.len()));
+        self.step();
+        Some((self.endpoints[index.offset].to_ref(), timeout))
     }
 
     fn timeout(index: Index, size: usize) -> Duration {
@@ -233,7 +234,7 @@ impl IterableEndpoints {
         if index.offset == 0 {
             let jitter = Duration::from_millis(fastrand::u32(0..100).into());
             let base = Duration::from_millis(1000).min(unit * size as u32);
-            base * 2u32.pow(index.cycles as u32 - 1) + jitter
+            base.saturating_mul(2u32.saturating_pow(index.cycles as u32 - 1)).saturating_add(jitter)
         } else {
             let jitter = Duration::from_millis(fastrand::u32(0..50).into());
             (unit * (index.offset as u32)) / 2 + jitter
@@ -362,6 +363,18 @@ mod tests {
             + IterableEndpoints::timeout(Index { offset: 1, cycles: 1 }, 3);
         let now = std::time::Instant::now();
         assert_that!(now).is_greater_than(start + delay);
+
+        let n = endpoints.len() * 64;
+        for _ in 0..n {
+            endpoints.step();
+        }
+        while endpoints.index().unwrap().offset != 0 {
+            endpoints.step();
+        }
+        let (_endpoint, delay) = endpoints.next_with_delay(Duration::from_secs(10)).unwrap();
+        assert_that!(delay).is_equal_to(Duration::from_secs(10));
+        let (_endpoint, delay) = endpoints.next_with_delay(Duration::from_secs(10)).unwrap();
+        assert_that!(delay).is_less_than(Duration::from_secs(10));
     }
 
     #[test]
