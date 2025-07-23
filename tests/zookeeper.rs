@@ -162,8 +162,8 @@ async fn connect(cluster: &Cluster, chroot: &str) -> zk::Client {
 #[test_log::test]
 async fn test_connect_nohosts() {
     assert_that!(zk::Client::connector()
-        .session_timeout(Duration::from_secs(24 * 3600))
-        .fail_eagerly()
+        .with_session_timeout(Duration::from_secs(24 * 3600))
+        .with_fail_eagerly()
         .connect("127.0.0.1:100,127.0.0.1:101")
         .await
         .unwrap_err())
@@ -174,7 +174,7 @@ async fn test_connect_nohosts() {
 #[test_log::test]
 async fn test_connect_timeout() {
     assert_that!(zk::Client::connector()
-        .session_timeout(Duration::from_secs(1))
+        .with_session_timeout(Duration::from_secs(1))
         .connect("127.0.0.1:100,127.0.0.1:101")
         .await
         .unwrap_err())
@@ -185,13 +185,13 @@ async fn test_connect_timeout() {
 #[test_log::test]
 async fn test_connect_session_expired() {
     let cluster = Cluster::new().await;
-    let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
+    let client = cluster.custom_client(None, |connector| connector.with_detached()).await.unwrap();
     let timeout = client.session_timeout();
     let session = client.into_session();
 
     Timer::after(timeout * 2).await;
 
-    assert_that!(cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err())
+    assert_that!(cluster.custom_client(None, |connector| connector.with_session(session)).await.unwrap_err())
         .is_equal_to(zk::Error::SessionExpired);
 }
 
@@ -572,12 +572,11 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 
     #[cfg(feature = "tls")]
     pub fn connector(&self) -> zk::Connector {
-        let mut connector = zk::Client::connector();
+        let connector = zk::Client::connector();
         let Some(tls) = self.tls.as_ref() else {
             return connector;
         };
-        connector.tls(tls.options());
-        connector
+        connector.with_tls(tls.options())
     }
 
     pub async fn client(&self, chroot: Option<&str>) -> zk::Client {
@@ -588,7 +587,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     pub async fn client_x(&self, chroot: Option<&str>) -> zk::Client {
         self.custom_client(chroot, |connector| match self.tls.as_ref().map(Tls::options_x) {
             None => connector,
-            Some(options) => connector.tls(options),
+            Some(options) => connector.with_tls(options),
         })
         .await
         .unwrap()
@@ -597,10 +596,9 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     pub async fn custom_client(
         &self,
         chroot: Option<&str>,
-        custom: impl FnOnce(&mut zk::Connector) -> &mut zk::Connector,
+        custom: impl FnOnce(zk::Connector) -> zk::Connector,
     ) -> Result<zk::Client, zk::Error> {
-        let mut connector = self.connector();
-        custom(&mut connector);
+        let connector = custom(self.connector());
         let (url, secure) = self.url(chroot);
         match secure {
             #[cfg(feature = "tls")]
@@ -1037,7 +1035,7 @@ async fn test_create_container() {
 async fn test_zookeeper_old_server(#[case] tag: &'static str) {
     let cluster = Cluster::with_options(ClusterOptions { tag, ..Default::default() }, Some(Encryption::Raw)).await;
 
-    let client = cluster.custom_client(None, |connector| connector.server_version(3, 4, u32::MAX)).await.unwrap();
+    let client = cluster.custom_client(None, |connector| connector.with_server_version(3, 4, u32::MAX)).await.unwrap();
     let (stat, _sequence) = client.create("/a", b"a1", PERSISTENT_OPEN).await.unwrap();
     assert_that!(stat.is_invalid()).is_true();
 
@@ -1260,7 +1258,7 @@ async fn test_auth() {
     assert!(authed_users.contains(&authed_user));
 
     let authed_client =
-        cluster.custom_client(None, |connector| connector.auth(scheme.to_string(), auth.to_vec())).await.unwrap();
+        cluster.custom_client(None, |connector| connector.with_auth(scheme.to_string(), auth.to_vec())).await.unwrap();
 
     authed_client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
     let authed_users = client.list_auth_users().await.unwrap();
@@ -1939,20 +1937,20 @@ async fn test_client_drop() {
     let session = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    cluster.custom_client(None, |connector| connector.session(session)).await.unwrap_err();
+    cluster.custom_client(None, |connector| connector.with_session(session)).await.unwrap_err();
 }
 
 #[asyncs::test]
 #[test_log::test]
 async fn test_client_detach() {
     let cluster = Cluster::new().await;
-    let client = cluster.custom_client(None, |connector| connector.detached()).await.unwrap();
+    let client = cluster.custom_client(None, |connector| connector.with_detached()).await.unwrap();
 
     let mut state_watcher = client.state_watcher();
     let session = client.into_session();
     assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
 
-    cluster.custom_client(None, |connector| connector.session(session)).await.unwrap();
+    cluster.custom_client(None, |connector| connector.with_session(session)).await.unwrap();
 }
 
 #[cfg(feature = "sasl-digest-md5")]
@@ -1986,21 +1984,21 @@ Server {
     cluster
         .custom_client(None, |connector| {
             let options = zk::SaslOptions::digest_md5("client1", "password1");
-            connector.sasl(options)
+            connector.with_sasl(options)
         })
         .await
         .unwrap();
     cluster
         .custom_client(None, |connector| {
             let options = zk::SaslOptions::digest_md5("client2", "password2");
-            connector.sasl(options)
+            connector.with_sasl(options)
         })
         .await
         .unwrap();
     let err = cluster
         .custom_client(None, |connector| {
             let options = zk::SaslOptions::digest_md5("client1", "password2");
-            connector.sasl(options)
+            connector.with_sasl(options)
         })
         .await
         .unwrap_err();
@@ -2121,8 +2119,11 @@ async fn test_readonly(encryption: Encryption) {
     )
     .await;
 
-    let client =
-        zk::Client::connector().readonly(true).connect("localhost:4001,localhost:4002,localhost:4003").await.unwrap();
+    let client = zk::Client::connector()
+        .with_readonly(true)
+        .connect("localhost:4001,localhost:4002,localhost:4003")
+        .await
+        .unwrap();
 
     client.create("/x", b"", PERSISTENT_OPEN).await.unwrap();
 
@@ -2140,8 +2141,8 @@ async fn test_readonly(encryption: Encryption) {
     logs.wait_for_message("Read-only server started").unwrap();
 
     let client = zk::Client::connector()
-        .readonly(true)
-        .session_timeout(Duration::from_secs(60))
+        .with_readonly(true)
+        .with_session_timeout(Duration::from_secs(60))
         .connect("localhost:4001,localhost:4002,localhost:4003")
         .await
         .unwrap();
@@ -2149,8 +2150,13 @@ async fn test_readonly(encryption: Encryption) {
 
     let session = client.session().clone();
     assert_eq!(session.is_readonly(), true);
-    assert_that!(zk::Client::connector().session(session).connect("localhost:4001").await.unwrap_err().to_string())
-        .contains("readonly");
+    assert_that!(zk::Client::connector()
+        .with_session(session)
+        .connect("localhost:4001")
+        .await
+        .unwrap_err()
+        .to_string())
+    .contains("readonly");
 
     let mut state_watcher = client.state_watcher();
     assert_eq!(state_watcher.state(), zk::SessionState::ConnectedReadOnly);
