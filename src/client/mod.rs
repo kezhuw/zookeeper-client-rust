@@ -1568,6 +1568,15 @@ impl Connector {
     /// Specifies target session timeout to negotiate with ZooKeeper server.
     ///
     /// Defaults to 6s.
+    pub fn with_session_timeout(mut self, timeout: Duration) -> Self {
+        self.session_timeout = timeout;
+        self
+    }
+
+    /// Specifies target session timeout to negotiate with ZooKeeper server.
+    ///
+    /// Defaults to 6s.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_session_timeout instead")]
     pub fn session_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.session_timeout = timeout;
         self
@@ -1576,24 +1585,54 @@ impl Connector {
     /// Specifies idle timeout to conclude a connection as loss.
     ///
     /// Defaults to `2/5` of session timeout.
+    pub fn with_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.connection_timeout = timeout;
+        self
+    }
+
+    /// Specifies idle timeout to conclude a connection as loss.
+    ///
+    /// Defaults to `2/5` of session timeout.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_connection_timeout instead")]
     pub fn connection_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.connection_timeout = timeout;
         self
     }
 
     /// Specifies whether readonly session is allowed.
+    pub fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// Specifies whether readonly session is allowed.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_readonly instead")]
     pub fn readonly(&mut self, readonly: bool) -> &mut Self {
         self.readonly = readonly;
         self
     }
 
+    /// Adds auth info for given authentication scheme.
+    pub fn with_auth(mut self, scheme: String, auth: Vec<u8>) -> Self {
+        self.authes.push(AuthPacket { scheme, auth });
+        self
+    }
+
     /// Specifies auth info for given authentication scheme.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_auth instead")]
     pub fn auth(&mut self, scheme: String, auth: Vec<u8>) -> &mut Self {
         self.authes.push(AuthPacket { scheme, auth });
         self
     }
 
     /// Specifies session to reestablish.
+    pub fn with_session(mut self, session: SessionInfo) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// Specifies session to reestablish.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_session instead")]
     pub fn session(&mut self, session: SessionInfo) -> &mut Self {
         self.session = Some(session);
         self
@@ -1608,12 +1647,34 @@ impl Connector {
     ///
     /// [ZOOKEEPER-1381]: https://issues.apache.org/jira/browse/ZOOKEEPER-1381
     /// [ZOOKEEPER-3762]: https://issues.apache.org/jira/browse/ZOOKEEPER-3762
+    pub fn with_server_version(mut self, major: u32, minor: u32, patch: u32) -> Self {
+        self.server_version = Version(major, minor, patch);
+        self
+    }
+
+    /// Specifies target server version of ZooKeeper cluster.
+    ///
+    /// Client will issue server compatible protocol to avoid [Error::Unimplemented] for some
+    /// operations. See [Client::create] for an example.
+    ///
+    /// See [ZOOKEEPER-1381][] and [ZOOKEEPER-3762][] for references.
+    ///
+    /// [ZOOKEEPER-1381]: https://issues.apache.org/jira/browse/ZOOKEEPER-1381
+    /// [ZOOKEEPER-3762]: https://issues.apache.org/jira/browse/ZOOKEEPER-3762
+    #[deprecated(since = "0.11.0", note = "use Connector::with_server_version instead")]
     pub fn server_version(&mut self, major: u32, minor: u32, patch: u32) -> &mut Self {
         self.server_version = Version(major, minor, patch);
         self
     }
 
     /// Detaches created session so it will not be closed after all client instances dropped.
+    pub fn with_detached(mut self) -> Self {
+        self.detached = true;
+        self
+    }
+
+    /// Detaches created session so it will not be closed after all client instances dropped.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_detached instead")]
     pub fn detached(&mut self) -> &mut Self {
         self.detached = true;
         self
@@ -1621,6 +1682,16 @@ impl Connector {
 
     /// Specifies tls options for connections to ZooKeeper.
     #[cfg(feature = "tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+    pub fn with_tls(mut self, options: TlsOptions) -> Self {
+        self.tls = Some(options);
+        self
+    }
+
+    /// Specifies tls options for connections to ZooKeeper.
+    #[cfg(feature = "tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+    #[deprecated(since = "0.11.0", note = "use Connector::with_tls instead")]
     pub fn tls(&mut self, options: TlsOptions) -> &mut Self {
         self.tls = Some(options);
         self
@@ -1628,6 +1699,16 @@ impl Connector {
 
     /// Specifies SASL options.
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi", feature = "sasl-digest-md5"))))]
+    pub fn with_sasl(mut self, options: impl Into<SaslOptions>) -> Self {
+        self.sasl = Some(options.into());
+        self
+    }
+
+    /// Specifies SASL options.
+    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi", feature = "sasl-digest-md5"))))]
+    #[deprecated(since = "0.11.0", note = "use Connector::with_sasl instead")]
     pub fn sasl(&mut self, options: impl Into<SaslOptions>) -> &mut Self {
         self.sasl = Some(options.into());
         self
@@ -1637,13 +1718,23 @@ impl Connector {
     ///
     /// This permits fail-fast without wait up to [Self::session_timeout] in [Self::connect]. This
     /// is not suitable for situations where ZooKeeper cluster is accessible via a single virtual IP.
+    pub fn with_fail_eagerly(mut self) -> Self {
+        self.fail_eagerly = true;
+        self
+    }
+
+    /// Fail session establishment eagerly with [Error::NoHosts] when all hosts has been tried.
+    ///
+    /// This permits fail-fast without wait up to [Self::session_timeout] in [Self::connect]. This
+    /// is not suitable for situations where ZooKeeper cluster is accessible via a single virtual IP.
+    #[deprecated(since = "0.11.0", note = "use Connector::with_fail_eagerly instead")]
     pub fn fail_eagerly(&mut self) -> &mut Self {
         self.fail_eagerly = true;
         self
     }
 
     #[instrument(name = "connect", skip_all, fields(session))]
-    async fn connect_internally(&mut self, secure: bool, cluster: &str) -> Result<Client> {
+    async fn connect_internally(mut self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
         let builder = Session::builder()
             .with_session(self.session.take())
@@ -1685,7 +1776,7 @@ impl Connector {
     /// Same to [Self::connect] except that `server1` will use tls encrypted protocol given
     /// the connection string `server1,tcp://server2,tcp+tls://server3`.
     #[cfg(feature = "tls")]
-    pub async fn secure_connect(&mut self, cluster: &str) -> Result<Client> {
+    pub async fn secure_connect(self, cluster: &str) -> Result<Client> {
         self.connect_internally(true, cluster).await
     }
 
@@ -1700,11 +1791,7 @@ impl Connector {
     /// * [Error::NoHosts] if no host is available and [Self::fail_eagerly] is turn on
     /// * [Error::SessionExpired] if specified session expired
     /// * [Error::Timeout] if no session established with in approximate [Self::session_timeout]
-    ///
-    /// # Notable behaviors
-    /// The state of this connector is undefined after connection attempt no matter whether it is
-    /// success or not.
-    pub async fn connect(&mut self, cluster: &str) -> Result<Client> {
+    pub async fn connect(self, cluster: &str) -> Result<Client> {
         self.connect_internally(false, cluster).await
     }
 }
@@ -2208,19 +2295,25 @@ mod tests {
         let container = docker.run(image);
         let endpoint = format!("127.0.0.1:{}", container.get_host_port(2181));
 
-        let client1 = Client::connector().detached().connect(&endpoint).await.unwrap();
+        let client1 = Client::connector().with_detached().connect(&endpoint).await.unwrap();
         client1.create("/n1", b"", &CreateMode::Persistent.with_acls(Acls::anyone_all())).await.unwrap();
 
         let mut session = client1.into_session();
 
         // Fail to connect with large zxid.
         session.last_zxid = i64::MAX;
-        assert_that!(Client::connector().fail_eagerly().session(session.clone()).connect(&endpoint).await.unwrap_err())
-            .is_equal_to(Error::NoHosts);
+        assert_that!(Client::connector()
+            .with_fail_eagerly()
+            .with_session(session.clone())
+            .connect(&endpoint)
+            .await
+            .unwrap_err())
+        .is_equal_to(Error::NoHosts);
 
         // Succeed to connect with small zxid.
         session.last_zxid = 0;
-        let client2 = Client::connector().fail_eagerly().session(session.clone()).connect(&endpoint).await.unwrap();
+        let client2 =
+            Client::connector().with_fail_eagerly().with_session(session.clone()).connect(&endpoint).await.unwrap();
         client2.create("/n2", b"", &CreateMode::Persistent.with_acls(Acls::anyone_all())).await.unwrap();
     }
 }
