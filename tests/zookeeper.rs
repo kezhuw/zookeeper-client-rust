@@ -1253,14 +1253,13 @@ async fn test_auth() {
     let auth = b"bob:xyz";
     let authed_user = zk::AuthUser::new(scheme, user);
 
-    client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
+    client.auth(scheme, auth).await.unwrap();
     let authed_users = client.list_auth_users().await.unwrap();
     assert!(authed_users.contains(&authed_user));
 
-    let authed_client =
-        cluster.custom_client(None, |connector| connector.with_auth(scheme.to_string(), auth.to_vec())).await.unwrap();
+    let authed_client = cluster.custom_client(None, |connector| connector.with_auth(scheme, auth)).await.unwrap();
 
-    authed_client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
+    authed_client.auth(scheme, auth).await.unwrap();
     let authed_users = client.list_auth_users().await.unwrap();
     assert!(authed_users.contains(&authed_user));
 }
@@ -1274,7 +1273,7 @@ async fn test_no_auth() {
     let scheme = "digest";
     let auth = b"bob:xyz";
 
-    client.auth(scheme.to_string(), auth.to_vec()).await.unwrap();
+    client.auth(scheme, auth).await.unwrap();
     client
         .create("/acl_test", b"my_data", &zk::CreateMode::Persistent.with_acls(zk::Acls::creator_all()))
         .await
@@ -1518,7 +1517,7 @@ async fn test_config_watch() {
     let (config_bytes, stat, watcher) = client1.get_and_watch_config().await.unwrap();
 
     let client2 = cluster.client(None).await;
-    client2.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
+    client2.auth("digest", b"super:test").await.unwrap();
     client2.set_data("/zookeeper/config", &config_bytes, Some(stat.version)).await.unwrap();
 
     let event = watcher.changed().await;
@@ -2227,7 +2226,7 @@ async fn test_update_ensemble() {
         ]
         .into_iter(),
     };
-    zoo1_client.auth("digest".to_string(), b"super:test".to_vec()).await.unwrap();
+    zoo1_client.auth("digest", b"super:test").await.unwrap();
     let (new_config_bytes, _) = zoo1_client.update_ensemble(new_ensemble, Some(config_stat.mzxid)).await.unwrap();
     assert_that!(String::from_utf8_lossy(&new_config_bytes).into_owned()).contains("server.1");
     assert_that!(String::from_utf8_lossy(&new_config_bytes).into_owned()).contains("server.2");

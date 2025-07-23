@@ -12,12 +12,12 @@ use crate::record::{
 };
 
 #[derive(Clone, Debug)]
-pub struct AuthPacket {
-    pub scheme: String,
-    pub auth: Vec<u8>,
+pub struct AuthPacket<'a> {
+    pub scheme: &'a str,
+    pub auth: &'a [u8],
 }
 
-impl SerializableRecord for AuthPacket {
+impl SerializableRecord for AuthPacket<'_> {
     fn serialize(&self, buf: &mut dyn BufMut) {
         buf.put_i32(0);
         self.scheme.serialize(buf);
@@ -25,7 +25,7 @@ impl SerializableRecord for AuthPacket {
     }
 }
 
-impl DynamicRecord for AuthPacket {
+impl DynamicRecord for AuthPacket<'_> {
     fn serialized_len(&self) -> usize {
         i32::record_len() + self.scheme.serialized_len() + self.auth.serialized_len()
     }

@@ -36,7 +36,7 @@ pub use self::watch::{OneshotReceiver, PersistentReceiver, WatchReceiver};
 use crate::deadline::Deadline;
 use crate::endpoint::IterableEndpoints;
 use crate::error::Error;
-use crate::proto::{AuthPacket, ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
+use crate::proto::{ConnectRequest, ConnectResponse, ErrorCode, OpCode, PredefinedXid, ReplyHeader};
 use crate::record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
@@ -71,8 +71,8 @@ impl Builder {
         Self { sasl, ..self }
     }
 
-    pub fn with_authes(self, authes: &[AuthPacket]) -> Self {
-        Self { authes: authes.iter().map(|auth| MarshalledRequest::new(OpCode::Auth, auth)).collect(), ..self }
+    pub fn with_authes(self, authes: Vec<MarshalledRequest>) -> Self {
+        Self { authes, ..self }
     }
 
     pub fn with_readonly(self, readonly: bool) -> Self {
