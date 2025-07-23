@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use const_format::formatcp;
+use derive_where::derive_where;
 use either::{Either, Left, Right};
 use futures::channel::mpsc;
 use ignore_result::Ignore;
@@ -914,7 +915,7 @@ impl Client {
     ///   [SessionState::Disconnected] will not end authentication.
     /// * It is ok to ignore resulting future of this method as request is sending synchronously
     ///   and auth failure will fail ZooKeeper session with [SessionState::AuthFailed].
-    pub fn auth(&self, scheme: String, auth: Vec<u8>) -> impl Future<Output = Result<()>> + Send + '_ {
+    pub fn auth(&self, scheme: &str, auth: &[u8]) -> impl Future<Output = Result<()>> + Send + '_ {
         let request = AuthPacket { scheme, auth };
         let receiver = self.send_request(OpCode::Auth, &request);
         async move {
@@ -1531,13 +1532,15 @@ pub(crate) struct Version(u32, u32, u32);
 /// A builder for [Client] with more options than [Client::connect].
 ///
 /// Uses [Client::connector] to construct one.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+#[derive_where(Debug)]
 pub struct Connector {
     #[cfg(feature = "tls")]
     tls: Option<TlsOptions>,
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
     sasl: Option<SaslOptions>,
-    authes: Vec<AuthPacket>,
+    #[derive_where(skip(Debug))]
+    authes: Vec<MarshalledRequest>,
     session: Option<SessionInfo>,
     readonly: bool,
     detached: bool,
@@ -1613,15 +1616,19 @@ impl Connector {
     }
 
     /// Adds auth info for given authentication scheme.
-    pub fn with_auth(mut self, scheme: String, auth: Vec<u8>) -> Self {
-        self.authes.push(AuthPacket { scheme, auth });
+    pub fn with_auth(mut self, scheme: &str, auth: &[u8]) -> Self {
+        let packet = AuthPacket { scheme, auth };
+        let request = MarshalledRequest::new(OpCode::Auth, &packet);
+        self.authes.push(request);
         self
     }
 
     /// Specifies auth info for given authentication scheme.
     #[deprecated(since = "0.11.0", note = "use Connector::with_auth instead")]
     pub fn auth(&mut self, scheme: String, auth: Vec<u8>) -> &mut Self {
-        self.authes.push(AuthPacket { scheme, auth });
+        let packet = AuthPacket { scheme: &scheme, auth: &auth };
+        let request = MarshalledRequest::new(OpCode::Auth, &packet);
+        self.authes.push(request);
         self
     }
 
@@ -1734,19 +1741,19 @@ impl Connector {
     }
 
     #[instrument(name = "connect", skip_all, fields(session))]
-    async fn connect_internally(mut self, secure: bool, cluster: &str) -> Result<Client> {
+    async fn connect_internally(self, secure: bool, cluster: &str) -> Result<Client> {
         let (endpoints, chroot) = endpoint::parse_connect_string(cluster, secure)?;
         let builder = Session::builder()
-            .with_session(self.session.take())
-            .with_authes(&self.authes)
+            .with_session(self.session)
+            .with_authes(self.authes)
             .with_readonly(self.readonly)
             .with_detached(self.detached)
             .with_session_timeout(self.session_timeout)
             .with_connection_timeout(self.connection_timeout);
         #[cfg(feature = "tls")]
-        let builder = builder.with_tls(self.tls.take());
+        let builder = builder.with_tls(self.tls);
         #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
-        let builder = builder.with_sasl(self.sasl.take());
+        let builder = builder.with_sasl(self.sasl);
         let (sender, receiver) = mpsc::unbounded();
         let sender = Arc::new(sender);
         let mut session = builder.build(Arc::downgrade(&sender))?;
