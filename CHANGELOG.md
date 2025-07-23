@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] = 2025-07-23
+### Fixed
+- Fix overflow panic in calculating delay during cycling endpoints ([#79](https://github.com/kezhuw/zookeeper-client-rust/pull/79))
+
 ## [0.9.1] = 2025-04-17
 ### Fixed
 - Mark `futures-rustls` as an optional dependency ([#56](https://github.com/kezhuw/zookeeper-client-rust/pull/56))
@@ -88,6 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix!: forbid creation of root node "/" just like delete of it ([7e11a31](https://github.com/kezhuw/zookeeper-client-rust/commit/7e11a316eb65c5a5755abe1c46660393570c65db))
 - fix: unwatching revived by failed watch could remove ongoing watching ([d20c161](https://github.com/kezhuw/zookeeper-client-rust/commit/d20c1614c44d6e8115f4f855e6fed9759c64ac0b))
 
+[0.9.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.8.0...v0.9.0
+[0.8.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.7.0...v0.8.0
 [0.7.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.0...v0.7.0
 [0.6.4]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.6.3...v0.6.4
