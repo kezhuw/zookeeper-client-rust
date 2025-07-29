@@ -390,6 +390,7 @@ impl Session {
             }
             return Ok(());
         }
+        self.last_zxid = self.last_zxid.max(header.zxid);
         let operation = depot.pop_request(header.xid)?;
         self.handle_session_reply(operation, header.err, body, depot)
     }
@@ -477,7 +478,6 @@ impl Session {
         }
         while let Some(mut body) = record::try_deserialize::<&[u8]>(&mut reading)? {
             let header: ReplyHeader = record::unmarshal(&mut body)?;
-            self.last_zxid = self.last_zxid.max(header.zxid);
             self.handle_reply(header, body, depot)?;
         }
         let consumed_bytes = recved.len() - reading.len();
