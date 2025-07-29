@@ -1,15 +1,22 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::Arc;
+use std::pin::{pin, Pin};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{fs, future};
 
 use assert_matches::assert_matches;
 use assertor::*;
 use async_io::Timer;
+use async_net::{TcpListener, TcpStream};
 use asyncs::select;
+use asyncs::task::TaskHandle;
+use bytes::Buf;
+use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use futures::prelude::*;
+use ignore_result::Ignore;
 use pretty_assertions::assert_eq;
 use rand::distributions::Standard;
 use rand::Rng;
@@ -737,6 +744,202 @@ async fn test_multi_async_order() {
 
     assert_that!(data).is_equal_to("a1".as_bytes().to_owned());
     assert_that!(stat).is_equal_to(set_stat);
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ForwardCommand {
+    DisconnectAfterXidResponse { xid: i32 },
+}
+
+#[derive(Clone)]
+struct ConnectionInterceptor {
+    command: Arc<Mutex<Option<ForwardCommand>>>,
+}
+
+impl ConnectionInterceptor {
+    fn new() -> Self {
+        Self { command: Arc::new(Mutex::new(None)) }
+    }
+
+    fn consume(&self, expected_command: ForwardCommand) -> bool {
+        let mut lock = self.command.lock().unwrap();
+        match lock.as_ref() {
+            Some(command) if *command == expected_command => {
+                lock.take();
+                true
+            },
+            _ => false,
+        }
+    }
+
+    fn intercept(&self, command: ForwardCommand) {
+        *self.command.lock().unwrap() = Some(command);
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ReplyHeader {
+    pub xid: i32,
+    pub zxid: i64,
+    pub err: i32,
+}
+
+struct PortForwarder {
+    local_addr: SocketAddr,
+    interceptor: Arc<Mutex<Option<ConnectionInterceptor>>>,
+    _task: TaskHandle<()>,
+}
+
+impl PortForwarder {
+    async fn new(addr: SocketAddr) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let interceptor = Arc::new(Mutex::new(None));
+        let task = asyncs::spawn({
+            let interceptor = interceptor.clone();
+            async move {
+                while let Ok((client_stream, _addr)) = listener.accept().await {
+                    let Ok(server_stream) = TcpStream::connect(addr).await else {
+                        continue;
+                    };
+                    let connection_interceptor = ConnectionInterceptor::new();
+                    *interceptor.lock().unwrap() = Some(connection_interceptor.clone());
+                    Self::forward(client_stream, server_stream, connection_interceptor).await.ignore();
+                }
+            }
+        })
+        .attach();
+        Self { local_addr, interceptor, _task: task }
+    }
+
+    fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    fn interceptor(&self) -> Option<ConnectionInterceptor> {
+        self.interceptor.lock().unwrap().take()
+    }
+
+    async fn forward(
+        mut client: TcpStream,
+        mut server: TcpStream,
+        interceptor: ConnectionInterceptor,
+    ) -> Result<(), std::io::Error> {
+        let connect_request = Self::read_packet(&mut client).await?;
+        Self::write_packet(&mut server, &connect_request).await?;
+        let connect_response = Self::read_packet(&mut server).await?;
+        Self::write_packet(&mut client, &connect_response).await?;
+
+        let (mut client_reader, mut client_writer) = client.split();
+        let (mut server_reader, mut server_writer) = server.split();
+
+        let mut client_packets = pin!({
+            let (mut sender, receiver) = futures::channel::mpsc::channel(20);
+            asyncs::spawn(async move {
+                while let Ok(packet) = Self::read_packet(&mut client_reader).await {
+                    sender.send(packet).await.ignore();
+                }
+            });
+            receiver
+        });
+        let mut server_packets = pin!({
+            let (mut sender, receiver) = futures::channel::mpsc::channel(20);
+            asyncs::spawn(async move {
+                while let Ok((packet, header)) = Self::read_server_packet(&mut server_reader).await {
+                    sender.send((packet, header)).await.ignore();
+                }
+            });
+            receiver
+        });
+
+        loop {
+            select! {
+                Some(packet) = client_packets.next() => {
+                    Self::write_packet(&mut server_writer, packet.as_slice()).await.ignore();
+                }
+                Some((packet, header)) = server_packets.next() => {
+                    Self::write_packet(&mut client_writer, packet.as_slice()).await.ignore();
+                    if interceptor.consume(ForwardCommand::DisconnectAfterXidResponse { xid: header.xid }) {
+                        break;
+                    }
+                }
+                complete => break,
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn read_packet<T: AsyncRead + Unpin>(reader: &mut T) -> Result<Vec<u8>, std::io::Error> {
+        let mut len_buf = [0; 4];
+        let mut data_buf = Vec::new();
+        reader.read_exact(&mut len_buf[..]).await?;
+        let n = i32::from_be_bytes(len_buf) as usize;
+        data_buf.resize(n, 0u8);
+        reader.read_exact(data_buf.as_mut_slice()).await?;
+        Ok(data_buf)
+    }
+
+    async fn read_server_packet<T: AsyncRead + Unpin>(
+        reader: &mut T,
+    ) -> Result<(Vec<u8>, ReplyHeader), std::io::Error> {
+        let packet = Self::read_packet(reader).await?;
+        let mut buf = packet.as_slice();
+        let xid = buf.get_i32();
+        let zxid = buf.get_i64();
+        let err = buf.get_i32();
+        Ok((packet, ReplyHeader { xid, zxid, err }))
+    }
+
+    async fn write_packet<T: AsyncWrite + Unpin>(writer: &mut T, buf: &[u8]) -> Result<(), std::io::Error> {
+        let len_buf = (buf.len() as i32).to_be_bytes();
+        writer.write_all(&len_buf).await?;
+        writer.write_all(buf).await?;
+        Ok(())
+    }
+}
+
+#[asyncs::test]
+#[test_log::test]
+async fn test_multi_watching() {
+    let cluster = Cluster::with_options(Default::default(), Some(Encryption::Raw)).await;
+
+    let cluster_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), cluster.by_id(1).get_host_port(2181));
+    let forwarder = PortForwarder::new(cluster_addr).await;
+
+    let client = zk::Client::connect(&forwarder.local_addr().to_string()).await.unwrap();
+
+    let mut state_watcher = client.state_watcher();
+
+    let mut writer = client.new_multi_writer();
+
+    writer.add_create("/a", "/a.0".as_bytes(), PERSISTENT_OPEN).unwrap();
+    writer.add_create("/b", "/b.0".as_bytes(), PERSISTENT_OPEN).unwrap();
+    writer.add_create("/c", "/c.0".as_bytes(), PERSISTENT_OPEN).unwrap();
+    writer.commit().await.unwrap();
+
+    let interceptor = forwarder.interceptor().unwrap();
+    interceptor.intercept(ForwardCommand::DisconnectAfterXidResponse {
+        // PredefinedXid::Notification
+        xid: -1,
+    });
+
+    let (_data, _stat, watcher_a) = client.get_and_watch_data("/a").await.unwrap();
+    let (_data, _stat, watcher_b) = client.get_and_watch_data("/b").await.unwrap();
+    let (_data, _stat, watcher_c) = client.get_and_watch_data("/c").await.unwrap();
+
+    writer.add_set_data("/a", "/a.1".as_bytes(), None).unwrap();
+    writer.add_set_data("/b", "/b.1".as_bytes(), None).unwrap();
+    writer.add_set_data("/c", "/c.1".as_bytes(), None).unwrap();
+    std::mem::drop(writer.commit());
+
+    watcher_a.changed().await;
+
+    state_watcher.wait(zk::SessionState::Disconnected, Some(Duration::from_secs(120))).await;
+    state_watcher.wait(zk::SessionState::SyncConnected, Some(Duration::from_secs(120))).await;
+
+    watcher_b.changed().await;
+    watcher_c.changed().await;
 }
 
 #[asyncs::test]
