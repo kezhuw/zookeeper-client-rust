@@ -6,6 +6,7 @@ use futures::StreamExt;
 use hashbrown::HashMap;
 use hashlink::LinkedHashSet;
 use ignore_result::Ignore;
+use tracing::error;
 
 use super::depot::Depot;
 use super::event::WatcherEvent;
@@ -362,7 +363,7 @@ impl WatchManager {
         use EventType::*;
         match event.event_type {
             NodeCreated | NodeDeleted | NodeDataChanged | NodeChildrenChanged => self.dispatch_path_event(event, depot),
-            _ => unreachable!("unexpected server watch event {:?}", event),
+            _ => error!("unexpected server watch event {:?}", event),
         }
     }
 
