@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2025-07-29
+### Fixed
+- Fix missing watch events in case of `OpCode.multi` notifications ([#82](https://github.com/kezhuw/zookeeper-client-rust/pull/82))
+- Log error for unexpected server watch event instead of panic ([#83](https://github.com/kezhuw/zookeeper-client-rust/pull/83))
+
 ## [0.11.0] - 2025-07-23
 ### Fixed
 - Fix overflow panic in calculating delay during cycling endpoints ([#79](https://github.com/kezhuw/zookeeper-client-rust/pull/79))
@@ -12,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Breaking:** Use `connect(self, cluster: &str)` to fix partially consumed `Connector` ([#80](https://github.com/kezhuw/zookeeper-client-rust/pull/80))
 - **Breaking:** Reshape `Client::auth` to `auth(&self, scheme: &str, auth: &[u8])` ([#81](https://github.com/kezhuw/zookeeper-client-rust/pull/81))
+
+## [0.10.2] - 2025-07-29
+### Fixed
+- Fix missing watch events in case of `OpCode.multi` notifications ([#82](https://github.com/kezhuw/zookeeper-client-rust/pull/82))
+- Log error for unexpected server watch event instead of panic ([#83](https://github.com/kezhuw/zookeeper-client-rust/pull/83))
 
 ## [0.10.1] - 2025-07-23
 ### Fixed
@@ -35,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **Breaking:** Drop deprecated Client::builder ([#63](https://github.com/kezhuw/zookeeper-client-rust/pull/63))
 - **Breaking:** Drop Mozilla tls roots ([#68](https://github.com/kezhuw/zookeeper-client-rust/pull/68))
+
+## [0.9.3] - 2025-07-29
+### Fixed
+- Fix missing watch events in case of `OpCode.multi` notifications ([#82](https://github.com/kezhuw/zookeeper-client-rust/pull/82))
+- Log error for unexpected server watch event instead of panic ([#83](https://github.com/kezhuw/zookeeper-client-rust/pull/83))
 
 ## [0.9.2] - 2025-07-23
 ### Fixed
@@ -123,9 +138,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix!: forbid creation of root node "/" just like delete of it ([7e11a31](https://github.com/kezhuw/zookeeper-client-rust/commit/7e11a316eb65c5a5755abe1c46660393570c65db))
 - fix: unwatching revived by failed watch could remove ongoing watching ([d20c161](https://github.com/kezhuw/zookeeper-client-rust/commit/d20c1614c44d6e8115f4f855e6fed9759c64ac0b))
 
+[0.11.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.10.0...v0.11.0
+[0.10.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.9.0...v0.10.0
+[0.9.3]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.8.0...v0.9.0
