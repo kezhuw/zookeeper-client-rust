@@ -5,16 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.2] = 2025-07-29
+## [0.10.2] - 2025-07-29
 ### Fixed
 - Fix missing watch events in case of `OpCode.multi` notifications ([#82](https://github.com/kezhuw/zookeeper-client-rust/pull/82))
 - Log error for unexpected server watch event instead of panic ([#83](https://github.com/kezhuw/zookeeper-client-rust/pull/83))
 
-## [0.10.1] = 2025-07-23
+## [0.10.1] - 2025-07-23
 ### Fixed
 - Fix overflow panic in calculating delay during cycling endpoints ([#79](https://github.com/kezhuw/zookeeper-client-rust/pull/79))
 
-## [0.10.0] = 2025-07-15
+## [0.10.0] - 2025-07-15
 ### Added
 - Support tls certificates reload and crls ([#66](https://github.com/kezhuw/zookeeper-client-rust/pull/66))
 - Doc required features to enable tls and sasl types ([#70](https://github.com/kezhuw/zookeeper-client-rust/pull/70))
@@ -33,20 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** Drop deprecated Client::builder ([#63](https://github.com/kezhuw/zookeeper-client-rust/pull/63))
 - **Breaking:** Drop Mozilla tls roots ([#68](https://github.com/kezhuw/zookeeper-client-rust/pull/68))
 
-## [0.9.3] = 2025-07-29
+## [0.9.3] - 2025-07-29
 ### Fixed
 - Fix missing watch events in case of `OpCode.multi` notifications ([#82](https://github.com/kezhuw/zookeeper-client-rust/pull/82))
 - Log error for unexpected server watch event instead of panic ([#83](https://github.com/kezhuw/zookeeper-client-rust/pull/83))
 
-## [0.9.2] = 2025-07-23
+## [0.9.2] - 2025-07-23
 ### Fixed
 - Fix overflow panic in calculating delay during cycling endpoints ([#79](https://github.com/kezhuw/zookeeper-client-rust/pull/79))
 
-## [0.9.1] = 2025-04-17
+## [0.9.1] - 2025-04-17
 ### Fixed
 - Mark `futures-rustls` as an optional dependency ([#56](https://github.com/kezhuw/zookeeper-client-rust/pull/56))
 
-## [0.9.0] = 2024-10-16
+## [0.9.0] - 2024-10-16
 ### Added
 - **Breaking:** support multiple async runtimes but not only tokio ([#52](https://github.com/kezhuw/zookeeper-client-rust/pull/52)[#53](https://github.com/kezhuw/zookeeper-client-rust/pull/53))
 
