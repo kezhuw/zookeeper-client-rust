@@ -123,7 +123,7 @@ impl UnsafeRead<'_> for Stat {
 
 #[cfg(test)]
 mod tests {
-    use rand::distributions::Standard;
+    use rand::distr::StandardUniform;
     use rand::Rng;
 
     use super::Stat;
@@ -131,8 +131,8 @@ mod tests {
 
     #[test]
     fn test_insufficient_buf() {
-        let rng = rand::thread_rng();
-        let data: Vec<u8> = rng.sample_iter(Standard).take(Stat::record_len() - 1).collect();
+        let rng = rand::rng();
+        let data: Vec<u8> = rng.sample_iter(StandardUniform).take(Stat::record_len() - 1).collect();
         let mut buf = data.as_slice();
         let err = Stat::deserialize(&mut buf).unwrap_err();
         assert_eq!(err, record::InsufficientBuf);
@@ -140,19 +140,19 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let stat = Stat {
-            czxid: rng.gen(),
-            mzxid: rng.gen(),
-            ctime: rng.gen(),
-            mtime: rng.gen(),
-            version: rng.gen(),
-            cversion: rng.gen(),
-            aversion: rng.gen(),
-            ephemeral_owner: rng.gen(),
-            data_length: rng.gen(),
-            num_children: rng.gen(),
-            pzxid: rng.gen(),
+            czxid: rng.random(),
+            mzxid: rng.random(),
+            ctime: rng.random(),
+            mtime: rng.random(),
+            version: rng.random(),
+            cversion: rng.random(),
+            aversion: rng.random(),
+            ephemeral_owner: rng.random(),
+            data_length: rng.random(),
+            num_children: rng.random(),
+            pzxid: rng.random(),
         };
         let mut data = Vec::new();
         stat.serialize(&mut data);

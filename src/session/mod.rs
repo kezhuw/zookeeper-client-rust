@@ -454,7 +454,7 @@ impl Session {
             self.session.id = session_id;
             info!(
                 "new session established: {} readonly={}, timeout={}ms",
-                session_id, response.readonly as bool, response.session_timeout
+                session_id, response.readonly, response.session_timeout
             );
             let span = Span::current();
             span.record("session", display(session_id));

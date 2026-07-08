@@ -102,7 +102,7 @@ impl AuthId {
 
     /// Const alternative to [AuthId::new].
     pub const fn new_const(scheme: &'static str, id: &'static str) -> AuthId {
-        AuthId { scheme: CompactString::new_inline(scheme), id: CompactString::new_inline(id) }
+        AuthId { scheme: CompactString::const_new(scheme), id: CompactString::const_new(id) }
     }
 
     /// Returns the scheme this auth id serve for.
@@ -164,7 +164,7 @@ impl Acl {
     pub const fn new_const(permission: Permission, scheme: &'static str, id: &'static str) -> Acl {
         Acl {
             permission,
-            auth_id: AuthId { scheme: CompactString::new_inline(scheme), id: CompactString::new_inline(id) },
+            auth_id: AuthId { scheme: CompactString::const_new(scheme), id: CompactString::const_new(id) },
         }
     }
 
