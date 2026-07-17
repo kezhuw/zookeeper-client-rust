@@ -107,7 +107,7 @@ impl Builder {
                 Span::current().record("session", display(session.id()));
                 session
             },
-            None => SessionInfo::new(SessionId(0), Vec::with_capacity(PASSWORD_LEN)),
+            None => SessionInfo::new(SessionId(0), vec![0; PASSWORD_LEN]),
         };
         if self.session_timeout < Duration::ZERO {
             return Err(Error::BadArguments(&"session timeout must not be negative"));
