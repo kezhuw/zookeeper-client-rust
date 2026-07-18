@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] - 2026-07-18
+### Fixed
+- Fix ClickHouse Keeper compatibility in initial `ConnectRequest` ([#87](https://github.com/kezhuw/zookeeper-client-rust/pull/87))
+- Fix memory leak in watch path cache ([#84](https://github.com/kezhuw/zookeeper-client-rust/pull/84))
+
 ## [0.11.1] - 2025-07-29
 ### Fixed
 - Fix missing watch events in case of `OpCode.multi` notifications ([#82](https://github.com/kezhuw/zookeeper-client-rust/pull/82))
@@ -138,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix!: forbid creation of root node "/" just like delete of it ([7e11a31](https://github.com/kezhuw/zookeeper-client-rust/commit/7e11a316eb65c5a5755abe1c46660393570c65db))
 - fix: unwatching revived by failed watch could remove ongoing watching ([d20c161](https://github.com/kezhuw/zookeeper-client-rust/commit/d20c1614c44d6e8115f4f855e6fed9759c64ac0b))
 
+[0.11.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.10.0...v0.11.0
 [0.10.2]: https://github.com/kezhuw/zookeeper-client-rust/compare/v0.10.1...v0.10.2
