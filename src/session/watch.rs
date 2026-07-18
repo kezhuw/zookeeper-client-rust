@@ -244,13 +244,16 @@ pub struct WatchManager {
     state_receiver: Arc<sync::watch::Receiver<SessionState>>,
 }
 
+/// Maximum number of paths kept in `cached_paths` for reuse.
+const CACHED_PATHS_MAX: usize = 1000;
+
 impl WatchManager {
     pub fn new(
         requester: Weak<mpsc::UnboundedSender<Request>>,
         state_receiver: sync::watch::Receiver<SessionState>,
     ) -> Self {
         WatchManager {
-            cached_paths: LinkedHashSet::with_capacity(1000),
+            cached_paths: LinkedHashSet::with_capacity(CACHED_PATHS_MAX),
             cached_watches: Vec::with_capacity(100),
 
             next_watcher_id: 1,
@@ -339,7 +342,7 @@ impl WatchManager {
 
     fn remove_watches(&mut self, path: &str) {
         let (path, watch) = self.watches.remove_entry(path).unwrap();
-        if self.cached_paths.len() >= self.cached_paths.capacity() {
+        while self.cached_paths.len() >= CACHED_PATHS_MAX {
             self.cached_paths.pop_front();
         }
         self.cached_paths.insert(path);
@@ -518,5 +521,41 @@ impl WatcherKind {
             Child => WatchMode::Child,
             PersistentNode | PersistentRecursive => WatchMode::Any,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use asyncs::sync;
+    use futures::channel::mpsc;
+
+    use super::*;
+
+    /// `cached_paths` stays bounded by `CACHED_PATHS_MAX` under sustained
+    /// churn on unique paths.
+    #[test]
+    fn cached_paths_is_bounded_under_unique_path_churn() {
+        let (sender, _receiver) = mpsc::unbounded::<Request>();
+        let sender = Arc::new(sender);
+        let (_state_sender, state_receiver) = sync::watch::channel(SessionState::Disconnected);
+        let mut wm = WatchManager::new(Arc::downgrade(&sender), state_receiver);
+
+        // Churn well past the cap on unique paths. Mirrors a long-lived
+        // client that watches a steady stream of new znodes (e.g. a lock
+        // service whose per-lock paths are UUID-keyed).
+        for i in 0..(CACHED_PATHS_MAX * 60) {
+            let path = format!("/test/{i}");
+            let _watcher = wm.add_oneshot_watch(&path, WatcherKind::Data);
+            wm.remove_watches(&path);
+        }
+
+        assert!(
+            wm.cached_paths.len() <= CACHED_PATHS_MAX,
+            "cached_paths.len()={} exceeded cap {}",
+            wm.cached_paths.len(),
+            CACHED_PATHS_MAX,
+        );
     }
 }
