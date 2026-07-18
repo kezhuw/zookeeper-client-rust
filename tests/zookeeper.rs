@@ -18,7 +18,7 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::prelude::*;
 use ignore_result::Ignore;
 use pretty_assertions::assert_eq;
-use rand::distributions::Standard;
+use rand::distr::StandardUniform;
 use rand::Rng;
 use rcgen::{Certificate, CertificateParams, Issuer, KeyPair};
 use rstest::rstest;
@@ -43,8 +43,8 @@ fn env_toggle(name: &str) -> bool {
 }
 
 fn random_data() -> Vec<u8> {
-    let rng = rand::thread_rng();
-    rng.sample_iter(Standard).take(32).collect()
+    let rng = rand::rng();
+    rng.sample_iter(StandardUniform).take(32).collect()
 }
 
 fn zookeeper_image<'a>(options: ContainerOptions<'a>) -> RunnableImage<GenericImage> {

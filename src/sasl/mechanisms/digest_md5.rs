@@ -334,7 +334,7 @@ impl DigestContext<'_> {
         hasher.consume(b":auth");
         hasher.consume(b":");
         hasher.consume(Self::a2(client));
-        Self::hex(&hasher.compute().0)
+        Self::hex(&hasher.finalize().0)
     }
 
     fn client_response(&self) -> [u8; 32] {
@@ -352,14 +352,14 @@ impl DigestContext<'_> {
         hasher.consume(self.realm.as_bytes());
         hasher.consume(b":");
         hasher.consume(self.password);
-        let digest = hasher.compute();
+        let digest = hasher.finalize();
         let mut hasher = Md5Hasher::new();
         hasher.consume(digest.0);
         hasher.consume(b":");
         hasher.consume(self.nonce.as_bytes());
         hasher.consume(b":");
         hasher.consume(self.cnonce);
-        let digest = hasher.compute();
+        let digest = hasher.finalize();
         Self::hex(&digest.0)
     }
 
@@ -369,7 +369,7 @@ impl DigestContext<'_> {
             hasher.consume(b"AUTHENTICATE");
         }
         hasher.consume(b":zookeeper/zk-sasl-md5");
-        Self::hex(&hasher.compute().0)
+        Self::hex(&hasher.finalize().0)
     }
 }
 
