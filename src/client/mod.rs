@@ -2288,19 +2288,17 @@ mod tests {
 
     #[test_log::test(asyncs::test)]
     async fn session_last_zxid_seen() {
-        use testcontainers::clients::Cli as DockerCli;
         use testcontainers::core::{Healthcheck, WaitFor};
-        use testcontainers::images::generic::GenericImage;
+        use testcontainers::runners::SyncRunner;
+        use testcontainers::{GenericImage, ImageExt};
 
-        let healthcheck = Healthcheck::default()
-            .with_cmd(["./bin/zkServer.sh", "status"].iter())
-            .with_interval(Duration::from_secs(2))
-            .with_retries(60);
-        let image =
-            GenericImage::new("zookeeper", "3.9.0").with_healthcheck(healthcheck).with_wait_for(WaitFor::Healthcheck);
-        let docker = DockerCli::default();
-        let container = docker.run(image);
-        let endpoint = format!("127.0.0.1:{}", container.get_host_port(2181));
+        let healthcheck =
+            Healthcheck::cmd_shell("./bin/zkServer.sh status").with_interval(Duration::from_secs(2)).with_retries(60);
+        let image = GenericImage::new("zookeeper", "3.9.0")
+            .with_health_check(healthcheck)
+            .with_ready_conditions(vec![WaitFor::healthcheck()]);
+        let container = image.start().unwrap();
+        let endpoint = format!("127.0.0.1:{}", container.get_host_port_ipv4(2181).unwrap());
 
         let client1 = Client::connector().with_detached().connect(&endpoint).await.unwrap();
         client1.create("/n1", b"", &CreateMode::Persistent.with_acls(Acls::anyone_all())).await.unwrap();
