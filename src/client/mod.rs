@@ -13,7 +13,7 @@ use either::{Either, Left, Right};
 use futures::channel::mpsc;
 use ignore_result::Ignore;
 use thiserror::Error;
-use tracing::instrument;
+use tracing::{info_span, instrument, Instrument};
 
 pub use self::watcher::{OneshotWatcher, PersistentWatcher, StateWatcher};
 use super::session::{Depot, MarshalledRequest, Request, Session, SessionOperation, WatchReceiver};
@@ -357,6 +357,25 @@ impl Client {
         }
     }
 
+    // Awaits `fut` inside `span`, recording the error via a `tracing::error!`
+    // event on the `Err` branch so downstream subscribers can mark the span
+    // as errored.
+    async fn traced<T, E, F>(span: tracing::Span, fut: F) -> std::result::Result<T, E>
+    where
+        F: Future<Output = std::result::Result<T, E>>,
+        E: std::fmt::Display,
+    {
+        async move {
+            let r = fut.await;
+            if let Err(ref e) = r {
+                tracing::error!(error = %e);
+            }
+            r
+        }
+        .instrument(span)
+        .await
+    }
+
     async fn retry_on_connection_loss<T, F>(operation: impl Fn() -> F) -> Result<T>
     where
         F: Future<Output = Result<T>>, {
@@ -392,8 +411,12 @@ impl Client {
     /// * [Error::BadArguments] if [CreateMode] is ephemeral or sequential.
     /// * [Error::InvalidAcl] if acl is invalid or empty.
     pub async fn mkdir(&self, path: &str, options: &CreateOptions<'_>) -> Result<()> {
-        options.validate_as_directory()?;
-        self.mkdir_internally(path, options).await
+        let span = info_span!("zk.mkdir", path = %path);
+        Self::traced(span, async move {
+            options.validate_as_directory()?;
+            self.mkdir_internally(path, options).await
+        })
+        .await
     }
 
     async fn mkdir_internally(&self, path: &str, options: &CreateOptions<'_>) -> Result<()> {
@@ -441,7 +464,8 @@ impl Client {
         data: &[u8],
         options: &CreateOptions<'_>,
     ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'f {
-        Self::wait(self.create_internally(path, data, options))
+        let span = info_span!("zk.create", path = %path);
+        Self::traced(span, Self::wait(self.create_internally(path, data, options)))
     }
 
     fn create_internally<'a: 'f, 'b: 'f, 'f>(
@@ -489,7 +513,8 @@ impl Client {
     /// * [Error::BadVersion] if such node exists but has different version.
     /// * [Error::NotEmpty] if such node exists but has children.
     pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send {
-        Self::wait(self.delete_internally(path, expected_version))
+        let span = info_span!("zk.delete", path = %path);
+        Self::traced(span, Self::wait(self.delete_internally(path, expected_version)))
     }
 
     fn delete_internally(&self, path: &str, expected_version: Option<i32>) -> Result<impl Future<Output = Result<()>>> {
@@ -577,8 +602,9 @@ impl Client {
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
     pub fn get_data(&self, path: &str) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
+        let span = info_span!("zk.get_data", path = %path);
         let result = self.get_data_internally(self.chroot.as_ref(), path, false);
-        Self::map_wait(result, |(data, stat, _)| (data, stat))
+        Self::traced(span, Self::map_wait(result, |(data, stat, _)| (data, stat)))
     }
 
     /// Gets stat and data for node with given path, and watches node deletion and data change.
@@ -594,8 +620,12 @@ impl Client {
         &self,
         path: &str,
     ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + '_ {
+        let span = info_span!("zk.get_and_watch_data", path = %path);
         let result = self.get_data_internally(self.chroot.as_ref(), path, true);
-        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&self.chroot)))
+        Self::traced(
+            span,
+            Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&self.chroot))),
+        )
     }
 
     fn check_stat_internally(
@@ -616,7 +646,8 @@ impl Client {
 
     /// Checks stat for node with given path.
     pub fn check_stat(&self, path: &str) -> impl Future<Output = Result<Option<Stat>>> + Send {
-        Self::map_wait(self.check_stat_internally(path, false), |(stat, _)| stat)
+        let span = info_span!("zk.check_stat", path = %path);
+        Self::traced(span, Self::map_wait(self.check_stat_internally(path, false), |(stat, _)| stat))
     }
 
     /// Checks stat for node with given path, and watches node creation, deletion and data change.
@@ -629,8 +660,9 @@ impl Client {
         &self,
         path: &str,
     ) -> impl Future<Output = Result<(Option<Stat>, OneshotWatcher)>> + Send + '_ {
+        let span = info_span!("zk.check_and_watch_stat", path = %path);
         let result = self.check_stat_internally(path, true);
-        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(&self.chroot)))
+        Self::traced(span, Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(&self.chroot))))
     }
 
     /// Sets data for node with given path and returns updated stat.
@@ -645,7 +677,8 @@ impl Client {
         data: &[u8],
         expected_version: Option<i32>,
     ) -> impl Future<Output = Result<Stat>> + Send {
-        Self::wait(self.set_data_internally(path, data, expected_version))
+        let span = info_span!("zk.set_data", path = %path);
+        Self::traced(span, Self::wait(self.set_data_internally(path, data, expected_version)))
     }
 
     pub fn set_data_internally(
@@ -728,8 +761,9 @@ impl Client {
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
     pub fn get_children(&self, path: &str) -> impl Future<Output = Result<(Vec<String>, Stat)>> + Send {
+        let span = info_span!("zk.get_children", path = %path);
         let result = self.get_children_internally(path, false);
-        Self::map_wait(result, |(children, stat, _)| (children, stat))
+        Self::traced(span, Self::map_wait(result, |(children, stat, _)| (children, stat)))
     }
 
     /// Gets stat and children for node with given path, and watches node deletion, children
@@ -746,8 +780,12 @@ impl Client {
         &self,
         path: &str,
     ) -> impl Future<Output = Result<(Vec<String>, Stat, OneshotWatcher)>> + Send + '_ {
+        let span = info_span!("zk.get_and_watch_children", path = %path);
         let result = self.get_children_internally(path, true);
-        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(&self.chroot)))
+        Self::traced(
+            span,
+            Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(&self.chroot))),
+        )
     }
 
     /// Counts descendants number for node with given path.
@@ -887,7 +925,8 @@ impl Client {
     /// [ZOOKEEPER-1675]: https://issues.apache.org/jira/browse/ZOOKEEPER-1675
     /// [ZOOKEEPER-2136]: https://issues.apache.org/jira/browse/ZOOKEEPER-2136
     pub fn sync(&self, path: &str) -> impl Future<Output = Result<()>> + Send + '_ {
-        Self::wait(self.sync_internally(path))
+        let span = info_span!("zk.sync", path = %path);
+        Self::traced(span, Self::wait(self.sync_internally(path)))
     }
 
     fn sync_internally(&self, path: &str) -> Result<impl Future<Output = Result<()>>> {
@@ -1891,8 +1930,9 @@ impl<'a> MultiReader<'a> {
     /// # Notable behaviors
     /// Individual errors(e.g. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
     pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'a {
+        let span = info_span!("zk.multi.commit", kind = "reader");
         let request = self.build_request();
-        Client::resolve(self.commit_internally(request))
+        Client::traced(span, Client::resolve(self.commit_internally(request)))
     }
 
     fn commit_internally(
@@ -2195,8 +2235,9 @@ impl<'a> MultiWriter<'a> {
     pub fn commit(
         &mut self,
     ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a {
+        let span = info_span!("zk.multi.commit", kind = "writer");
         let request = self.build_request();
-        Client::resolve(self.commit_internally(request))
+        Client::traced(span, Client::resolve(self.commit_internally(request)))
     }
 
     #[allow(clippy::type_complexity)]
