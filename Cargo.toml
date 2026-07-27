@@ -62,7 +62,8 @@ env_logger = "0.11.11"
 rand = "0.9.4"
 pretty_assertions = "1.4.1"
 test-case = "3"
-testcontainers = { git = "https://github.com/kezhuw/testcontainers-rs.git", branch = "zookeeper-client" }
+# turn off default tls crypto provider
+testcontainers = { version = "0.27.3", features = ["blocking"], default-features = false }
 assertor = "0.0.4"
 assert_matches = "1.5.0"
 tempfile = "3.27.0"

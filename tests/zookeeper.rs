@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::io::BufRead;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::{pin, Pin};
@@ -24,9 +25,9 @@ use rcgen::{Certificate, CertificateParams, Issuer, KeyPair};
 use rstest::rstest;
 #[allow(unused_imports)]
 use tempfile::{tempdir, TempDir};
-use testcontainers::clients::Cli as DockerCli;
-use testcontainers::core::{Container, Healthcheck, LogStream, RunnableImage, WaitFor};
-use testcontainers::images::generic::GenericImage;
+use testcontainers::core::{Healthcheck, Mount, WaitFor};
+use testcontainers::runners::SyncRunner;
+use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
 use zookeeper_client as zk;
 
 static ZK_IMAGE_TAG: &str = "3.9.0";
@@ -47,24 +48,21 @@ fn random_data() -> Vec<u8> {
     rng.sample_iter(StandardUniform).take(32).collect()
 }
 
-fn zookeeper_image<'a>(options: ContainerOptions<'a>) -> RunnableImage<GenericImage> {
+fn zookeeper_image<'a>(options: ContainerOptions<'a>) -> ContainerRequest<GenericImage> {
     let mut properties = options.properties;
     properties.insert(0, "-Dzookeeper.DigestAuthenticationProvider.superDigest=super:D/InIHSb7yEEbrWz8b9l71RjZJU=");
     properties.insert(0, "-Dzookeeper.enableEagerACLCheck=true");
     let server_jvmflags = properties.join(" ");
     let client_jvmflags = options.healthcheck.join(" ");
-    let healthcheck = Healthcheck::default()
-        .with_cmd(["./bin/zkServer.sh", "status"].iter())
-        .with_interval(Duration::from_secs(2))
-        .with_retries(60);
-    let mut image: RunnableImage<_> = GenericImage::new("zookeeper", options.tag)
+    let healthcheck =
+        Healthcheck::cmd_shell("./bin/zkServer.sh status").with_interval(Duration::from_secs(2)).with_retries(60);
+    let mut image = GenericImage::new("zookeeper", options.tag)
         .with_env_var("SERVER_JVMFLAGS", server_jvmflags)
         .with_env_var("CLIENT_JVMFLAGS", client_jvmflags)
-        .with_healthcheck(healthcheck)
-        .with_wait_for(WaitFor::Healthcheck)
-        .into();
+        .with_ready_conditions(vec![WaitFor::healthcheck()])
+        .with_health_check(healthcheck);
     for (dest, source) in options.volumes {
-        image = image.with_volume((source.to_str().unwrap(), dest));
+        image = image.with_mount(Mount::bind_mount(source.to_str().unwrap(), dest));
     }
     if let Some(network) = options.network.as_ref() {
         image = image.with_network(*network);
@@ -296,8 +294,7 @@ impl Tls {
 struct Cluster {
     #[cfg(feature = "tls")]
     tls: Option<Tls>,
-    containers: Vec<(u32, Container<'static, GenericImage>)>,
-    docker: Arc<DockerCli>,
+    containers: Vec<(u32, Container<GenericImage>)>,
     dir: LazyTempDir,
 }
 
@@ -407,17 +404,16 @@ impl Cluster {
             #[cfg(not(feature = "tls"))]
             Encryption::Raw
         });
-        let docker = Arc::new(DockerCli::default());
         let mut cluster = match encryption {
             #[cfg(not(feature = "tls"))]
             Encryption::Raw => {
                 println!("starting plaintext zookeeper server {} ...", options.tag);
-                Self { containers: vec![], docker, dir: LazyTempDir::new() }
+                Self { containers: vec![], dir: LazyTempDir::new() }
             },
             #[cfg(feature = "tls")]
             Encryption::Raw => {
                 println!("starting plaintext zookeeper server {} ...", options.tag);
-                Self { tls: None, containers: vec![], docker, dir: LazyTempDir::new() }
+                Self { tls: None, containers: vec![], dir: LazyTempDir::new() }
             },
             #[cfg(feature = "tls")]
             Encryption::Tls => {
@@ -428,7 +424,7 @@ impl Cluster {
                     options.tag,
                     if tls.hostname_verification { "with" } else { "without" }
                 );
-                Self { tls: Some(tls), containers: vec![], docker, dir }
+                Self { tls: Some(tls), containers: vec![], dir }
             },
         };
         cluster.boot(options).await;
@@ -495,36 +491,29 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
                 let parent_path = file_path.parent().unwrap();
                 fs::create_dir_all(parent_path).unwrap();
                 fs::write(&file_path, content).unwrap();
-                image = image.with_volume((file_path.to_str().unwrap(), *path));
+                image = image.with_mount(Mount::bind_mount(file_path.to_str().unwrap(), *path));
             }
 
             if !configs.is_empty() {
                 configs += "dataDir=/data\n";
                 let cfg_path = self.dir.tempdir().path().join(format!("zoo{id}.cfg"));
                 fs::write(&cfg_path, &configs).unwrap();
-                image = image.with_volume((cfg_path.to_str().unwrap(), "/conf/zoo.cfg"));
+                image = image.with_mount(Mount::bind_mount(cfg_path.to_str().unwrap(), "/conf/zoo.cfg"));
             }
 
             if standalone {
                 #[allow(clippy::missing_transmute_annotations)]
-                let container = unsafe { std::mem::transmute(self.docker.run(image)) };
-                self.containers.push((1, container));
+                self.containers.push((1, image.start().unwrap()));
                 return;
             }
 
             let data_dir = self.dir.tempdir().path().join(format!("zoo{id}.data"));
             std::fs::create_dir_all(data_dir.as_path()).unwrap();
             fs::write(data_dir.as_path().join("myid"), format!("{id}\n")).unwrap();
-            image = image.with_volume((data_dir.to_str().unwrap(), "/data"));
+            image = image.with_mount(Mount::bind_mount(data_dir.to_str().unwrap(), "/data"));
             // image = image.with_env_var(("ZOO_MY_ID", id.to_string()));
 
-            tasks.push((
-                id,
-                blocking::unblock({
-                    let docker = self.docker.clone();
-                    move || unsafe { std::mem::transmute::<_, Container<'static, GenericImage>>(docker.run(image)) }
-                }),
-            ));
+            tasks.push((id, blocking::unblock(move || image.start().unwrap())));
         }
         for task in tasks {
             let id = task.0;
@@ -534,17 +523,17 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     }
 
     pub fn stop(&self) {
-        self.containers.iter().for_each(|c| c.1.stop());
+        self.containers.iter().for_each(|c| c.1.stop().ignore());
     }
 
-    pub fn by_id(&self, id: u32) -> &Container<'static, GenericImage> {
+    pub fn by_id(&self, id: u32) -> &Container<GenericImage> {
         self.containers.iter().find_map(|c| if c.0 == id { Some(&c.1) } else { None }).expect("container")
     }
 
     #[allow(dead_code)]
-    pub fn logs(&self, id: u32) -> LogStream {
+    pub fn logs(&self, id: u32) -> Box<dyn BufRead + Send> {
         let container = self.by_id(id);
-        container.stdout()
+        container.stdout(true)
     }
 
     fn url(&self, chroot: Option<&str>) -> (String, bool) {
@@ -566,7 +555,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
                     (false, true, _) | (false, _, true) => "tcp://",
                     (_, _, _) => "",
                 };
-                format!("{}127.0.0.1:{}", protocol, c.1.get_host_port(2181))
+                format!("{}127.0.0.1:{}", protocol, c.1.get_host_port_ipv4(2181).unwrap())
             })
             .collect();
         (endpoints.join(",") + chroot.unwrap_or(""), secure)
@@ -907,7 +896,8 @@ impl PortForwarder {
 async fn test_multi_watching() {
     let cluster = Cluster::with_options(Default::default(), Some(Encryption::Raw)).await;
 
-    let cluster_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), cluster.by_id(1).get_host_port(2181));
+    let cluster_addr =
+        SocketAddr::new("127.0.0.1".parse().unwrap(), cluster.by_id(1).get_host_port_ipv4(2181).unwrap());
     let forwarder = PortForwarder::new(cluster_addr).await;
 
     let client = zk::Client::connect(&forwarder.local_addr().to_string()).await.unwrap();
@@ -2332,15 +2322,19 @@ async fn test_readonly(encryption: Encryption) {
     let mut state_watcher = client.state_watcher();
     assert_eq!(state_watcher.state(), zk::SessionState::SyncConnected);
 
-    let logs = cluster.logs(3);
+    let mut logs = cluster.logs(3).lines();
 
-    cluster.by_id(1).stop();
-    cluster.by_id(2).stop();
+    cluster.by_id(1).stop().unwrap();
+    cluster.by_id(2).stop().unwrap();
 
     // Quorum session will expire finally.
     state_watcher.wait(zk::SessionState::Expired, Some(2 * client.session_timeout())).await;
 
-    logs.wait_for_message("Read-only server started").unwrap();
+    while let Some(line) = logs.next().map(|l| l.unwrap()) {
+        if line.contains("Read-only server started") {
+            break;
+        }
+    }
 
     let client = zk::Client::connector()
         .with_readonly(true)
@@ -2363,8 +2357,8 @@ async fn test_readonly(encryption: Encryption) {
     let mut state_watcher = client.state_watcher();
     assert_eq!(state_watcher.state(), zk::SessionState::ConnectedReadOnly);
 
-    cluster.by_id(1).start();
-    cluster.by_id(2).start();
+    cluster.by_id(1).start().unwrap();
+    cluster.by_id(2).start().unwrap();
 
     state_watcher.wait(zk::SessionState::SyncConnected, None).await;
     client.create("/z", b"", PERSISTENT_OPEN).await.unwrap();
