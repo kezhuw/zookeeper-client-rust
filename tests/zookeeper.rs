@@ -1032,6 +1032,28 @@ async fn test_lock_curator_filter() {
     let _lock = client.lock(lock_prefix, b"", options).await.unwrap();
 }
 
+/// Dropping the last client right after dropping a lock guard must still terminate the session
+/// promptly; lock node cleanup on drop must not delay shutdown.
+#[asyncs::test]
+#[test_log::test]
+async fn test_lock_drop_then_close_terminates() {
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
+    let options = zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap();
+
+    let lock_prefix = zk::LockPrefix::new_curator("/locks/curator", "lock-").unwrap();
+    let lock = client.lock(lock_prefix, b"", options).await.unwrap();
+
+    // Subscribe before dropping so we can still observe state after the client is gone.
+    let mut state_watcher = client.state_watcher();
+
+    drop(lock);
+    drop(client);
+
+    // Times out if the session fails to terminate.
+    state_watcher.wait(zk::SessionState::Closed, Some(Duration::from_secs(30))).await;
+}
+
 #[allow(unused_must_use)] // semi-asynchronous future
 async fn test_lock_with_path(
     cluster: &Cluster,

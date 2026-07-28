@@ -4,13 +4,14 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::mem::ManuallyDrop;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use const_format::formatcp;
 use derive_where::derive_where;
 use either::{Either, Left, Right};
 use futures::channel::mpsc;
+use futures::future::BoxFuture;
 use ignore_result::Ignore;
 use thiserror::Error;
 use tracing::instrument;
@@ -204,6 +205,20 @@ impl CreateSequence {
     }
 }
 
+/// Session-lifetime state shared by all [`Client`] handles for one session.
+///
+/// Held behind an `Arc` so a [`WeakClient`] can reference the live session without keeping the
+/// request channel open. The channel closing (all `Client`s dropped) is how the session loop
+/// detects shutdown, so a background job must hold a `Weak`, never an `Arc`.
+#[derive(Debug)]
+struct SessionShared {
+    version: Version,
+    session: SessionInfo,
+    session_timeout: Duration,
+    requester: Arc<mpsc::UnboundedSender<Request>>,
+    state_watcher: StateWatcher,
+}
+
 /// Client encapsulates ZooKeeper session to interact with ZooKeeper cluster.
 ///
 /// Besides semantic errors, node operations could also fail due to cluster availability and
@@ -220,11 +235,19 @@ impl CreateSequence {
 #[derive(Clone, Debug)]
 pub struct Client {
     chroot: OwnedChroot,
-    version: Version,
-    session: SessionInfo,
-    session_timeout: Duration,
-    requester: Arc<mpsc::UnboundedSender<Request>>,
-    state_watcher: StateWatcher,
+    shared: Arc<SessionShared>,
+}
+
+/// Weak handle to a [`Client`]'s session. Upgrades to a full `Client` per operation so it never
+/// keeps the request channel alive; see [`WeakClient::upgrade`]. Handed to background jobs (see
+/// [`Client::spawn_background`]) so they can act on the session without outliving (or stalling the
+/// shutdown of) the client.
+#[derive(Clone, Debug)]
+struct WeakClient {
+    chroot: OwnedChroot,
+    // Stable for the life of the session, so captured here rather than read through an upgrade.
+    session_id: SessionId,
+    shared: Weak<SessionShared>,
 }
 
 impl Client {
@@ -248,7 +271,14 @@ impl Client {
         requester: Arc<mpsc::UnboundedSender<Request>>,
         state_watcher: StateWatcher,
     ) -> Client {
-        Client { chroot, version, session, session_timeout: timeout, requester, state_watcher }
+        let shared = Arc::new(SessionShared { version, session, session_timeout: timeout, requester, state_watcher });
+        Client { chroot, shared }
+    }
+
+    /// Downgrades to a [`WeakClient`] that can drive background operations without keeping the
+    /// request channel open.
+    fn downgrade(&self) -> WeakClient {
+        WeakClient { chroot: self.chroot.clone(), session_id: self.session_id(), shared: Arc::downgrade(&self.shared) }
     }
 
     fn validate_path<'a>(&'a self, path: &'a str) -> Result<ChrootPath<'a>> {
@@ -266,7 +296,7 @@ impl Client {
 
     /// ZooKeeper session info.
     pub fn session(&self) -> &SessionInfo {
-        &self.session
+        &self.shared.session
     }
 
     /// ZooKeeper session id.
@@ -276,22 +306,22 @@ impl Client {
 
     /// Consumes this instance into session info.
     pub fn into_session(self) -> SessionInfo {
-        self.session
+        self.shared.session.clone()
     }
 
     /// Negotiated session timeout.
     pub fn session_timeout(&self) -> Duration {
-        self.session_timeout
+        self.shared.session_timeout
     }
 
     /// Latest session state.
     pub fn state(&self) -> SessionState {
-        self.state_watcher.peek_state()
+        self.shared.state_watcher.peek_state()
     }
 
     /// Creates a [StateWatcher] to track future session state updates.
     pub fn state_watcher(&self) -> StateWatcher {
-        let mut watcher = self.state_watcher.clone();
+        let mut watcher = self.shared.state_watcher.clone();
         watcher.state();
         watcher
     }
@@ -318,7 +348,7 @@ impl Client {
 
     fn send_marshalled_request(&self, request: MarshalledRequest) -> StateReceiver {
         let (operation, receiver) = SessionOperation::new_marshalled(request).with_responser();
-        if let Err(err) = self.requester.unbounded_send(operation.into()) {
+        if let Err(err) = self.shared.requester.unbounded_send(operation.into()) {
             let state = self.state();
             err.into_inner().into_responser().send(Err(state.to_error()));
         }
@@ -462,7 +492,7 @@ impl Client {
             OpCode::CreateTtl
         } else if create_mode.is_container() {
             OpCode::CreateContainer
-        } else if self.version >= Version(3, 5, 0) {
+        } else if self.shared.version >= Version(3, 5, 0) {
             OpCode::Create2
         } else {
             OpCode::Create
@@ -505,51 +535,26 @@ impl Client {
         })
     }
 
-    // TODO: move these to session side so to eliminate owned Client and String.
-    fn delete_background(self, path: String) {
-        asyncs::spawn(async move {
-            self.delete_foreground(&path).await;
-        });
+    // Enqueues a fire-and-forget background job driven by the session event loop (no spawned task),
+    // so the work stays tied to the session lifecycle. Silently dropped if the session is already
+    // gone.
+    //
+    // The job body is built from a [`WeakClient`] only, so it cannot capture a strong `Client` (and
+    // its request-channel `Arc`), which would otherwise keep the channel open and block session
+    // shutdown. See `Request::BackgroundJob`.
+    fn spawn_background(&self, job: impl FnOnce(WeakClient) -> BoxFuture<'static, ()>) {
+        let job = job(self.downgrade());
+        self.shared.requester.unbounded_send(Request::BackgroundJob { job }).ignore();
     }
 
-    async fn delete_foreground(&self, path: &str) {
-        Client::retry_on_connection_loss(|| self.delete(path, None)).await.ignore();
+    // Best-effort background deletion of a single node; used for lock node cleanup on guard drop.
+    fn delete_path_background(&self, path: String) {
+        self.spawn_background(|weak| Box::pin(async move { weak.delete_foreground(&path).await }));
     }
 
-    fn delete_ephemeral_background(self, prefix: String, unique: bool) {
-        asyncs::spawn(async move {
-            let (parent, tree, name) = util::split_path(&prefix);
-            let mut children = Self::retry_on_connection_loss(|| self.list_children(parent)).await?;
-            if unique {
-                if let Some(i) = children.iter().position(|s| s.starts_with(name)) {
-                    self.delete_foreground(&children[i]).await;
-                };
-                return Ok::<(), Error>(());
-            }
-            children.retain(|s| s.starts_with(name));
-            for child in children.iter_mut() {
-                child.insert_str(0, tree);
-            }
-            let results = Self::retry_on_connection_loss(|| {
-                let mut reader = self.new_multi_reader();
-                for child in children.iter() {
-                    reader.add_get_data(child).unwrap();
-                }
-                reader.commit()
-            })
-            .await?;
-            for (i, result) in results.into_iter().enumerate() {
-                let MultiReadResult::Data { stat, .. } = result else {
-                    // It could be Error::NoNode.
-                    continue;
-                };
-                if stat.ephemeral_owner == self.session_id().0 {
-                    self.delete_foreground(&children[i]).await;
-                    break;
-                }
-            }
-            Ok(())
-        });
+    // Best-effort multi-step background cleanup of an ephemeral lock node.
+    fn delete_ephemeral_background(&self, prefix: String, unique: bool) {
+        self.spawn_background(|weak| Box::pin(weak.delete_ephemeral(prefix, unique)));
     }
 
     fn get_data_internally(
@@ -1165,6 +1170,85 @@ impl Client {
     }
 }
 
+impl WeakClient {
+    // Upgrades to a live `Client`. The strong `Client` (and its request-channel `Arc`) must be
+    // dropped before any `.await`, or an in-flight background job would keep the channel open and
+    // stall session shutdown. Callers only ever hold a `WeakClient`, and the forwarder methods
+    // below build their `'static` reply futures under a transient upgrade, so the invariant holds
+    // by construction.
+    fn upgrade(&self) -> Result<Client> {
+        match self.shared.upgrade() {
+            Some(shared) => Ok(Client { chroot: self.chroot.clone(), shared }),
+            None => Err(Error::ClientClosed),
+        }
+    }
+
+    // Forwarders: each upgrades, builds+sends synchronously, drops the strong `Client`, and returns
+    // a `'static` reply future — so awaiting them holds no `Client`.
+
+    fn list_children(&self, path: &str) -> Result<impl Future<Output = Result<Vec<String>>> + Send + 'static> {
+        Ok(Client::map_wait(self.upgrade()?.list_children_internally(path, false), |(children, _)| children))
+    }
+
+    fn multi_get_data(
+        &self,
+        paths: &[String],
+    ) -> Result<impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'static> {
+        let client = self.upgrade()?;
+        let mut reader = client.new_multi_reader();
+        for path in paths {
+            reader.add_get_data(path)?;
+        }
+        Ok(reader.commit())
+    }
+
+    fn delete(&self, path: &str) -> Result<impl Future<Output = Result<()>> + Send + 'static> {
+        self.upgrade()?.delete_internally(path, None)
+    }
+
+    async fn delete_foreground(&self, path: &str) {
+        Client::retry_on_connection_loss(|| async { Client::wait(self.delete(path)).await }).await.ignore();
+    }
+
+    // Deletes the ephemeral lock node created under `prefix`. Lists the siblings sharing `prefix`'s
+    // trailing name; when `unique`, the sole match is ours, otherwise a multi-read picks the one
+    // owned by this session. Best-effort. Each step re-upgrades and drops before awaiting, so the
+    // job never holds the request channel open.
+    async fn delete_ephemeral(self, prefix: String, unique: bool) {
+        let result: Result<()> = async {
+            let (parent, tree, name) = util::split_path(&prefix);
+            let mut children =
+                Client::retry_on_connection_loss(|| async { Client::wait(self.list_children(parent)).await }).await?;
+            if unique {
+                if let Some(i) = children.iter().position(|s| s.starts_with(name)) {
+                    self.delete_foreground(&children[i]).await;
+                };
+                return Ok(());
+            }
+            children.retain(|s| s.starts_with(name));
+            for child in children.iter_mut() {
+                child.insert_str(0, tree);
+            }
+            let results =
+                Client::retry_on_connection_loss(|| async { Client::wait(self.multi_get_data(&children)).await })
+                    .await?;
+            for (i, result) in results.into_iter().enumerate() {
+                let MultiReadResult::Data { stat, .. } = result else {
+                    // It could be Error::NoNode.
+                    continue;
+                };
+                if stat.ephemeral_owner == self.session_id.0 {
+                    self.delete_foreground(&children[i]).await;
+                    break;
+                }
+            }
+            Ok(())
+        }
+        .await;
+        result.ignore();
+    }
+}
+
 /// Options to cover [Acls] for lock path and [CreateOptions] for ancestor nodes if they don't
 /// exist.
 #[derive(Clone, Debug)]
@@ -1322,7 +1406,7 @@ struct LockingGuard<'a> {
 
 impl Drop for LockingGuard<'_> {
     fn drop(&mut self) {
-        self.zk.clone().delete_ephemeral_background(self.prefix.to_string(), self.unique);
+        self.zk.delete_ephemeral_background(self.prefix.to_string(), self.unique);
     }
 }
 
@@ -1449,29 +1533,30 @@ impl<'a> LockClient<'a> {
     /// Converts to [OwnedLockClient].
     pub fn into_owned(self) -> OwnedLockClient {
         let client = self.client.clone();
+        // Suppress `Drop for LockClient`, otherwise conversion would delete the lock path.
         let mut drop = ManuallyDrop::new(self);
         let lock = std::mem::take(drop.lock.to_mut());
-        OwnedLockClient { client: ManuallyDrop::new(client), lock }
+        OwnedLockClient { client, lock }
     }
 }
 
 /// Deletes lock path in background.
 impl Drop for LockClient<'_> {
     fn drop(&mut self) {
-        let path = std::mem::take(self.lock.to_mut());
-        let client = self.client.clone();
-        client.delete_background(path);
+        self.client.delete_path_background(std::mem::take(self.lock.to_mut()));
     }
 }
 
 /// Owned version of [LockClient].
 #[derive(Clone, Debug)]
 pub struct OwnedLockClient {
-    client: ManuallyDrop<Client>,
+    client: Client,
     lock: String,
 }
 
 impl OwnedLockClient {
+    // Wrapped in `ManuallyDrop` so the temporary `LockClient` does not fire its lock-deleting
+    // `Drop` when this borrow ends; the lock is deleted only when the `OwnedLockClient` drops.
     fn lock_client(&self) -> std::mem::ManuallyDrop<LockClient<'_>> {
         std::mem::ManuallyDrop::new(LockClient { client: &self.client, lock: Cow::from(&self.lock) })
     }
@@ -1520,9 +1605,7 @@ impl OwnedLockClient {
 /// Deletes lock path in background.
 impl Drop for OwnedLockClient {
     fn drop(&mut self) {
-        let client = unsafe { ManuallyDrop::take(&mut self.client) };
-        let path = std::mem::take(&mut self.lock);
-        client.delete_background(path);
+        self.client.delete_path_background(std::mem::take(&mut self.lock));
     }
 }
 
@@ -1890,7 +1973,7 @@ impl<'a> MultiReader<'a> {
     ///
     /// # Notable behaviors
     /// Individual errors(e.g. [Error::NoNode]) are reported individually through [MultiReadResult::Error].
-    pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'a {
+    pub fn commit(&mut self) -> impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'static {
         let request = self.build_request();
         Client::resolve(self.commit_internally(request))
     }
@@ -1898,7 +1981,7 @@ impl<'a> MultiReader<'a> {
     fn commit_internally(
         &self,
         request: MarshalledRequest,
-    ) -> Result<Either<impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'a, Vec<MultiReadResult>>> {
+    ) -> Result<Either<impl Future<Output = Result<Vec<MultiReadResult>>> + Send + 'static, Vec<MultiReadResult>>> {
         if request.is_empty() {
             return Ok(Right(Vec::default()));
         }
