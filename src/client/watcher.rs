@@ -130,10 +130,10 @@ impl WatchReceiver {
 
     pub fn into_persistent(self, chroot: OwnedChroot) -> PersistentWatcher {
         match self {
-            WatchReceiver::None => unreachable!("expect oneshot watcher, got none watcher"),
+            WatchReceiver::None => unreachable!("expect persistent watcher, got none watcher"),
             WatchReceiver::Oneshot(_) => {
-                unreachable!("expect oneshot watcher, got oneshot watcher")
-            },
+                unreachable!("expect persistent watcher, got oneshot watcher")
+            }
             WatchReceiver::Persistent(receiver) => PersistentWatcher::new(chroot, receiver),
         }
     }
