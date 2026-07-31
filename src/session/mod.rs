@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use async_io::Timer;
 use asyncs::{select, sync};
 use futures::channel::mpsc;
+use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
 use futures::{AsyncWriteExt, StreamExt};
 use ignore_result::Ignore;
 use tracing::field::display;
@@ -150,6 +152,7 @@ impl Builder {
             authes: self.authes,
             state_sender,
             watch_manager,
+            background_jobs: FuturesUnordered::new(),
         };
         let timeout = if self.session_timeout.is_zero() { DEFAULT_SESSION_TIMEOUT } else { self.session_timeout };
         session.reset_timeout(timeout);
@@ -186,6 +189,11 @@ pub struct Session {
     state_sender: sync::watch::Sender<SessionState>,
 
     watch_manager: WatchManager,
+
+    /// Fire-and-forget background jobs (e.g. lock node cleanup on guard drop) driven by the
+    /// event loop instead of spawned tasks. Best-effort: in-flight jobs are dropped on session
+    /// termination.
+    background_jobs: FuturesUnordered<BoxFuture<'static, ()>>,
 }
 
 impl Session {
@@ -560,6 +568,10 @@ impl Session {
                     r?;
                     self.last_send = Instant::now();
                 },
+                // Drive background jobs (e.g. lock node cleanup on guard drop). The guard is
+                // required: `FuturesUnordered::next` yields `Ready(None)` when empty, which would
+                // busy-spin the loop otherwise (mirrors `seek_for_writable` above).
+                _ = self.background_jobs.next(), if !self.background_jobs.is_empty() => {},
                 r = requester.next(), if !channel_halted => match r {
                     None => {
                         if !self.detached {
@@ -573,6 +585,7 @@ impl Session {
                     }) => {
                         self.watch_manager.remove_watcher(id, responser, depot);
                     }
+                    Some(Request::BackgroundJob { job }) => self.background_jobs.push(job),
                 },
                 now = tick.as_mut() => {
                     if now >= self.last_recv + self.connector.timeout() {

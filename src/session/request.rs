@@ -4,6 +4,7 @@ use std::task::{Context, Poll};
 
 use bytes::{Buf, BufMut};
 use futures::channel::oneshot;
+use futures::future::BoxFuture;
 use ignore_result::Ignore;
 
 use super::types::WatchMode;
@@ -128,7 +129,17 @@ pub enum Operation {
 
 pub enum Request {
     Session(SessionOperation),
-    RemoveWatcher { id: WatcherId, responser: StateResponser },
+    RemoveWatcher {
+        id: WatcherId,
+        responser: StateResponser,
+    },
+    /// Fire-and-forget background job driven to completion by the session event loop instead of a
+    /// spawned task, so it stays tied to the session lifecycle. The job must hold only a weak
+    /// client handle, never keeping the request channel open, otherwise it would block session
+    /// shutdown (the channel closing is how the loop learns all clients are gone).
+    BackgroundJob {
+        job: BoxFuture<'static, ()>,
+    },
 }
 
 impl From<SessionOperation> for Request {
@@ -142,6 +153,7 @@ impl Request {
         match self {
             Self::Session(operation) => operation.responser,
             Self::RemoveWatcher { responser, .. } => responser,
+            Self::BackgroundJob { .. } => StateResponser::none(),
         }
     }
 }
