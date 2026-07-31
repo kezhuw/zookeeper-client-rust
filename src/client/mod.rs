@@ -502,16 +502,15 @@ impl Client {
         let request = CreateRequest { path: chroot_path, data, acls: options.acls, flags, ttl };
         let receiver = self.send_request(op_code, &request);
         let chroot = self.chroot.clone();
-        let path = sequential.then(|| CompactString::new(path));
+        let sequential_path_prefix = sequential.then(|| CompactString::new(path));
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
             let server_path = record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
             let client_path = util::strip_root_path(server_path, chroot.root())?;
-            let sequence = if sequential {
-                Self::parse_sequence(client_path, path.as_deref().unwrap())?
-            } else {
-                CreateSequence(-1)
+            let sequence = match sequential_path_prefix {
+                Some(path) => Self::parse_sequence(client_path, &path)?,
+                None => CreateSequence(-1),
             };
             let stat =
                 if op_code == OpCode::Create { Stat::new_invalid() } else { record::unmarshal::<Stat>(&mut buf)? };
@@ -1486,16 +1485,15 @@ impl<'a> LockClient<'a> {
         let mut writer = self.client.new_check_writer(&self.lock, None)?;
         writer.add_create(path, data, options)?;
         let write = writer.commit();
-        let sequential = options.mode.is_sequential();
-        let path = sequential.then(|| CompactString::new(path));
+        let sequential_path_prefix = options.mode.is_sequential().then(|| CompactString::new(path));
         Ok(async move {
             let result = Self::resolve_one_write(write).await?;
             let (created_path, stat) = result.into_create()?;
-            let sequence = if sequential {
-                Client::parse_sequence(&created_path, path.as_deref().unwrap())?
-            } else {
-                CreateSequence(-1)
+            let sequence = match sequential_path_prefix {
+                Some(path) => Client::parse_sequence(&created_path, &path)?,
+                None => CreateSequence(-1),
             };
+
             Ok((stat, sequence))
         })
     }
