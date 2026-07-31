@@ -7,6 +7,7 @@ use std::mem::ManuallyDrop;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use compact_str::CompactString;
 use const_format::formatcp;
 use derive_where::derive_where;
 use either::{Either, Left, Right};
@@ -465,21 +466,21 @@ impl Client {
     /// below. See [Connector::server_version] and [ZOOKEEPER-1297][].
     ///
     /// [ZOOKEEPER-1297]: https://issues.apache.org/jira/browse/ZOOKEEPER-1297
-    pub fn create<'a: 'f, 'b: 'f, 'f>(
-        &'a self,
-        path: &'b str,
+    pub fn create(
+        &self,
+        path: &str,
         data: &[u8],
         options: &CreateOptions<'_>,
-    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'f {
+    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'static {
         Self::wait(self.create_internally(path, data, options))
     }
 
-    fn create_internally<'a: 'f, 'b: 'f, 'f>(
-        &'a self,
-        path: &'b str,
+    fn create_internally(
+        &self,
+        path: &str,
         data: &[u8],
         options: &CreateOptions<'_>,
-    ) -> Result<impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'f> {
+    ) -> Result<impl Future<Output = Result<(Stat, CreateSequence)>> + Send> {
         options.validate()?;
         let create_mode = options.mode;
         let sequential = create_mode.is_sequential();
@@ -500,12 +501,14 @@ impl Client {
         let flags = create_mode.as_flags(ttl != 0);
         let request = CreateRequest { path: chroot_path, data, acls: options.acls, flags, ttl };
         let receiver = self.send_request(op_code, &request);
+        let chroot = self.chroot.clone();
+        let path = CompactString::new(path);
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
             let server_path = record::unmarshal_entity::<&str>(&"server path", &mut buf)?;
-            let client_path = util::strip_root_path(server_path, self.chroot.root())?;
-            let sequence = if sequential { Self::parse_sequence(client_path, path)? } else { CreateSequence(-1) };
+            let client_path = util::strip_root_path(server_path, chroot.root())?;
+            let sequence = if sequential { Self::parse_sequence(client_path, &path)? } else { CreateSequence(-1) };
             let stat =
                 if op_code == OpCode::Create { Stat::new_invalid() } else { record::unmarshal::<Stat>(&mut buf)? };
             Ok((stat, sequence))
@@ -518,7 +521,11 @@ impl Client {
     /// * [Error::NoNode] if such node does not exist.
     /// * [Error::BadVersion] if such node exists but has different version.
     /// * [Error::NotEmpty] if such node exists but has children.
-    pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send {
+    pub fn delete(
+        &self,
+        path: &str,
+        expected_version: Option<i32>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
         Self::wait(self.delete_internally(path, expected_version))
     }
 
@@ -581,7 +588,7 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub fn get_data(&self, path: &str) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
+    pub fn get_data(&self, path: &str) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send + 'static {
         let result = self.get_data_internally(self.chroot.as_ref(), path, false);
         Self::map_wait(result, |(data, stat, _)| (data, stat))
     }
@@ -598,9 +605,10 @@ impl Client {
     pub fn get_and_watch_data(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + '_ {
+    ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + 'static {
         let result = self.get_data_internally(self.chroot.as_ref(), path, true);
-        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&self.chroot)))
+        let chroot = self.chroot.clone();
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(chroot)))
     }
 
     fn check_stat_internally(
@@ -620,7 +628,7 @@ impl Client {
     }
 
     /// Checks stat for node with given path.
-    pub fn check_stat(&self, path: &str) -> impl Future<Output = Result<Option<Stat>>> + Send {
+    pub fn check_stat(&self, path: &str) -> impl Future<Output = Result<Option<Stat>>> + Send + 'static {
         Self::map_wait(self.check_stat_internally(path, false), |(stat, _)| stat)
     }
 
@@ -633,9 +641,10 @@ impl Client {
     pub fn check_and_watch_stat(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<(Option<Stat>, OneshotWatcher)>> + Send + '_ {
+    ) -> impl Future<Output = Result<(Option<Stat>, OneshotWatcher)>> + Send + 'static {
         let result = self.check_stat_internally(path, true);
-        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(&self.chroot)))
+        let chroot = self.chroot.clone();
+        Self::map_wait(result, |(stat, watcher)| (stat, watcher.into_oneshot(chroot)))
     }
 
     /// Sets data for node with given path and returns updated stat.
@@ -649,7 +658,7 @@ impl Client {
         path: &str,
         data: &[u8],
         expected_version: Option<i32>,
-    ) -> impl Future<Output = Result<Stat>> + Send {
+    ) -> impl Future<Output = Result<Stat>> + Send + 'static {
         Self::wait(self.set_data_internally(path, data, expected_version))
     }
 
@@ -690,7 +699,7 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub fn list_children(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send + '_ {
+    pub fn list_children(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send + 'static {
         Self::map_wait(self.list_children_internally(path, false), |(children, _)| children)
     }
 
@@ -707,9 +716,10 @@ impl Client {
     pub fn list_and_watch_children(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<(Vec<String>, OneshotWatcher)>> + Send + '_ {
+    ) -> impl Future<Output = Result<(Vec<String>, OneshotWatcher)>> + Send + 'static {
         let result = self.list_children_internally(path, true);
-        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(&self.chroot)))
+        let chroot = self.chroot.clone();
+        Self::map_wait(result, |(children, watcher)| (children, watcher.into_oneshot(chroot)))
     }
 
     fn get_children_internally(
@@ -732,7 +742,7 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub fn get_children(&self, path: &str) -> impl Future<Output = Result<(Vec<String>, Stat)>> + Send {
+    pub fn get_children(&self, path: &str) -> impl Future<Output = Result<(Vec<String>, Stat)>> + Send + 'static {
         let result = self.get_children_internally(path, false);
         Self::map_wait(result, |(children, stat, _)| (children, stat))
     }
@@ -750,16 +760,17 @@ impl Client {
     pub fn get_and_watch_children(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<(Vec<String>, Stat, OneshotWatcher)>> + Send + '_ {
+    ) -> impl Future<Output = Result<(Vec<String>, Stat, OneshotWatcher)>> + Send + 'static {
         let result = self.get_children_internally(path, true);
-        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(&self.chroot)))
+        let chroot = self.chroot.clone();
+        Self::map_wait(result, |(children, stat, watcher)| (children, stat, watcher.into_oneshot(chroot)))
     }
 
     /// Counts descendants number for node with given path.
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub fn count_descendants_number(&self, path: &str) -> impl Future<Output = Result<usize>> + Send {
+    pub fn count_descendants_number(&self, path: &str) -> impl Future<Output = Result<usize>> + Send + 'static {
         Self::wait(self.count_descendants_number_internally(path))
     }
 
@@ -780,19 +791,20 @@ impl Client {
     /// * No [Error::NoNode] if node with give path does not exist.
     /// * Result will include given path if that node is ephemeral.
     /// * Returned paths are located at chroot but not ZooKeeper root.
-    pub fn list_ephemerals(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send + '_ {
+    pub fn list_ephemerals(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send + 'static {
         Self::wait(self.list_ephemerals_internally(path))
     }
 
-    fn list_ephemerals_internally(&self, path: &str) -> Result<impl Future<Output = Result<Vec<String>>> + Send + '_> {
+    fn list_ephemerals_internally(&self, path: &str) -> Result<impl Future<Output = Result<Vec<String>>> + Send> {
         let path = self.validate_path(path)?;
         let receiver = self.send_request(OpCode::GetEphemerals, &path);
+        let chroot = self.chroot.clone();
         Ok(async move {
             let (body, _) = receiver.await?;
             let mut buf = body.as_slice();
             let mut ephemerals = record::unmarshal_entity::<Vec<String>>(&"ephemerals", &mut buf)?;
             for ephemeral_path in ephemerals.iter_mut() {
-                util::drain_root_path(ephemeral_path, self.chroot.root())?;
+                util::drain_root_path(ephemeral_path, chroot.root())?;
             }
             Ok(ephemerals)
         })
@@ -802,7 +814,7 @@ impl Client {
     ///
     /// # Notable errors
     /// * [Error::NoNode] if such node does not exist.
-    pub fn get_acl(&self, path: &str) -> impl Future<Output = Result<(Vec<Acl>, Stat)>> + Send + '_ {
+    pub fn get_acl(&self, path: &str) -> impl Future<Output = Result<(Vec<Acl>, Stat)>> + Send + 'static {
         Self::wait(self.get_acl_internally(path))
     }
 
@@ -827,7 +839,7 @@ impl Client {
         path: &str,
         acl: &[Acl],
         expected_acl_version: Option<i32>,
-    ) -> impl Future<Output = Result<Stat>> + Send + '_ {
+    ) -> impl Future<Output = Result<Stat>> + Send + 'static {
         Self::wait(self.set_acl_internally(path, acl, expected_acl_version))
     }
 
@@ -862,7 +874,11 @@ impl Client {
     ///
     /// [ZOOKEEPER-4466]: https://issues.apache.org/jira/browse/ZOOKEEPER-4466
     /// [ZOOKEEPER-4698]: https://issues.apache.org/jira/browse/ZOOKEEPER-4698
-    pub fn watch(&self, path: &str, mode: AddWatchMode) -> impl Future<Output = Result<PersistentWatcher>> + Send + '_ {
+    pub fn watch(
+        &self,
+        path: &str,
+        mode: AddWatchMode,
+    ) -> impl Future<Output = Result<PersistentWatcher>> + Send + 'static {
         Self::wait(self.watch_internally(path, mode))
     }
 
@@ -870,14 +886,15 @@ impl Client {
         &self,
         path: &str,
         mode: AddWatchMode,
-    ) -> Result<impl Future<Output = Result<PersistentWatcher>> + Send + '_> {
+    ) -> Result<impl Future<Output = Result<PersistentWatcher>> + Send + 'static> {
         let chroot_path = self.validate_path(path)?;
         let proto_mode = proto::AddWatchMode::from(mode);
         let request = PersistentWatchRequest { path: chroot_path, mode: proto_mode.into() };
         let receiver = self.send_request(OpCode::AddWatch, &request);
+        let chroot = self.chroot.clone();
         Ok(async move {
             let (_, watcher) = receiver.await?;
-            Ok(watcher.into_persistent(&self.chroot))
+            Ok(watcher.into_persistent(chroot))
         })
     }
 
@@ -891,7 +908,7 @@ impl Client {
     ///
     /// [ZOOKEEPER-1675]: https://issues.apache.org/jira/browse/ZOOKEEPER-1675
     /// [ZOOKEEPER-2136]: https://issues.apache.org/jira/browse/ZOOKEEPER-2136
-    pub fn sync(&self, path: &str) -> impl Future<Output = Result<()>> + Send + '_ {
+    pub fn sync(&self, path: &str) -> impl Future<Output = Result<()>> + Send + 'static {
         Self::wait(self.sync_internally(path))
     }
 
@@ -920,7 +937,7 @@ impl Client {
     ///   [SessionState::Disconnected] will not end authentication.
     /// * It is ok to ignore resulting future of this method as request is sending synchronously
     ///   and auth failure will fail ZooKeeper session with [SessionState::AuthFailed].
-    pub fn auth(&self, scheme: &str, auth: &[u8]) -> impl Future<Output = Result<()>> + Send + '_ {
+    pub fn auth(&self, scheme: &str, auth: &[u8]) -> impl Future<Output = Result<()>> + Send + 'static {
         let request = AuthPacket { scheme, auth };
         let receiver = self.send_request(OpCode::Auth, &request);
         async move {
@@ -938,7 +955,7 @@ impl Client {
     /// * [ZOOKEEPER-3969][] Add whoami API and Cli command.
     ///
     /// [ZOOKEEPER-3969]: https://issues.apache.org/jira/browse/ZOOKEEPER-3969
-    pub fn list_auth_users(&self) -> impl Future<Output = Result<Vec<AuthUser>>> + Send {
+    pub fn list_auth_users(&self) -> impl Future<Output = Result<Vec<AuthUser>>> + Send + 'static {
         let receiver = self.send_request(OpCode::WhoAmI, &());
         async move {
             let (body, _) = receiver.await?;
@@ -949,15 +966,17 @@ impl Client {
     }
 
     /// Gets data for ZooKeeper config node, that is node with path "/zookeeper/config".
-    pub fn get_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
+    pub fn get_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send + 'static {
         let result = self.get_data_internally(Chroot::default(), Self::CONFIG_NODE, false);
         Self::map_wait(result, |(data, stat, _)| (data, stat))
     }
 
     /// Gets stat and data for ZooKeeper config node, that is node with path "/zookeeper/config".
-    pub fn get_and_watch_config(&self) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send {
+    pub fn get_and_watch_config(
+        &self,
+    ) -> impl Future<Output = Result<(Vec<u8>, Stat, OneshotWatcher)>> + Send + 'static {
         let result = self.get_data_internally(Chroot::default(), Self::CONFIG_NODE, true);
-        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(&OwnedChroot::default())))
+        Self::map_wait(result, |(data, stat, watcher)| (data, stat, watcher.into_oneshot(OwnedChroot::default())))
     }
 
     /// Updates ZooKeeper ensemble.
@@ -971,7 +990,7 @@ impl Client {
         &self,
         update: EnsembleUpdate<'a, I>,
         expected_zxid: Option<i64>,
-    ) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send {
+    ) -> impl Future<Output = Result<(Vec<u8>, Stat)>> + Send + 'static {
         let request = ReconfigRequest { update, version: expected_zxid.unwrap_or(-1) };
         let receiver = self.send_request(OpCode::Reconfig, &request);
         async move {
@@ -1450,7 +1469,7 @@ impl<'a> LockClient<'a> {
         path: &str,
         data: &[u8],
         options: &CreateOptions<'_>,
-    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'a {
+    ) -> impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'static {
         Client::wait(self.create_internally(path, data, options))
     }
 
@@ -1459,23 +1478,16 @@ impl<'a> LockClient<'a> {
         path: &str,
         data: &[u8],
         options: &CreateOptions<'_>,
-    ) -> Result<impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'a> {
+    ) -> Result<impl Future<Output = Result<(Stat, CreateSequence)>> + Send + 'static> {
         let mut writer = self.client.new_check_writer(&self.lock, None)?;
         writer.add_create(path, data, options)?;
         let write = writer.commit();
-        // XXX: Ideally, we should enforce strict ephemeral node check here, but that will
-        // capture lifetime of `path` which fail to compile.
-        //
-        // See https://users.rust-lang.org/t/solved-future-lifetime-bounds/43664.
-        let path_len = path.len();
+        let sequential = options.mode.is_sequential();
+        let path = CompactString::new(path);
         Ok(async move {
             let result = Self::resolve_one_write(write).await?;
             let (created_path, stat) = result.into_create()?;
-            let sequence = if created_path.len() <= path_len {
-                CreateSequence(-1)
-            } else {
-                Client::parse_sequence(&created_path, &created_path[..path_len])?
-            };
+            let sequence = if sequential { Client::parse_sequence(&created_path, &path)? } else { CreateSequence(-1) };
             Ok((stat, sequence))
         })
     }
@@ -1486,7 +1498,7 @@ impl<'a> LockClient<'a> {
         path: &str,
         data: &[u8],
         expected_version: Option<i32>,
-    ) -> impl Future<Output = Result<Stat>> + Send + 'a {
+    ) -> impl Future<Output = Result<Stat>> + Send + 'static {
         Client::wait(self.set_data_internally(path, data, expected_version))
     }
 
@@ -1495,7 +1507,7 @@ impl<'a> LockClient<'a> {
         path: &str,
         data: &[u8],
         expected_version: Option<i32>,
-    ) -> Result<impl Future<Output = Result<Stat>> + Send + 'a> {
+    ) -> Result<impl Future<Output = Result<Stat>> + Send + 'static> {
         let mut writer = self.new_check_writer();
         writer.add_set_data(path, data, expected_version)?;
         let write = writer.commit();
@@ -1507,7 +1519,11 @@ impl<'a> LockClient<'a> {
     }
 
     /// Similar to [Client::delete] except [Error::RuntimeInconsistent] if lock lost.
-    pub fn delete(&self, path: &str, expected_version: Option<i32>) -> impl Future<Output = Result<()>> + Send + 'a {
+    pub fn delete(
+        &self,
+        path: &str,
+        expected_version: Option<i32>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
         Client::wait(self.delete_internally(path, expected_version))
     }
 
@@ -1515,7 +1531,7 @@ impl<'a> LockClient<'a> {
         &self,
         path: &str,
         expected_version: Option<i32>,
-    ) -> Result<impl Future<Output = Result<()>> + Send + 'a> {
+    ) -> Result<impl Future<Output = Result<()>> + Send + 'static> {
         let mut writer = self.new_check_writer();
         writer.add_delete(path, expected_version)?;
         let write = writer.commit();
@@ -2167,7 +2183,7 @@ impl<'a> CheckWriter<'a> {
     /// Similar to [MultiWriter::commit] except independent path check error.
     pub fn commit(
         mut self,
-    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, CheckWriteError>> + Send + 'a {
+    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, CheckWriteError>> + Send + 'static {
         let commit = self.writer.commit();
         async move {
             let mut results = commit.await?;
@@ -2277,7 +2293,7 @@ impl<'a> MultiWriter<'a> {
     /// * [Error::BadVersion] if check version failed.
     pub fn commit(
         &mut self,
-    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a {
+    ) -> impl Future<Output = std::result::Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'static {
         let request = self.build_request();
         Client::resolve(self.commit_internally(request))
     }
@@ -2287,14 +2303,17 @@ impl<'a> MultiWriter<'a> {
         &self,
         request: MarshalledRequest,
     ) -> Result<
-        Either<impl Future<Output = Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'a, Vec<MultiWriteResult>>,
+        Either<
+            impl Future<Output = Result<Vec<MultiWriteResult>, MultiWriteError>> + Send + 'static,
+            Vec<MultiWriteResult>,
+        >,
         MultiWriteError,
     > {
         if request.is_empty() {
             return Ok(Right(Vec::default()));
         }
         let receiver = self.client.send_marshalled_request(request);
-        let client = self.client;
+        let chroot = self.client.chroot.clone();
         Ok(Left(async move {
             let (body, _) = receiver.await?;
             let response = record::unmarshal::<Vec<MultiWriteResponse>>(&mut body.as_slice())?;
@@ -2305,7 +2324,7 @@ impl<'a> MultiWriter<'a> {
                     MultiWriteResponse::Check => results.push(MultiWriteResult::Check),
                     MultiWriteResponse::Delete => results.push(MultiWriteResult::Delete),
                     MultiWriteResponse::Create { mut path, stat } => {
-                        path = util::strip_root_path(path, client.chroot.root())?;
+                        path = util::strip_root_path(path, chroot.root())?;
                         results.push(MultiWriteResult::Create { path: path.to_string(), stat });
                     },
                     MultiWriteResponse::SetData { stat } => results.push(MultiWriteResult::SetData { stat }),
