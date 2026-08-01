@@ -2167,6 +2167,44 @@ async fn test_client_detach() {
     cluster.custom_client(None, |connector| connector.with_session(session)).await.unwrap();
 }
 
+#[asyncs::test]
+#[test_log::test]
+async fn test_static_semi_async_atomic_operations() {
+    let cluster = Cluster::new().await;
+    let client = cluster.client(None).await;
+
+    let create = client.create("/a", b"a-data", PERSISTENT_OPEN);
+    let get_data = client.get_data("/a");
+
+    drop(client);
+
+    let (stat, _) = create.await.unwrap();
+    let (data, got_stat) = get_data.await.unwrap();
+    assert_that!(data).is_equal_to(b"a-data".to_vec());
+    assert_that!(stat).is_equal_to(got_stat);
+
+    let client = cluster.client(None).await;
+    let lock = client
+        .lock(
+            zk::LockPrefix::new_curator("/locks/curator", "lock-").unwrap(),
+            b"",
+            zk::LockOptions::new(zk::Acls::anyone_all()).with_ancestor_options(CONTAINER_OPEN.clone()).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let create = lock.create("/l0", b"l0-data", PERSISTENT_OPEN);
+    let get_data = lock.client().get_data("/l0");
+
+    drop(lock);
+    drop(client);
+
+    let (stat, _) = create.await.unwrap();
+    let (data, got_stat) = get_data.await.unwrap();
+    assert_that!(data).is_equal_to(b"l0-data".to_vec());
+    assert_that!(stat).is_equal_to(got_stat);
+}
+
 #[cfg(feature = "sasl-digest-md5")]
 #[asyncs::test]
 #[test_log::test]
