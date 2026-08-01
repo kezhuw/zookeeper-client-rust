@@ -118,23 +118,19 @@ impl PersistentWatcher {
 }
 
 impl WatchReceiver {
-    pub fn into_oneshot(self, chroot: &OwnedChroot) -> OneshotWatcher {
+    pub fn into_oneshot(self, chroot: OwnedChroot) -> OneshotWatcher {
         match self {
             WatchReceiver::None => unreachable!("expect oneshot watcher, got none watcher"),
-            WatchReceiver::Oneshot(receiver) => OneshotWatcher::new(chroot.clone(), receiver),
-            WatchReceiver::Persistent(_) => {
-                unreachable!("expect oneshot watcher, got persistent watcher")
-            },
+            WatchReceiver::Oneshot(receiver) => OneshotWatcher::new(chroot, receiver),
+            WatchReceiver::Persistent(_) => unreachable!("expect oneshot watcher, got persistent watcher"),
         }
     }
 
-    pub fn into_persistent(self, chroot: &OwnedChroot) -> PersistentWatcher {
+    pub fn into_persistent(self, chroot: OwnedChroot) -> PersistentWatcher {
         match self {
-            WatchReceiver::None => unreachable!("expect oneshot watcher, got none watcher"),
-            WatchReceiver::Oneshot(_) => {
-                unreachable!("expect oneshot watcher, got oneshot watcher")
-            },
-            WatchReceiver::Persistent(receiver) => PersistentWatcher::new(chroot.clone(), receiver),
+            WatchReceiver::None => unreachable!("expect persistent watcher, got none watcher"),
+            WatchReceiver::Oneshot(_) => unreachable!("expect persistent watcher, got oneshot watcher"),
+            WatchReceiver::Persistent(receiver) => PersistentWatcher::new(chroot, receiver),
         }
     }
 }
