@@ -4,7 +4,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_io::Timer;
-use async_net::TcpStream;
 use asyncs::select;
 use bytes::buf::BufMut;
 use futures::io::BufReader;
@@ -17,14 +16,15 @@ use tracing::{debug, trace};
 
 use crate::deadline::Deadline;
 use crate::endpoint::{EndpointRef, IterableEndpoints};
+use crate::net;
 #[cfg(feature = "tls")]
 use crate::tls::TlsClient;
 
 #[derive(Debug)]
 pub enum Connection {
-    Raw(TcpStream),
+    Raw(net::TcpStream),
     #[cfg(feature = "tls")]
-    Tls(Box<TlsStream<TcpStream>>),
+    Tls(Box<TlsStream<net::TcpStream>>),
 }
 
 pub trait AsyncReadToBuf: AsyncReadExt {
@@ -123,7 +123,7 @@ impl AsyncWrite for ConnWriter<'_> {
 }
 
 impl Connection {
-    pub fn new_raw(stream: TcpStream) -> Self {
+    pub fn new_raw(stream: net::TcpStream) -> Self {
         Self::Raw(stream)
     }
 
@@ -134,7 +134,7 @@ impl Connection {
     }
 
     #[cfg(feature = "tls")]
-    pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
+    pub fn new_tls(stream: TlsStream<net::TcpStream>) -> Self {
         Self::Tls(stream.into())
     }
 
@@ -198,7 +198,7 @@ impl Connector {
             #[cfg(not(feature = "tls"))]
             return Err(Error::new(ErrorKind::Unsupported, "tls not supported"));
         }
-        TcpStream::connect((endpoint.host, endpoint.port)).await.map(Connection::new_raw)
+        net::connect(endpoint.host, endpoint.port).await.map(Connection::new_raw)
     }
 
     pub async fn connect(&self, endpoint: EndpointRef<'_>, deadline: &mut Deadline) -> Result<Connection> {
@@ -260,5 +260,43 @@ mod tests {
         let endpoint = EndpointRef::new("host1", 2181, true);
         let err = connector.connect(endpoint, &mut Deadline::never()).await.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Unsupported);
+    }
+
+    #[cfg(feature = "turmoil")]
+    #[test]
+    fn connector_connects_over_turmoil() -> turmoil::Result {
+        use std::time::Duration;
+
+        use futures_lite::{AsyncReadExt, AsyncWriteExt};
+        use tokio_util::compat::TokioAsyncReadCompatExt;
+        use turmoil::{net::TcpListener, Builder};
+
+        let mut sim = Builder::new().simulation_duration(Duration::from_secs(10)).build();
+
+        sim.host("zk", || async move {
+            let listener = TcpListener::bind("0.0.0.0:2181").await?;
+            let (stream, _) = listener.accept().await?;
+            let mut stream = stream.compat();
+
+            let mut request = [0; 4];
+            stream.read_exact(&mut request).await?;
+            assert_eq!(&request, b"isro");
+
+            stream.write_all(b"rw").await?;
+            stream.flush().await?;
+            Ok(())
+        });
+
+        sim.client("client", async move {
+            let connector = Connector::new();
+            let endpoint = EndpointRef::new("zk", 2181, false);
+            let mut deadline = Deadline::never();
+            let conn = connector.connect(endpoint, &mut deadline).await.unwrap();
+
+            assert!(conn.command_isro().await.unwrap());
+            Ok(())
+        });
+
+        sim.run()
     }
 }

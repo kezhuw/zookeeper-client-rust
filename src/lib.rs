@@ -21,6 +21,7 @@
 //! * `sasl`: Toggle SASL support.
 //! * `sasl-gssapi`: Toggle only GSSAPI SASL support. This relies on binding package `libgssapi-sys`.
 //! * `sasl-digest-md5`: Toggle only DIGEST-MD5 SASL support.
+//! * `turmoil`: Toggle simulated networking support via `turmoil`.
 //!
 //! ## Async runtime support
 //! This library uses [asyncs](https://docs.rs/asyncs) and [spawns](https://docs.rs/spawns) to
@@ -29,6 +30,9 @@
 //! * `tokio`: Toggle support for [tokio](https://docs.rs/tokio).
 //! * `smol`: Toggle support for [smol](https://docs.rs/smol) builtin global executor.
 //! * `async-global-executor`: Toggle support for [async-global-executor](https://docs.rs/async-global-executor).
+//!
+//! `turmoil` currently builds on the `tokio` runtime support and adapts simulated sockets into the
+//! crate's existing `futures::io` transport layer.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -38,6 +42,7 @@ mod client;
 mod deadline;
 mod endpoint;
 mod error;
+mod net;
 mod proto;
 mod record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
