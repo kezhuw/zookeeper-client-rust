@@ -463,7 +463,7 @@ impl Client {
     ///
     /// # Notable behaviors
     /// The resulting [Stat] will be [Stat::is_invalid] if server version is 3.4 series or
-    /// below. See [Connector::server_version] and [ZOOKEEPER-1297][].
+    /// below. See [Connector::with_server_version] and [ZOOKEEPER-1297][].
     ///
     /// [ZOOKEEPER-1297]: https://issues.apache.org/jira/browse/ZOOKEEPER-1297
     pub fn create(
@@ -1681,15 +1681,6 @@ impl Connector {
         self
     }
 
-    /// Specifies target session timeout to negotiate with ZooKeeper server.
-    ///
-    /// Defaults to 6s.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_session_timeout instead")]
-    pub fn session_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.session_timeout = timeout;
-        self
-    }
-
     /// Specifies idle timeout to conclude a connection as loss.
     ///
     /// Defaults to `2/5` of session timeout.
@@ -1698,24 +1689,8 @@ impl Connector {
         self
     }
 
-    /// Specifies idle timeout to conclude a connection as loss.
-    ///
-    /// Defaults to `2/5` of session timeout.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_connection_timeout instead")]
-    pub fn connection_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.connection_timeout = timeout;
-        self
-    }
-
     /// Specifies whether readonly session is allowed.
     pub fn with_readonly(mut self, readonly: bool) -> Self {
-        self.readonly = readonly;
-        self
-    }
-
-    /// Specifies whether readonly session is allowed.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_readonly instead")]
-    pub fn readonly(&mut self, readonly: bool) -> &mut Self {
         self.readonly = readonly;
         self
     }
@@ -1728,24 +1703,8 @@ impl Connector {
         self
     }
 
-    /// Specifies auth info for given authentication scheme.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_auth instead")]
-    pub fn auth(&mut self, scheme: String, auth: Vec<u8>) -> &mut Self {
-        let packet = AuthPacket { scheme: &scheme, auth: &auth };
-        let request = MarshalledRequest::new(OpCode::Auth, &packet);
-        self.authes.push(request);
-        self
-    }
-
     /// Specifies session to reestablish.
     pub fn with_session(mut self, session: SessionInfo) -> Self {
-        self.session = Some(session);
-        self
-    }
-
-    /// Specifies session to reestablish.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_session instead")]
-    pub fn session(&mut self, session: SessionInfo) -> &mut Self {
         self.session = Some(session);
         self
     }
@@ -1764,30 +1723,8 @@ impl Connector {
         self
     }
 
-    /// Specifies target server version of ZooKeeper cluster.
-    ///
-    /// Client will issue server compatible protocol to avoid [Error::Unimplemented] for some
-    /// operations. See [Client::create] for an example.
-    ///
-    /// See [ZOOKEEPER-1381][] and [ZOOKEEPER-3762][] for references.
-    ///
-    /// [ZOOKEEPER-1381]: https://issues.apache.org/jira/browse/ZOOKEEPER-1381
-    /// [ZOOKEEPER-3762]: https://issues.apache.org/jira/browse/ZOOKEEPER-3762
-    #[deprecated(since = "0.11.0", note = "use Connector::with_server_version instead")]
-    pub fn server_version(&mut self, major: u32, minor: u32, patch: u32) -> &mut Self {
-        self.server_version = Version(major, minor, patch);
-        self
-    }
-
     /// Detaches created session so it will not be closed after all client instances dropped.
     pub fn with_detached(mut self) -> Self {
-        self.detached = true;
-        self
-    }
-
-    /// Detaches created session so it will not be closed after all client instances dropped.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_detached instead")]
-    pub fn detached(&mut self) -> &mut Self {
         self.detached = true;
         self
     }
@@ -1800,15 +1737,6 @@ impl Connector {
         self
     }
 
-    /// Specifies tls options for connections to ZooKeeper.
-    #[cfg(feature = "tls")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
-    #[deprecated(since = "0.11.0", note = "use Connector::with_tls instead")]
-    pub fn tls(&mut self, options: TlsOptions) -> &mut Self {
-        self.tls = Some(options);
-        self
-    }
-
     /// Specifies SASL options.
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
     #[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi", feature = "sasl-digest-md5"))))]
@@ -1817,30 +1745,11 @@ impl Connector {
         self
     }
 
-    /// Specifies SASL options.
-    #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "sasl", feature = "sasl-gssapi", feature = "sasl-digest-md5"))))]
-    #[deprecated(since = "0.11.0", note = "use Connector::with_sasl instead")]
-    pub fn sasl(&mut self, options: impl Into<SaslOptions>) -> &mut Self {
-        self.sasl = Some(options.into());
-        self
-    }
-
-    /// Fail session establishment eagerly with [Error::NoHosts] when all hosts has been tried.
+    /// Fail session establishment eagerly with [Error::NoHosts] when all hosts have been tried.
     ///
-    /// This permits fail-fast without wait up to [Self::session_timeout] in [Self::connect]. This
+    /// This permits fail-fast without waiting up to [Self::with_session_timeout] in [Self::connect]. This
     /// is not suitable for situations where ZooKeeper cluster is accessible via a single virtual IP.
     pub fn with_fail_eagerly(mut self) -> Self {
-        self.fail_eagerly = true;
-        self
-    }
-
-    /// Fail session establishment eagerly with [Error::NoHosts] when all hosts has been tried.
-    ///
-    /// This permits fail-fast without wait up to [Self::session_timeout] in [Self::connect]. This
-    /// is not suitable for situations where ZooKeeper cluster is accessible via a single virtual IP.
-    #[deprecated(since = "0.11.0", note = "use Connector::with_fail_eagerly instead")]
-    pub fn fail_eagerly(&mut self) -> &mut Self {
         self.fail_eagerly = true;
         self
     }
@@ -1900,9 +1809,9 @@ impl Connector {
     /// plaintext protocol, while `server3` uses tls encrypted protocol.
     ///
     /// # Notable errors
-    /// * [Error::NoHosts] if no host is available and [Self::fail_eagerly] is turn on
+    /// * [Error::NoHosts] if no host is available and [Self::with_fail_eagerly] is turned on
     /// * [Error::SessionExpired] if specified session expired
-    /// * [Error::Timeout] if no session established with in approximate [Self::session_timeout]
+    /// * [Error::Timeout] if no session established within approximately [Self::with_session_timeout]
     pub async fn connect(self, cluster: &str) -> Result<Client> {
         self.connect_internally(false, cluster).await
     }
