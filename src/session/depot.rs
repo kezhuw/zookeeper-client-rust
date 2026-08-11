@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use strum::IntoEnumIterator;
 use tracing::debug;
 
-use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation, StateResponser};
+use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation};
 use super::types::WatchMode;
 use super::xid::Xid;
 use crate::error::Error;
@@ -29,7 +29,8 @@ pub struct Depot {
     pending_operations: VecDeque<SessionOperation>,
 
     watching_paths: HashMap<(&'static str, WatchMode), usize>,
-    unwatching_paths: HashMap<(&'static str, WatchMode), SessionOperation>,
+    // RemoveWatches parked while add-watch requests for the same path are in flight.
+    unwatching_paths: HashMap<(&'static str, WatchMode), MarshalledRequest>,
 }
 
 impl Depot {
@@ -79,9 +80,7 @@ impl Depot {
                 operation.responser.send(Err(err.clone()));
             }
         });
-        self.unwatching_paths.drain().for_each(|(_, operation)| {
-            operation.responser.send(Err(err.clone()));
-        });
+        self.unwatching_paths.clear();
         self.writing_slices.clear();
         self.watching_paths.clear();
     }
@@ -159,12 +158,8 @@ impl Depot {
     }
 
     fn cancel_unwatch(&mut self, path: &'static str, mode: WatchMode) {
-        if let Some(SessionOperation { responser, .. }) = self.unwatching_paths.remove(&(path, mode)) {
-            responser.send_empty();
-        }
-        if let Some(SessionOperation { responser, .. }) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
-            responser.send_empty();
-        }
+        self.unwatching_paths.remove(&(path, mode));
+        self.unwatching_paths.remove(&(path, WatchMode::Any));
     }
 
     pub fn fail_watch(&mut self, path: &str, mode: WatchMode) {
@@ -173,14 +168,14 @@ impl Depot {
         *count -= 1;
         if *count == 0 {
             self.watching_paths.remove(&(path, mode));
-            if let Some(operation) = self.unwatching_paths.remove(&(path, mode)) {
-                self.push_request(operation);
+            if let Some(request) = self.unwatching_paths.remove(&(path, mode)) {
+                self.push_request(SessionOperation::new_marshalled(request));
             }
             if self.has_watching_requests(path) {
                 return;
             }
-            if let Some(operation) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
-                self.push_request(operation);
+            if let Some(request) = self.unwatching_paths.remove(&(path, WatchMode::Any)) {
+                self.push_request(SessionOperation::new_marshalled(request));
             }
         }
     }
@@ -204,7 +199,7 @@ impl Depot {
                 if self.watching_paths.contains_key(&(path, mode))
                     || (mode == WatchMode::Any && self.has_watching_requests(path))
                 {
-                    self.unwatching_paths.insert((path, mode), operation);
+                    self.unwatching_paths.insert((path, mode), operation.request);
                     return;
                 }
             } else {
@@ -217,9 +212,9 @@ impl Depot {
         self.push_request(operation);
     }
 
-    pub fn push_remove_watch(&mut self, path: &str, mode: WatchMode, responser: StateResponser) {
+    pub fn push_remove_watch(&mut self, path: &str, mode: WatchMode) {
         let record = RemoveWatchesRequest { path, mode: mode.into() };
-        let operation = SessionOperation { request: MarshalledRequest::new(OpCode::RemoveWatches, &record), responser };
+        let operation = SessionOperation::new_marshalled(MarshalledRequest::new(OpCode::RemoveWatches, &record));
         self.push_session(operation);
     }
 
