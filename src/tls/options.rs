@@ -35,11 +35,6 @@ impl TlsCa {
         }
         Ok(ca)
     }
-
-    fn merge(&mut self, ca: TlsCa) {
-        self.roots.roots.extend(ca.roots.roots);
-        self.crls.extend(ca.crls);
-    }
 }
 
 /// A CA signed certificate and its private key.
@@ -257,12 +252,6 @@ impl Default for TlsOptions {
 
 impl TlsOptions {
     /// Tls options with no ca certificates.
-    #[deprecated(since = "0.10.0", note = "use TlsOptions::new instead")]
-    pub fn no_ca() -> Self {
-        Self::new()
-    }
-
-    /// Tls options with no ca certificates.
     pub fn new() -> Self {
         Self {
             ca: None,
@@ -301,22 +290,6 @@ impl TlsOptions {
     #[cfg(feature = "fips-only")]
     fn with_fips_internal(self) -> Self {
         self
-    }
-
-    /// Adds new ca certificates.
-    ///
-    /// It behaves different to [TlsOptions::with_pem_ca] in two ways:
-    /// 1. It is additive.
-    /// 2. It takes only certs into account.
-    #[deprecated(since = "0.10.0", note = "use TlsOptions::with_pem_ca instead")]
-    pub fn with_pem_ca_certs(mut self, certs: &str) -> Result<Self> {
-        let mut ca = TlsCa::from_pem(certs)?;
-        ca.crls.clear();
-        match self.ca.as_mut() {
-            None => self.ca = Some(ca),
-            Some(existing_ca) => existing_ca.merge(ca),
-        };
-        Ok(self)
     }
 
     /// Specifies ca certificates and also crls.
