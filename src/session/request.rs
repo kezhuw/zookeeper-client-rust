@@ -131,7 +131,6 @@ pub enum Request {
     Session(SessionOperation),
     RemoveWatcher {
         id: WatcherId,
-        responser: StateResponser,
     },
     /// Fire-and-forget background job driven to completion by the session event loop instead of a
     /// spawned task, so it stays tied to the session lifecycle. The job must hold only a weak
@@ -152,8 +151,7 @@ impl Request {
     pub fn into_responser(self) -> StateResponser {
         match self {
             Self::Session(operation) => operation.responser,
-            Self::RemoveWatcher { responser, .. } => responser,
-            Self::BackgroundJob { .. } => StateResponser::none(),
+            Self::RemoveWatcher { .. } | Self::BackgroundJob { .. } => StateResponser::none(),
         }
     }
 }
@@ -218,12 +216,6 @@ impl From<MarshalledRequest> for SessionOperation {
 pub struct StateReceiver {
     code: OpCode,
     receiver: oneshot::Receiver<Result<(Vec<u8>, WatchReceiver), Error>>,
-}
-
-impl StateReceiver {
-    pub fn new(code: OpCode, receiver: oneshot::Receiver<Result<(Vec<u8>, WatchReceiver), Error>>) -> Self {
-        Self { code, receiver }
-    }
 }
 
 impl Future for StateReceiver {

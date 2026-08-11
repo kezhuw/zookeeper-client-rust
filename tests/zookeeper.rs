@@ -1551,7 +1551,6 @@ async fn test_delete() {
 
 #[asyncs::test]
 #[test_log::test]
-#[allow(deprecated)]
 async fn test_oneshot_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1559,11 +1558,11 @@ async fn test_oneshot_watcher() {
     let path = "/abc";
     let child_path = "/abc/efg";
 
-    // Drop or remove last watchers.
-    let (_, drop_watcher) = client.check_and_watch_stat(path).await.unwrap();
-    drop(drop_watcher);
-    let (_, remove_watcher) = client.check_and_watch_stat(child_path).await.unwrap();
-    remove_watcher.remove().await.unwrap();
+    // Drop last watchers.
+    let (_, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
+    drop(stat_watcher);
+    let (_, child_stat_watcher) = client.check_and_watch_stat(child_path).await.unwrap();
+    drop(child_stat_watcher);
 
     // Stat watcher for node creation.
     let (stat, stat_watcher) = client.check_and_watch_stat(path).await.unwrap();
@@ -1592,24 +1591,15 @@ async fn test_oneshot_watcher() {
     let (_, stat_received_watcher) = client.check_and_watch_stat(path).await.unwrap();
     let (_, _, get_received_watcher) = client.get_and_watch_data(path).await.unwrap();
 
-    // Drop or remove watchers before event.
+    // Drop watchers before event.
     let (_, drop_watcher1) = client.check_and_watch_stat(path).await.unwrap();
     let (_, _, drop_watcher2) = client.get_and_watch_data(path).await.unwrap();
     let (_, _, drop_watcher3) = client.get_and_watch_children(path).await.unwrap();
     let (_, drop_watcher4) = client.list_and_watch_children(path).await.unwrap();
-
-    let (_, remove_watcher1) = client.check_and_watch_stat(path).await.unwrap();
-    let (_, _, remove_watcher2) = client.get_and_watch_data(path).await.unwrap();
-    let (_, _, remove_watcher3) = client.get_and_watch_children(path).await.unwrap();
-    let (_, remove_watcher4) = client.list_and_watch_children(path).await.unwrap();
     drop(drop_watcher1);
     drop(drop_watcher2);
     drop(drop_watcher3);
     drop(drop_watcher4);
-    remove_watcher1.remove().await.unwrap();
-    remove_watcher2.remove().await.unwrap();
-    remove_watcher3.remove().await.unwrap();
-    remove_watcher4.remove().await.unwrap();
 
     // Child creation.
     client.create(child_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
@@ -1645,8 +1635,8 @@ async fn test_oneshot_watcher() {
     // Drop or remove watchers after event delivered.
     drop(drop_watcher1);
     drop(drop_watcher2);
-    remove_watcher1.remove().await.unwrap();
-    remove_watcher2.remove().await.unwrap();
+    drop(remove_watcher1);
+    drop(remove_watcher2);
 
     let (_, list_children_watcher) = client.list_and_watch_children(path).await.unwrap();
     let (_, _, get_children_watcher) = client.get_and_watch_children(path).await.unwrap();
@@ -1711,7 +1701,7 @@ async fn test_oneshot_watcher() {
 
     // Drop or remove watchers after event happened.
     drop(drop_watcher);
-    remove_watcher.remove().await.unwrap();
+    drop(remove_watcher);
 
     let node_event = get_watcher.changed().await;
     assert_eq!(node_event.event_type, zk::EventType::NodeDeleted);
@@ -1824,7 +1814,6 @@ async fn test_fail_watch_with_concurrent_passive_remove() {
 
 #[asyncs::test]
 #[test_log::test]
-#[allow(deprecated)]
 async fn test_persistent_watcher() {
     let cluster = Cluster::new().await;
     let client = cluster.client(None).await;
@@ -1838,7 +1827,7 @@ async fn test_persistent_watcher() {
     let root_recursive_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
     let path_persistent_watcher = client.watch(path, zk::AddWatchMode::PersistentRecursive).await.unwrap();
     drop(root_recursive_watcher);
-    path_persistent_watcher.remove().await.unwrap();
+    drop(path_persistent_watcher);
     Timer::after(Duration::from_millis(10)).await;
 
     let mut root_recursive_watcher = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
@@ -1854,7 +1843,7 @@ async fn test_persistent_watcher() {
 
     // Remove shared watch before events should have not effect on existing watchers.
     drop(root_recursive_watcher1);
-    path_persistent_watcher1.remove().await.unwrap();
+    drop(path_persistent_watcher1);
 
     let mut root_recursive_watcher3_changed = root_recursive_watcher3.changed();
     select! {
@@ -1862,12 +1851,7 @@ async fn test_persistent_watcher() {
         _ = unsafe { Pin::new_unchecked(&mut root_recursive_watcher3_changed) } => {},
         _ = future::ready(()) => {},
     }
-    let mut path_persistent_watcher3_remove = path_persistent_watcher3.remove();
-    select! {
-        biased;
-        _ = unsafe { Pin::new_unchecked(&mut path_persistent_watcher3_remove) } => {},
-        _ = future::ready(()) => {},
-    }
+    drop(path_persistent_watcher3);
 
     // Node creation.
     client.create(path, Default::default(), PERSISTENT_OPEN).await.unwrap();
@@ -1890,7 +1874,7 @@ async fn test_persistent_watcher() {
 
     // Remove shared watch after events should have not effect on existing watchers.
     drop(root_recursive_watcher2);
-    path_persistent_watcher2.remove().await.unwrap();
+    drop(path_persistent_watcher2);
 
     // Grandchild node creation.
     client.create(grandchild_path, Default::default(), PERSISTENT_OPEN).await.unwrap();
@@ -1925,7 +1909,6 @@ async fn test_persistent_watcher() {
 
     // Remove shared watch after events should have not effect on existing watchers.
     drop(root_recursive_watcher3_changed);
-    drop(path_persistent_watcher3_remove);
 
     // Node deletion.
     client.delete(path, None).await.unwrap();
@@ -2001,88 +1984,6 @@ async fn test_watcher_coexist_on_same_path() {
     let expected = zk::WatchedEvent::new(zk::EventType::NodeCreated, "/a".to_string()).with_zxid(stat.mzxid);
     assert_that!(persistent_watcher.changed().await).is_equal_to(&expected);
     assert_that!(recursive_watcher.changed().await).is_equal_to(&expected);
-}
-
-#[asyncs::test]
-#[test_log::test]
-#[allow(deprecated)]
-async fn test_watcher_remove_after_client_closed() {
-    let cluster = Cluster::new().await;
-    let client = cluster.client(None).await;
-    let mut state_watcher = client.state_watcher();
-
-    // given: watchers
-    let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
-    let persistent_watcher = client.watch("/a", zk::AddWatchMode::Persistent).await.unwrap();
-
-    // when: all client dropped
-    drop(client);
-    assert_eq!(zk::SessionState::Closed, state_watcher.changed().await);
-
-    // then: watcher remove will get Error::ClientClosed.
-    assert_eq!(zk::Error::ClientClosed, exist_watcher.remove().await.unwrap_err());
-    assert_eq!(zk::Error::ClientClosed, persistent_watcher.remove().await.unwrap_err());
-}
-
-#[asyncs::test]
-#[test_log::test]
-#[allow(deprecated)]
-async fn test_watcher_remove_session_expired() {
-    let cluster = Cluster::new().await;
-    let client = cluster.client(None).await;
-    let mut state_watcher = client.state_watcher();
-
-    // given: watchers
-    let (_, oneshot_watcher1) = client.check_and_watch_stat("/").await.unwrap();
-    let (_, _, oneshot_watcher2) = client.get_and_watch_data("/").await.unwrap();
-    let (_, oneshot_watcher3) = client.list_and_watch_children("/").await.unwrap();
-    let (_, _, oneshot_watcher4) = client.get_and_watch_children("/").await.unwrap();
-
-    let persistent_watcher1 = client.watch("/", zk::AddWatchMode::Persistent).await.unwrap();
-    let persistent_watcher2 = client.watch("/", zk::AddWatchMode::PersistentRecursive).await.unwrap();
-
-    // when: session expired
-    cluster.stop();
-    state_watcher.wait(zk::SessionState::Expired, None).await;
-
-    // then: watcher remove will get Error::SessionExpired
-    assert_eq!(oneshot_watcher1.remove().await.unwrap_err(), zk::Error::SessionExpired,);
-    assert_eq!(oneshot_watcher2.remove().await.unwrap_err(), zk::Error::SessionExpired,);
-    assert_eq!(oneshot_watcher3.remove().await.unwrap_err(), zk::Error::SessionExpired,);
-    assert_eq!(oneshot_watcher4.remove().await.unwrap_err(), zk::Error::SessionExpired,);
-    assert_eq!(persistent_watcher1.remove().await.unwrap_err(), zk::Error::SessionExpired,);
-    assert_eq!(persistent_watcher2.remove().await.unwrap_err(), zk::Error::SessionExpired,);
-}
-
-// Use a single thread executor to predict request process order.
-#[asyncs::test(parallelism = 1)]
-#[test_log::test]
-#[allow(deprecated)]
-async fn test_watcher_remove_no_watcher() {
-    let cluster = Cluster::new().await;
-    let client = cluster.client(None).await;
-
-    // given: an exist watcher
-    let (_, exist_watcher) = client.check_and_watch_stat("/a").await.unwrap();
-
-    // when: create a node to fire above watcher and remove that watcher immediately
-    let create = client.create("/a", &[], PERSISTENT_OPEN);
-    let err = exist_watcher.remove().await.unwrap_err();
-
-    // then: watcher remove will get Error::NoWatcher
-    assert_that!(err).is_equal_to(zk::Error::NoWatcher);
-    create.await.unwrap();
-
-    // given: a data watcher
-    let (_, _, data_watcher) = client.get_and_watch_data("/a").await.unwrap();
-
-    // when: delete node to fire above watcher and remove that watcher immediately
-    let delete = client.delete("/a", None);
-    let err = data_watcher.remove().await.unwrap_err();
-
-    // then: watcher remove will get Error::NoWatcher
-    assert_that!(err).is_equal_to(zk::Error::NoWatcher);
-    delete.await.unwrap();
 }
 
 #[asyncs::test]

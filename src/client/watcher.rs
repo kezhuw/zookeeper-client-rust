@@ -1,7 +1,6 @@
 use asyncs::sync::watch;
 
 use crate::chroot::OwnedChroot;
-use crate::error::Error;
 use crate::session::{OneshotReceiver, PersistentReceiver, SessionState, WatchReceiver, WatchedEvent};
 
 /// StateWatcher tracks session state updates.
@@ -66,12 +65,6 @@ impl OneshotWatcher {
         event.drain_root_path(self.chroot.root());
         event
     }
-
-    /// Removes this watcher.
-    #[deprecated(since = "0.10.0", note = "Rust has Drop")]
-    pub async fn remove(self) -> Result<(), Error> {
-        self.receiver.remove().await
-    }
 }
 
 /// Watcher for persistent and recursive watch.
@@ -102,18 +95,6 @@ impl PersistentWatcher {
         let mut event = self.receiver.recv().await;
         event.drain_root_path(self.chroot.root());
         event
-    }
-
-    /// Removes this watcher.
-    ///
-    /// # Cautions
-    /// It is a best effect as ZooKeeper ([ZOOKEEPER-4472][]) does not support persistent watch
-    /// removing individually.
-    ///
-    /// [ZOOKEEPER-4472]: https://issues.apache.org/jira/browse/ZOOKEEPER-4472
-    #[deprecated(since = "0.10.0", note = "Rust has Drop")]
-    pub async fn remove(self) -> Result<(), Error> {
-        self.receiver.remove().await
     }
 }
 

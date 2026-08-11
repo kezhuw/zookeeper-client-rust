@@ -16,7 +16,6 @@ use futures::channel::mpsc;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{AsyncWriteExt, StreamExt};
-use ignore_result::Ignore;
 use tracing::field::display;
 use tracing::{debug, info, instrument, warn, Span};
 
@@ -123,9 +122,9 @@ impl Builder {
         };
         #[cfg(not(feature = "tls"))]
         let connector = Connector::new();
-        let (state_sender, state_receiver) = sync::watch::channel(SessionState::Disconnected);
+        let (state_sender, _state_receiver) = sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();
-        let watch_manager = WatchManager::new(requester, state_receiver);
+        let watch_manager = WatchManager::new(requester);
         let mut session = Session {
             readonly: self.readonly,
             detached: self.detached,
@@ -257,7 +256,7 @@ impl Session {
         }
         self.session_state = state;
         self.watch_manager.dispatch_session_state(state);
-        self.state_sender.send(state).ignore();
+        self.state_sender.publish(state);
     }
 
     fn resolve_start_error(&mut self, err: &Error) {
@@ -580,10 +579,8 @@ impl Session {
                         channel_halted = true;
                     }
                     Some(Request::Session(operation)) => depot.push_session(operation),
-                    Some(Request::RemoveWatcher {
-                        id, responser
-                    }) => {
-                        self.watch_manager.remove_watcher(id, responser, depot);
+                    Some(Request::RemoveWatcher { id }) => {
+                        self.watch_manager.remove_watcher(id, depot);
                     }
                     Some(Request::BackgroundJob { job }) => self.background_jobs.push(job),
                 },

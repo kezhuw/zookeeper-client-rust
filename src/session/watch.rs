@@ -1,6 +1,5 @@
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 
-use asyncs::sync;
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
 use hashbrown::HashMap;
@@ -10,9 +9,8 @@ use tracing::error;
 
 use super::depot::Depot;
 use super::event::WatcherEvent;
-use super::request::{Operation, Request, SessionOperation, StateReceiver, StateResponser};
+use super::request::{Operation, Request, SessionOperation};
 use super::types::{EventType, SessionState, WatchMode, WatchedEvent};
-use crate::error::Error;
 use crate::proto::{ErrorCode, OpCode, SetWatchesRequest};
 use crate::util::{Ref, ToRef};
 
@@ -41,67 +39,41 @@ impl WatchReceiver {
 }
 
 #[derive(Debug)]
-struct RemovableWatcher {
+struct Unwatcher {
     id: WatcherId,
-    state: Arc<sync::watch::Receiver<SessionState>>,
     unwatch: Weak<mpsc::UnboundedSender<Request>>,
 }
 
-impl RemovableWatcher {
-    fn new(
-        id: WatcherId,
-        state: Arc<sync::watch::Receiver<SessionState>>,
-        unwatch: Weak<mpsc::UnboundedSender<Request>>,
-    ) -> Self {
-        Self { id, state, unwatch }
+impl Unwatcher {
+    fn new(id: WatcherId, unwatch: Weak<mpsc::UnboundedSender<Request>>) -> Self {
+        Self { id, unwatch }
     }
 
-    fn into_parts(self) -> (WatcherId, Arc<sync::watch::Receiver<SessionState>>, Weak<mpsc::UnboundedSender<Request>>) {
+    fn into_parts(self) -> (WatcherId, Weak<mpsc::UnboundedSender<Request>>) {
         unsafe {
             let id = self.id;
-            let state = std::ptr::read(&self.state);
             let unwatch = std::ptr::read(&self.unwatch);
             std::mem::forget(self);
-            (id, state, unwatch)
+            (id, unwatch)
         }
     }
 
     fn discard(self) {
         self.into_parts();
     }
-
-    pub async fn remove(self) -> Result<(), Error> {
-        let (id, state, unwatch) = self.into_parts();
-        match unwatch.upgrade() {
-            None => Err(Error::ClientClosed),
-            Some(unwatch) => {
-                let (sender, receiver) = oneshot::channel();
-                if unwatch
-                    .unbounded_send(Request::RemoveWatcher { id, responser: StateResponser::new(sender) })
-                    .is_err()
-                {
-                    return Err(state.borrow().to_error());
-                }
-
-                let receiver = StateReceiver::new(OpCode::RemoveWatches, receiver);
-                receiver.await?;
-                Ok(())
-            },
-        }
-    }
 }
 
-impl Drop for RemovableWatcher {
+impl Drop for Unwatcher {
     fn drop(&mut self) {
         if let Some(unwatch) = self.unwatch.upgrade() {
-            unwatch.unbounded_send(Request::RemoveWatcher { id: self.id, responser: Default::default() }).ignore();
+            unwatch.unbounded_send(Request::RemoveWatcher { id: self.id }).ignore();
         }
     }
 }
 
 #[derive(Debug)]
 pub struct OneshotReceiver {
-    watcher: RemovableWatcher,
+    unwatcher: Unwatcher,
     receiver: Option<oneshot::Receiver<WatchedEvent>>,
 }
 
@@ -110,26 +82,22 @@ impl OneshotReceiver {
         id: WatcherId,
         receiver: oneshot::Receiver<WatchedEvent>,
         unwatch: Weak<mpsc::UnboundedSender<Request>>,
-        state: Arc<sync::watch::Receiver<SessionState>>,
     ) -> Self {
-        OneshotReceiver { watcher: RemovableWatcher::new(id, state, unwatch), receiver: Some(receiver) }
+        OneshotReceiver { unwatcher: Unwatcher::new(id, unwatch), receiver: Some(receiver) }
     }
 
     pub async fn recv(mut self) -> WatchedEvent {
         let receiver = self.receiver.take().unwrap();
         let event = receiver.await.unwrap();
-        self.watcher.discard();
+        self.unwatcher.discard();
         event
-    }
-
-    pub async fn remove(self) -> Result<(), Error> {
-        self.watcher.remove().await
     }
 }
 
 #[derive(Debug)]
 pub struct PersistentReceiver {
-    watcher: RemovableWatcher,
+    // `_unwatcher` is only read through `Drop`, which unregisters the watch.
+    _unwatcher: Unwatcher,
     receiver: mpsc::UnboundedReceiver<WatchedEvent>,
 }
 
@@ -138,17 +106,12 @@ impl PersistentReceiver {
         id: WatcherId,
         receiver: mpsc::UnboundedReceiver<WatchedEvent>,
         unwatch: Weak<mpsc::UnboundedSender<Request>>,
-        state: Arc<sync::watch::Receiver<SessionState>>,
     ) -> Self {
-        PersistentReceiver { watcher: RemovableWatcher::new(id, state, unwatch), receiver }
+        PersistentReceiver { _unwatcher: Unwatcher::new(id, unwatch), receiver }
     }
 
     pub async fn recv(&mut self) -> WatchedEvent {
         self.receiver.next().await.unwrap()
-    }
-
-    pub async fn remove(self) -> Result<(), Error> {
-        self.watcher.remove().await
     }
 }
 
@@ -241,17 +204,13 @@ pub struct WatchManager {
     cached_watches: Vec<Watch>,
 
     requester: Weak<mpsc::UnboundedSender<Request>>,
-    state_receiver: Arc<sync::watch::Receiver<SessionState>>,
 }
 
 /// Maximum number of paths kept in `cached_paths` for reuse.
 const CACHED_PATHS_MAX: usize = 1000;
 
 impl WatchManager {
-    pub fn new(
-        requester: Weak<mpsc::UnboundedSender<Request>>,
-        state_receiver: sync::watch::Receiver<SessionState>,
-    ) -> Self {
+    pub fn new(requester: Weak<mpsc::UnboundedSender<Request>>) -> Self {
         WatchManager {
             cached_paths: LinkedHashSet::with_capacity(CACHED_PATHS_MAX),
             cached_watches: Vec::with_capacity(100),
@@ -261,7 +220,6 @@ impl WatchManager {
             watching_paths: HashMap::with_capacity(20),
 
             requester,
-            state_receiver: state_receiver.into(),
         }
     }
 
@@ -292,7 +250,7 @@ impl WatchManager {
         let (sender, receiver) = oneshot::channel();
         let watcher = Watcher { id, kind, sender: WatchSender::Oneshot(sender) };
         self.add_watch(path, watcher);
-        OneshotReceiver::new(id, receiver, self.requester.clone(), self.state_receiver.clone())
+        OneshotReceiver::new(id, receiver, self.requester.clone())
     }
 
     fn add_persistent_watch(&mut self, path: &str, kind: WatcherKind) -> PersistentReceiver {
@@ -300,7 +258,7 @@ impl WatchManager {
         let (sender, receiver) = mpsc::unbounded();
         let watcher = Watcher { id, kind, sender: WatchSender::Persistent(sender) };
         self.add_watch(path, watcher);
-        PersistentReceiver::new(id, receiver, self.requester.clone(), self.state_receiver.clone())
+        PersistentReceiver::new(id, receiver, self.requester.clone())
     }
 
     fn add_data_watch(&mut self, path: &str) -> OneshotReceiver {
@@ -393,7 +351,7 @@ impl WatchManager {
         }
         if !has_watch {
             // Probably a dangling persistent watcher.
-            depot.push_remove_watch(event.path, WatchMode::Any, StateResponser::none());
+            depot.push_remove_watch(event.path, WatchMode::Any);
         }
     }
 
@@ -413,11 +371,9 @@ impl WatchManager {
         Some((path, mode))
     }
 
-    pub fn remove_watcher(&mut self, watcher_id: WatcherId, responser: StateResponser, depot: &mut Depot) {
+    pub fn remove_watcher(&mut self, watcher_id: WatcherId, depot: &mut Depot) {
         if let Some((path, mode)) = self.try_remove_watcher(watcher_id, depot) {
-            depot.push_remove_watch(path, mode, responser);
-        } else {
-            responser.send_empty();
+            depot.push_remove_watch(path, mode);
         }
     }
 
@@ -528,7 +484,6 @@ impl WatcherKind {
 mod tests {
     use std::sync::Arc;
 
-    use asyncs::sync;
     use futures::channel::mpsc;
 
     use super::*;
@@ -539,8 +494,7 @@ mod tests {
     fn cached_paths_is_bounded_under_unique_path_churn() {
         let (sender, _receiver) = mpsc::unbounded::<Request>();
         let sender = Arc::new(sender);
-        let (_state_sender, state_receiver) = sync::watch::channel(SessionState::Disconnected);
-        let mut wm = WatchManager::new(Arc::downgrade(&sender), state_receiver);
+        let mut wm = WatchManager::new(Arc::downgrade(&sender));
 
         // Churn well past the cap on unique paths. Mirrors a long-lived
         // client that watches a steady stream of new znodes (e.g. a lock
