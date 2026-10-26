@@ -59,6 +59,18 @@ macro_rules! session_select {
     ($($branches:tt)*) => { ::asyncs::select! { $($branches)* } };
 }
 
+/// The maps the session keeps requests and watches in.
+///
+/// Under `turmoil` they hash with fixed keys, so the same inserts traverse in the same order on
+/// every run. hashbrown's default hasher seeds each map from addresses and other per-run state,
+/// and the session traverses these maps to fail requests, notify watchers and resend watches on
+/// reconnect, so the same seed could wake callers and watchers in a different order.
+#[cfg(feature = "turmoil")]
+type HashMap<K, V> = hashbrown::HashMap<K, V, std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>>;
+
+#[cfg(not(feature = "turmoil"))]
+type HashMap<K, V> = hashbrown::HashMap<K, V>;
+
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
 

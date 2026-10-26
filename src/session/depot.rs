@@ -2,13 +2,13 @@ use std::collections::VecDeque;
 use std::io::IoSlice;
 
 use futures_lite::io::AsyncWriteExt;
-use hashbrown::HashMap;
 use strum::IntoEnumIterator;
 use tracing::debug;
 
 use super::request::{MarshalledRequest, OpStat, Operation, SessionOperation};
 use super::types::WatchMode;
 use super::xid::Xid;
+use super::HashMap;
 use crate::error::Error;
 use crate::proto::{OpCode, PredefinedXid, RemoveWatchesRequest};
 
@@ -42,10 +42,10 @@ impl Depot {
             pending_authes: Vec::with_capacity(5),
             writing_slices: Vec::with_capacity(writing_capacity),
             writing_operations: VecDeque::with_capacity(writing_capacity),
-            written_operations: HashMap::with_capacity(128),
+            written_operations: HashMap::with_capacity_and_hasher(128, Default::default()),
             pending_operations: VecDeque::with_capacity(32),
-            watching_paths: HashMap::with_capacity(32),
-            unwatching_paths: HashMap::with_capacity(32),
+            watching_paths: HashMap::with_capacity_and_hasher(32, Default::default()),
+            unwatching_paths: HashMap::with_capacity_and_hasher(32, Default::default()),
         }
     }
 
