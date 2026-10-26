@@ -1,6 +1,5 @@
 use std::sync::{Arc, RwLock};
 
-use async_net::TcpStream;
 use futures_rustls::client::TlsStream;
 use futures_rustls::TlsConnector;
 use rustls::client::WebPkiServerVerifier;
@@ -11,6 +10,7 @@ use tracing::warn;
 use super::{NoHostnameVerificationServerCertVerifier, TlsCerts, TlsClientOptions, TlsDynamicCerts, TlsInnerCerts};
 use crate::client::Result;
 use crate::error::Error;
+use crate::net;
 
 struct TlsDynamicConnector {
     config: RwLock<(u64, Arc<ClientConfig>)>,
@@ -76,7 +76,11 @@ enum TlsInnerClient {
 }
 
 impl TlsInnerClient {
-    async fn connect(&self, domain: ServerName<'static>, stream: TcpStream) -> std::io::Result<TlsStream<TcpStream>> {
+    async fn connect(
+        &self,
+        domain: ServerName<'static>,
+        stream: net::TcpStream,
+    ) -> std::io::Result<TlsStream<net::TcpStream>> {
         match self {
             Self::Static(connector) => connector.connect(domain, stream).await,
             Self::Dynamic(connector) => {
@@ -162,8 +166,8 @@ impl TlsClient {
         }
     }
 
-    pub async fn connect(&self, host: &str, port: u16) -> std::io::Result<TlsStream<TcpStream>> {
-        let stream = TcpStream::connect((host, port)).await?;
+    pub async fn connect(&self, host: &str, port: u16) -> std::io::Result<TlsStream<net::TcpStream>> {
+        let stream = net::connect(host, port).await?;
         let domain = ServerName::try_from(host).unwrap().to_owned();
         self.inner.connect(domain, stream).await
     }

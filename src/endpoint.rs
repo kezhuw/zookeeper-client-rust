@@ -1,10 +1,9 @@
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
-use async_io::Timer;
-
 use crate::chroot::Chroot;
 use crate::error::Error;
+use crate::time::Timer;
 use crate::util::{Ref, ToRef};
 
 #[derive(Clone, PartialEq, Eq)]

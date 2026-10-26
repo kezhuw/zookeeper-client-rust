@@ -2,7 +2,6 @@ use std::sync::Weak;
 
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
-use hashbrown::HashMap;
 use hashlink::LinkedHashSet;
 use ignore_result::Ignore;
 use tracing::error;
@@ -11,6 +10,7 @@ use super::depot::Depot;
 use super::event::WatcherEvent;
 use super::request::{Operation, Request, SessionOperation};
 use super::types::{EventType, SessionState, WatchMode, WatchedEvent};
+use super::HashMap;
 use crate::proto::{ErrorCode, OpCode, SetWatchesRequest};
 use crate::util::{Ref, ToRef};
 
@@ -216,8 +216,8 @@ impl WatchManager {
             cached_watches: Vec::with_capacity(100),
 
             next_watcher_id: 1,
-            watches: HashMap::with_capacity(20),
-            watching_paths: HashMap::with_capacity(20),
+            watches: HashMap::with_capacity_and_hasher(20, Default::default()),
+            watching_paths: HashMap::with_capacity_and_hasher(20, Default::default()),
 
             requester,
         }

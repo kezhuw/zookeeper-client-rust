@@ -10,8 +10,7 @@ use std::pin::pin;
 use std::sync::Weak;
 use std::time::{Duration, Instant};
 
-use async_io::Timer;
-use asyncs::{select, sync};
+use asyncs::sync;
 use futures::channel::mpsc;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -41,8 +40,36 @@ use crate::proto::{ConnectRequest, ConnectResponse, ErrorCode, OpCode, Predefine
 use crate::record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
+use crate::time::{self, Timer};
 #[cfg(feature = "tls")]
 use crate::tls::TlsOptions;
+
+/// `select!` for the session loops.
+///
+/// Under `turmoil` it is `biased`: an unbiased `select!` picks the branch to poll first from the
+/// address of its futures, which differs between runs, so the same seed could take different
+/// branches.
+#[cfg(feature = "turmoil")]
+macro_rules! session_select {
+    ($($branches:tt)*) => { ::asyncs::select! { biased; $($branches)* } };
+}
+
+#[cfg(not(feature = "turmoil"))]
+macro_rules! session_select {
+    ($($branches:tt)*) => { ::asyncs::select! { $($branches)* } };
+}
+
+/// The maps the session keeps requests and watches in.
+///
+/// Under `turmoil` they hash with fixed keys, so the same inserts traverse in the same order on
+/// every run. hashbrown's default hasher seeds each map from addresses and other per-run state,
+/// and the session traverses these maps to fail requests, notify watchers and resend watches on
+/// reconnect, so the same seed could wake callers and watchers in a different order.
+#[cfg(feature = "turmoil")]
+type HashMap<K, V> = hashbrown::HashMap<K, V, std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>>;
+
+#[cfg(not(feature = "turmoil"))]
+type HashMap<K, V> = hashbrown::HashMap<K, V>;
 
 pub const PASSWORD_LEN: usize = 16;
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
@@ -123,7 +150,7 @@ impl Builder {
         #[cfg(not(feature = "tls"))]
         let connector = Connector::new();
         let (state_sender, _state_receiver) = sync::watch::channel(SessionState::Disconnected);
-        let now = Instant::now();
+        let now = time::now();
         let watch_manager = WatchManager::new(requester);
         let mut session = Session {
             readonly: self.readonly,
@@ -392,7 +419,7 @@ impl Session {
         } else if header.xid == PredefinedXid::Ping as i32 {
             depot.pop_ping()?;
             if let Some(last_ping) = self.last_ping.take() {
-                let elapsed = Instant::now() - last_ping;
+                let elapsed = time::now() - last_ping;
                 debug!("got ping response after {}ms", elapsed.as_millis());
             }
             return Ok(());
@@ -489,7 +516,7 @@ impl Session {
         }
         let consumed_bytes = recved.len() - reading.len();
         recved.drain(..consumed_bytes);
-        self.last_recv = Instant::now();
+        self.last_recv = time::now();
         Ok(())
     }
 
@@ -503,14 +530,14 @@ impl Session {
         let (mut reader, mut writer) = conn.split();
         let mut tick = pin!(Timer::interval(self.tick_timeout));
         while !(self.session_state.is_connected() && depot.is_empty()) {
-            select! {
+            session_select! {
                 r = reader.read_to_buf(buf) => match r.map_err(Error::other)? {
                     0 => return Err(Error::ConnectionLoss),
                     _ => self.handle_recv_buf(buf, depot)?,
                 },
                 r = depot.write_to(&mut writer) => {
                     r?;
-                    self.last_send = Instant::now();
+                    self.last_send = time::now();
                 },
                 now = tick.as_mut() => {
                     if now >= self.last_recv + self.connector.timeout() {
@@ -522,7 +549,7 @@ impl Session {
                 // Send opcode other than `auth` and `sasl` to get possible AuthFailed if
                 // "zookeeper.enforce.auth.enabled".
                 pinged = true;
-                self.send_ping(depot, Instant::now());
+                self.send_ping(depot, time::now());
             }
         }
         Ok(())
@@ -553,7 +580,7 @@ impl Session {
         depot.start();
         let (mut reader, mut writer) = conn.split();
         while !(channel_halted && depot.is_empty()) {
-            select! {
+            session_select! {
                 Some(endpoint) = Self::poll(&mut seek_for_writable), if seek_for_writable.is_some() => {
                     seek_for_writable = None;
                     err = Some(Error::with_message(format!("encounter writable server {endpoint}")));
@@ -565,7 +592,7 @@ impl Session {
                 },
                 r = depot.write_to(&mut writer) => {
                     r?;
-                    self.last_send = Instant::now();
+                    self.last_send = time::now();
                 },
                 // Drive background jobs (e.g. lock node cleanup on guard drop). The guard is
                 // required: `FuturesUnordered::next` yields `Ready(None)` when empty, which would
@@ -667,7 +694,7 @@ impl Session {
         self.send_sasl(depot, endpoint.host)?;
         self.send_authes(depot);
         self.watch_manager.resend_watches(self.last_zxid, depot);
-        self.last_send = Instant::now();
+        self.last_send = time::now();
         self.last_recv = self.last_send;
         self.last_ping = None;
         self.change_state(SessionState::Disconnected);

@@ -15,7 +15,8 @@ build:
 	RUSTFLAGS=-Dunused-crate-dependencies cargo build-all-features
 
 test:
-	cargo test --all-features
+	cargo test --features tls,fips-only,sasl,tokio,smol,async-global-executor
+	cargo test --features turmoil --lib turmoil
 
 doc:
 	RUSTDOCFLAGS='--cfg docsrs' cargo +nightly doc --all-features

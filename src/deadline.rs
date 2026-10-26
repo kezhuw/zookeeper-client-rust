@@ -3,8 +3,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use async_io::Timer;
 use futures::future::{Fuse, FusedFuture, FutureExt};
+
+use crate::time::{self, Timer};
 
 pub struct Deadline {
     timer: Fuse<Timer>,
@@ -28,7 +29,7 @@ impl Deadline {
     pub fn timeout(&self) -> Duration {
         match self.deadline.as_ref() {
             None => Duration::MAX,
-            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+            Some(deadline) => deadline.saturating_duration_since(time::now()),
         }
     }
 }

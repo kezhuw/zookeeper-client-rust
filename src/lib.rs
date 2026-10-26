@@ -29,6 +29,19 @@
 //! * `tokio`: Toggle support for [tokio](https://docs.rs/tokio).
 //! * `smol`: Toggle support for [smol](https://docs.rs/smol) builtin global executor.
 //! * `async-global-executor`: Toggle support for [async-global-executor](https://docs.rs/async-global-executor).
+//!
+//! ## Network simulation
+//! * `turmoil`: Toggle support for [turmoil](https://docs.rs/turmoil) network simulation. This
+//!   enables `tokio`.
+//!
+//! With `turmoil`, the client's sockets, DNS and timers run on turmoil's simulated network and
+//! clock, so it works only inside a turmoil simulation; enable it only in simulation builds.
+//! [Client] must be constructed on `tokio` tasks of a turmoil host, e.g. in `Sim::client`, for
+//! `turmoil` to function, as its session task runs on the same host.
+//!
+//! Endpoint shuffle and reconnect jitter draw from [fastrand](https://docs.rs/fastrand)'s
+//! thread-local RNG, which turmoil's seed does not cover. Call `fastrand::seed` on the thread
+//! running the simulation for reproducible runs.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -38,11 +51,13 @@ mod client;
 mod deadline;
 mod endpoint;
 mod error;
+mod net;
 mod proto;
 mod record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 mod sasl;
 mod session;
+mod time;
 #[cfg(feature = "tls")]
 mod tls;
 mod util;
