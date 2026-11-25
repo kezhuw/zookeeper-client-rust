@@ -52,7 +52,7 @@ use crate::record::{self, Record, StaticRecord};
 use crate::sasl::SaslOptions;
 use crate::session::StateReceiver;
 pub use crate::session::{EventType, SessionId, SessionInfo, SessionState, WatchedEvent};
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 use crate::tls::TlsOptions;
 use crate::util;
 
@@ -1640,7 +1640,7 @@ pub(crate) struct Version(u32, u32, u32);
 #[derive(Clone)]
 #[derive_where(Debug)]
 pub struct Connector {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     tls: Option<TlsOptions>,
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
     sasl: Option<SaslOptions>,
@@ -1658,7 +1658,7 @@ pub struct Connector {
 impl Connector {
     fn new() -> Self {
         Self {
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             tls: None,
             #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
             sasl: None,
@@ -1730,8 +1730,8 @@ impl Connector {
     }
 
     /// Specifies tls options for connections to ZooKeeper.
-    #[cfg(feature = "tls")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+    #[cfg(feature = "__tls")]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "tls", feature = "tls-no-provider"))))]
     pub fn with_tls(mut self, options: TlsOptions) -> Self {
         self.tls = Some(options);
         self
@@ -1764,7 +1764,7 @@ impl Connector {
             .with_detached(self.detached)
             .with_session_timeout(self.session_timeout)
             .with_connection_timeout(self.connection_timeout);
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "__tls")]
         let builder = builder.with_tls(self.tls);
         #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
         let builder = builder.with_sasl(self.sasl);
@@ -1796,7 +1796,7 @@ impl Connector {
     ///
     /// Same to [Self::connect] except that `server1` will use tls encrypted protocol given
     /// the connection string `server1,tcp://server2,tcp+tls://server3`.
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     pub async fn secure_connect(self, cluster: &str) -> Result<Client> {
         self.connect_internally(true, cluster).await
     }

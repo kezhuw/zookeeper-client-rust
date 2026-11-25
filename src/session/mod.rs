@@ -41,7 +41,7 @@ use crate::proto::{ConnectRequest, ConnectResponse, ErrorCode, OpCode, Predefine
 use crate::record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 use crate::sasl::{SaslInitiator, SaslOptions, SaslSession};
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 use crate::tls::TlsOptions;
 
 pub const PASSWORD_LEN: usize = 16;
@@ -49,7 +49,7 @@ pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(6);
 
 #[derive(Default)]
 pub struct Builder {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     tls: Option<TlsOptions>,
     #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
     sasl: Option<SaslOptions>,
@@ -62,7 +62,7 @@ pub struct Builder {
 }
 
 impl Builder {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     pub fn with_tls(self, tls: Option<TlsOptions>) -> Self {
         Self { tls, ..self }
     }
@@ -115,12 +115,12 @@ impl Builder {
         } else if self.connection_timeout < Duration::ZERO {
             return Err(Error::BadArguments(&"connection timeout must not be negative"));
         }
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "__tls")]
         let connector = match self.tls {
             Some(options) => Connector::with_tls(options.into_client()?),
             None => Connector::new(),
         };
-        #[cfg(not(feature = "tls"))]
+        #[cfg(not(feature = "__tls"))]
         let connector = Connector::new();
         let (state_sender, _state_receiver) = sync::watch::channel(SessionState::Disconnected);
         let now = Instant::now();

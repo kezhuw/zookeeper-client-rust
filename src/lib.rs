@@ -14,7 +14,11 @@
 //! * [Client::chroot] and [Client::clone] enable session sharing cross multiple different rooted clients.
 //!
 //! ## Feature flags
-//! * `tls`: Toggle TLS support.
+//! * `tls`: Toggle TLS support with [aws-lc-rs](https://docs.rs/aws-lc-rs) as the built-in rustls crypto provider.
+//! * `tls-no-provider`: Toggle TLS support without a built-in rustls crypto provider. Applications must supply
+//!   one by [TlsOptions::with_crypto_provider] or
+//!   [CryptoProvider::install_default](https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#method.install_default).
+//!   This is useful to use a different provider, e.g. [ring](https://docs.rs/ring), without aws-lc-rs.
 //! * `fips`: Toggle TLS FIPS mode support. See also [TlsOptions::with_fips].
 //! * `fips-only`: Force TLS FIPS mode. This should be considered as an application only feature to
 //!   fulfill security requirement at global level.
@@ -43,14 +47,14 @@ mod record;
 #[cfg(any(feature = "sasl-digest-md5", feature = "sasl-gssapi"))]
 mod sasl;
 mod session;
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 mod tls;
 mod util;
 
 pub use self::acl::{Acl, Acls, AuthId, AuthUser, Permission};
 pub use self::error::Error;
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+#[cfg(feature = "__tls")]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "tls", feature = "tls-no-provider"))))]
 pub use self::tls::{TlsCa, TlsCerts, TlsCertsBuilder, TlsCertsOptions, TlsDynamicCerts, TlsIdentity, TlsOptions};
 pub use crate::client::*;
 #[cfg(feature = "sasl-digest-md5")]
