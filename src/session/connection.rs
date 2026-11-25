@@ -10,20 +10,20 @@ use bytes::buf::BufMut;
 use futures::io::BufReader;
 use futures::prelude::*;
 use futures_lite::AsyncReadExt;
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 pub use futures_rustls::client::TlsStream;
 use ignore_result::Ignore;
 use tracing::{debug, trace};
 
 use crate::deadline::Deadline;
 use crate::endpoint::{EndpointRef, IterableEndpoints};
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 use crate::tls::TlsClient;
 
 #[derive(Debug)]
 pub enum Connection {
     Raw(TcpStream),
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     Tls(Box<TlsStream<TcpStream>>),
 }
 
@@ -50,7 +50,7 @@ impl AsyncRead for Connection {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_read(cx, buf),
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Self::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
         }
     }
@@ -60,7 +60,7 @@ impl AsyncWrite for Connection {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_write(cx, buf),
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Self::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
         }
     }
@@ -68,7 +68,7 @@ impl AsyncWrite for Connection {
     fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>]) -> Poll<Result<usize>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Self::Tls(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
         }
     }
@@ -76,7 +76,7 @@ impl AsyncWrite for Connection {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_flush(cx),
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
         }
     }
@@ -84,7 +84,7 @@ impl AsyncWrite for Connection {
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
         match self.get_mut() {
             Self::Raw(stream) => Pin::new(stream).poll_close(cx),
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Self::Tls(stream) => Pin::new(stream).poll_close(cx),
         }
     }
@@ -133,7 +133,7 @@ impl Connection {
         (reader, writer)
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
         Self::Tls(stream.into())
     }
@@ -161,7 +161,7 @@ impl Connection {
 
 #[derive(Clone)]
 pub struct Connector {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     tls: Option<TlsClient>,
     timeout: Duration,
 }
@@ -169,13 +169,13 @@ pub struct Connector {
 impl Connector {
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             tls: None,
             timeout: Duration::from_secs(10),
         }
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     pub fn with_tls(client: TlsClient) -> Self {
         Self { tls: Some(client), timeout: Duration::from_secs(10) }
     }
@@ -190,12 +190,12 @@ impl Connector {
 
     async fn connect_endpoint(&self, endpoint: EndpointRef<'_>) -> Result<Connection> {
         if endpoint.tls {
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             return match self.tls.as_ref() {
                 None => return Err(Error::new(ErrorKind::Unsupported, "tls not configured")),
                 Some(client) => client.connect(endpoint.host, endpoint.port).await.map(Connection::new_tls),
             };
-            #[cfg(not(feature = "tls"))]
+            #[cfg(not(feature = "__tls"))]
             return Err(Error::new(ErrorKind::Unsupported, "tls not supported"));
         }
         TcpStream::connect((endpoint.host, endpoint.port)).await.map(Connection::new_raw)

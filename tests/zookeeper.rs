@@ -203,7 +203,7 @@ async fn test_connect_session_expired() {
 #[derive(Copy, Clone)]
 enum Encryption {
     Raw,
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     Tls,
 }
 
@@ -226,7 +226,7 @@ struct Tls {
     hostname_verification: bool,
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 impl Tls {
     fn new(dir: Arc<TempDir>) -> Self {
         let hostname_verification = env_toggle("ZK_TLS_HOSTNAME_VERIFICATION");
@@ -292,7 +292,7 @@ impl Tls {
 }
 
 struct Cluster {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     tls: Option<Tls>,
     containers: Vec<(u32, Container<GenericImage>)>,
     dir: LazyTempDir,
@@ -399,23 +399,23 @@ impl Cluster {
 
     pub async fn with_options(options: ClusterOptions<'_>, encryption: Option<Encryption>) -> Self {
         let encryption = encryption.unwrap_or_else(|| {
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             return if env_toggle("ZK_TEST_TLS") { Encryption::Tls } else { Encryption::Raw };
-            #[cfg(not(feature = "tls"))]
+            #[cfg(not(feature = "__tls"))]
             Encryption::Raw
         });
         let mut cluster = match encryption {
-            #[cfg(not(feature = "tls"))]
+            #[cfg(not(feature = "__tls"))]
             Encryption::Raw => {
                 println!("starting plaintext zookeeper server {} ...", options.tag);
                 Self { containers: vec![], dir: LazyTempDir::new() }
             },
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Encryption::Raw => {
                 println!("starting plaintext zookeeper server {} ...", options.tag);
                 Self { tls: None, containers: vec![], dir: LazyTempDir::new() }
             },
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             Encryption::Tls => {
                 let mut dir = LazyTempDir::new();
                 let tls = Tls::new(dir.tempdir().clone());
@@ -442,9 +442,9 @@ impl Cluster {
                 network: options.network,
                 ..Default::default()
             };
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             let tls = self.tls.is_some();
-            #[cfg(not(feature = "tls"))]
+            #[cfg(not(feature = "__tls"))]
             let tls = false;
 
             match tls {
@@ -455,9 +455,9 @@ impl Cluster {
                         configs += "syncLimit=2\n";
                     }
                 },
-                #[cfg(not(feature = "tls"))]
+                #[cfg(not(feature = "__tls"))]
                 true => {},
-                #[cfg(feature = "tls")]
+                #[cfg(feature = "__tls")]
                 true => {
                     let tls = self.tls.as_ref().unwrap();
                     configs += r"
@@ -537,13 +537,13 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
     }
 
     fn url(&self, chroot: Option<&str>) -> (String, bool) {
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "__tls")]
         let tls = self.tls.is_some();
-        #[cfg(not(feature = "tls"))]
+        #[cfg(not(feature = "__tls"))]
         let tls = false;
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "__tls")]
         let secure = rand::random();
-        #[cfg(not(feature = "tls"))]
+        #[cfg(not(feature = "__tls"))]
         let secure = false;
         let endpoints: Vec<_> = self
             .containers
@@ -561,12 +561,12 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         (endpoints.join(",") + chroot.unwrap_or(""), secure)
     }
 
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(feature = "__tls"))]
     pub fn connector(&self) -> zk::Connector {
         zk::Client::connector()
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     pub fn connector(&self) -> zk::Connector {
         let connector = zk::Client::connector();
         let Some(tls) = self.tls.as_ref() else {
@@ -579,7 +579,7 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         self.custom_client(chroot, |connector| connector).await.unwrap()
     }
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "__tls")]
     pub async fn client_x(&self, chroot: Option<&str>) -> zk::Client {
         self.custom_client(chroot, |connector| match self.tls.as_ref().map(Tls::options_x) {
             None => connector,
@@ -597,9 +597,9 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
         let connector = custom(self.connector());
         let (url, secure) = self.url(chroot);
         match secure {
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "__tls")]
             true => connector.secure_connect(&url).await,
-            #[cfg(not(feature = "tls"))]
+            #[cfg(not(feature = "__tls"))]
             true => unreachable!("no tls support"),
             false => connector.connect(&url).await,
         }
@@ -2196,7 +2196,7 @@ fn generate_client_cert(cn: &str, issuer: &Issuer<'_, KeyPair>) -> (Certificate,
     (cert, key)
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 #[asyncs::test]
 #[test_log::test]
 async fn test_tls() {
@@ -2244,7 +2244,7 @@ async fn test_readonly_plaintext() {
     test_readonly(Encryption::Raw).await
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "__tls")]
 #[cfg(target_os = "linux")]
 #[asyncs::test(send = false)]
 #[test_log::test]

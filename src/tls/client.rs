@@ -4,8 +4,9 @@ use async_net::TcpStream;
 use futures_rustls::client::TlsStream;
 use futures_rustls::TlsConnector;
 use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::CryptoProvider;
 use rustls::pki_types::ServerName;
-use rustls::ClientConfig;
+use rustls::{ClientConfig, ConfigBuilder, WantsVerifier};
 use tracing::warn;
 
 use super::{NoHostnameVerificationServerCertVerifier, TlsCerts, TlsClientOptions, TlsDynamicCerts, TlsInnerCerts};
@@ -23,6 +24,7 @@ impl TlsDynamicConnector {
         let config = TlsClient::create_config(TlsClientOptions {
             certs: (*certs).clone(),
             hostname_verification: options.hostname_verification,
+            crypto_provider: options.crypto_provider.clone(),
             #[cfg(all(feature = "fips", not(feature = "fips-only")))]
             fips: options.fips,
         })?;
@@ -35,6 +37,7 @@ impl TlsDynamicConnector {
             let options = TlsClientOptions {
                 certs: (*certs).clone(),
                 hostname_verification: self.options.hostname_verification,
+                crypto_provider: self.options.crypto_provider.clone(),
                 #[cfg(all(feature = "fips", not(feature = "fips-only")))]
                 fips: self.options.fips,
             };
@@ -99,6 +102,7 @@ impl TlsClient {
                 let options = TlsClientOptions {
                     certs,
                     hostname_verification: options.hostname_verification,
+                    crypto_provider: options.crypto_provider,
                     #[cfg(all(feature = "fips", not(feature = "fips-only")))]
                     fips: options.fips,
                 };
@@ -109,6 +113,7 @@ impl TlsClient {
                 let options = TlsClientOptions {
                     certs,
                     hostname_verification: options.hostname_verification,
+                    crypto_provider: options.crypto_provider,
                     #[cfg(all(feature = "fips", not(feature = "fips-only")))]
                     fips: options.fips,
                 };
@@ -121,18 +126,14 @@ impl TlsClient {
     fn create_config(options: TlsClientOptions<TlsCerts>) -> Result<Arc<ClientConfig>> {
         let certs = options.certs;
         #[cfg(feature = "fips-only")]
-        let builder = ClientConfig::builder_with_provider(rustls::crypto::default_fips_provider().into())
-            .with_safe_default_protocol_versions()
-            .map_err(|err| Error::with_other("fail to set tls version for FIPS mode", err))?;
+        let builder = Self::fips_config_builder(options.crypto_provider)?;
         #[cfg(all(feature = "fips", not(feature = "fips-only")))]
         let builder = match options.fips {
-            true => ClientConfig::builder_with_provider(rustls::crypto::default_fips_provider().into())
-                .with_safe_default_protocol_versions()
-                .map_err(|err| Error::with_other("fail to set tls version for FIPS mode", err))?,
-            false => ClientConfig::builder(),
+            true => Self::fips_config_builder(options.crypto_provider)?,
+            false => Self::config_builder(options.crypto_provider)?,
         };
         #[cfg(not(feature = "fips"))]
-        let builder = ClientConfig::builder();
+        let builder = Self::config_builder(options.crypto_provider)?;
         let builder = match options.hostname_verification {
             true => {
                 let verifier = WebPkiServerVerifier::builder_with_provider(
@@ -162,11 +163,46 @@ impl TlsClient {
         }
     }
 
+    #[cfg(not(feature = "fips-only"))]
+    fn config_builder(provider: Option<Arc<CryptoProvider>>) -> Result<ConfigBuilder<ClientConfig, WantsVerifier>> {
+        let provider = provider.or_else(|| CryptoProvider::get_default().cloned()).or_else(builtin_crypto_provider);
+        match provider {
+            Some(provider) => ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|err| Error::with_other("fail to set tls version", err)),
+            // Let rustls infer the provider from its crate features.
+            None => Ok(ClientConfig::builder()),
+        }
+    }
+
+    #[cfg(feature = "fips")]
+    fn fips_config_builder(
+        provider: Option<Arc<CryptoProvider>>,
+    ) -> Result<ConfigBuilder<ClientConfig, WantsVerifier>> {
+        let provider = match provider {
+            None => rustls::crypto::default_fips_provider().into(),
+            Some(provider) if provider.fips() => provider,
+            Some(_) => return Err(Error::BadArguments(&"crypto provider is not FIPS compliant")),
+        };
+        ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|err| Error::with_other("fail to set tls version for FIPS mode", err))
+    }
+
     pub async fn connect(&self, host: &str, port: u16) -> std::io::Result<TlsStream<TcpStream>> {
         let stream = TcpStream::connect((host, port)).await?;
         let domain = ServerName::try_from(host).unwrap().to_owned();
         self.inner.connect(domain, stream).await
     }
+}
+
+/// Crypto provider built in by crate feature `tls`.
+#[cfg_attr(feature = "fips-only", allow(dead_code))]
+fn builtin_crypto_provider() -> Option<Arc<CryptoProvider>> {
+    #[cfg(feature = "tls")]
+    return Some(Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    #[cfg(not(feature = "tls"))]
+    None
 }
 
 #[cfg(test)]
@@ -197,8 +233,9 @@ mod tests {
         RevokedCertParams,
         SerialNumber,
     };
+    use rustls::crypto::CryptoProvider;
     use rustls::server::{ServerConfig, WebPkiClientVerifier};
-    use rustls::RootCertStore;
+    use rustls::{ClientConfig, RootCertStore};
     use rustls_pki_types::PrivatePkcs8KeyDer;
     use tempfile::TempDir;
     use x509_parser::prelude::*;
@@ -299,6 +336,19 @@ mod tests {
         CertifiedKey { cert, signing_key }
     }
 
+    fn some_crypto_provider() -> Arc<CryptoProvider> {
+        Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+    }
+
+    fn server_crypto_provider() -> Arc<CryptoProvider> {
+        if let Some(provider) = super::builtin_crypto_provider() {
+            return provider;
+        }
+        // Mimic applications using `tls-no-provider`, which must supply a provider.
+        let _ = CryptoProvider::clone(&some_crypto_provider()).install_default();
+        CryptoProvider::get_default().unwrap().clone()
+    }
+
     struct TlsListener {
         server_cert: ServerCert,
         listener: TcpListener,
@@ -307,8 +357,13 @@ mod tests {
 
     impl TlsListener {
         async fn listen(roots: RootCertStore, server_cert: ServerCert) -> Self {
-            let verifier = WebPkiClientVerifier::builder(roots.into()).build().unwrap();
-            let server_config = ServerConfig::builder()
+            let builder = ServerConfig::builder_with_provider(server_crypto_provider())
+                .with_safe_default_protocol_versions()
+                .unwrap();
+            let verifier = WebPkiClientVerifier::builder_with_provider(roots.into(), builder.crypto_provider().clone())
+                .build()
+                .unwrap();
+            let server_config = builder
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(
                     vec![server_cert.cert.der().clone()],
@@ -428,6 +483,7 @@ mod tests {
             super::TlsInnerCerts::Static(certs) => super::TlsClientOptions {
                 certs,
                 hostname_verification: options.hostname_verification,
+                crypto_provider: options.crypto_provider,
                 #[cfg(not(feature = "fips-only"))]
                 fips: options.fips,
             },
@@ -437,6 +493,66 @@ mod tests {
         #[cfg(feature = "fips-only")]
         let fips = true;
         assert_eq!(fips, config.fips());
+    }
+
+    fn create_config(options: TlsOptions) -> crate::client::Result<Arc<ClientConfig>> {
+        let options = options.into_client_options().unwrap();
+        let super::TlsInnerCerts::Static(certs) = options.certs else { unreachable!() };
+        TlsClient::create_config(super::TlsClientOptions {
+            certs,
+            hostname_verification: options.hostname_verification,
+            crypto_provider: options.crypto_provider,
+            #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+            fips: options.fips,
+        })
+    }
+
+    fn tls_options() -> TlsOptions {
+        TlsOptions::new().with_pem_ca(&generate_ca_cert().pem()).unwrap()
+    }
+
+    #[cfg(not(feature = "fips-only"))]
+    #[test_fork::test]
+    fn crypto_provider_specified() {
+        CryptoProvider::clone(&some_crypto_provider()).install_default().unwrap();
+
+        let specified = some_crypto_provider();
+        let config = create_config(tls_options().with_crypto_provider(specified.clone())).unwrap();
+        assert!(Arc::ptr_eq(config.crypto_provider(), &specified));
+    }
+
+    #[cfg(not(feature = "fips-only"))]
+    #[test_fork::test]
+    fn crypto_provider_process_default() {
+        CryptoProvider::clone(&some_crypto_provider()).install_default().unwrap();
+
+        let config = create_config(tls_options()).unwrap();
+        assert!(Arc::ptr_eq(config.crypto_provider(), CryptoProvider::get_default().unwrap()));
+    }
+
+    #[cfg(all(feature = "tls", not(feature = "fips-only")))]
+    #[test_fork::test]
+    fn crypto_provider_builtin() {
+        let config = create_config(tls_options()).unwrap();
+
+        let builtin = super::builtin_crypto_provider().unwrap();
+        assert_eq!(format!("{:?}", config.crypto_provider().cipher_suites), format!("{:?}", builtin.cipher_suites));
+        assert!(CryptoProvider::get_default().is_none());
+    }
+
+    #[cfg(feature = "fips")]
+    #[test]
+    fn crypto_provider_fips() {
+        let fips_provider: Arc<CryptoProvider> = rustls::crypto::default_fips_provider().into();
+        let config = create_config(tls_options().with_fips().with_crypto_provider(fips_provider.clone())).unwrap();
+        assert!(Arc::ptr_eq(config.crypto_provider(), &fips_provider));
+
+        let non_fips_provider = Arc::new(CryptoProvider {
+            cipher_suites: rustls::crypto::aws_lc_rs::ALL_CIPHER_SUITES.to_vec(),
+            ..rustls::crypto::aws_lc_rs::default_provider()
+        });
+        let err = create_config(tls_options().with_fips().with_crypto_provider(non_fips_provider)).unwrap_err();
+        assert!(err.to_string().contains("not FIPS compliant"), "{err}");
     }
 
     #[asyncs::test]
@@ -494,6 +610,41 @@ mod tests {
         let client = options.into_client().unwrap();
 
         assert_client_name(&listener, &client, "client1").await;
+    }
+
+    #[asyncs::test]
+    async fn crypto_provider_with_dynamic_certs() {
+        let (ca, _listener) = listen().await;
+        let certs = TlsCerts::builder().with_ca(TlsCa::from_pem(&ca.pem()).unwrap()).build().unwrap();
+        let dynamic_certs = TlsDynamicCerts::new(certs.clone());
+
+        #[cfg(not(feature = "fips-only"))]
+        let provider = some_crypto_provider();
+        #[cfg(feature = "fips-only")]
+        let provider: Arc<CryptoProvider> = rustls::crypto::default_fips_provider().into();
+        let options = TlsOptions::new().with_certs(dynamic_certs.clone()).with_crypto_provider(provider.clone());
+        #[cfg(feature = "fips")]
+        let options = match provider.fips() {
+            true => options.with_fips(),
+            false => options,
+        };
+        let options = options.into_client_options().unwrap();
+        let super::TlsInnerCerts::Dynamic(certs_cell) = options.certs else { unreachable!() };
+        let connector = super::TlsDynamicConnector::new(super::TlsClientOptions {
+            certs: certs_cell,
+            hostname_verification: options.hostname_verification,
+            crypto_provider: options.crypto_provider,
+            #[cfg(all(feature = "fips", not(feature = "fips-only")))]
+            fips: options.fips,
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(connector.config.read().unwrap().1.crypto_provider(), &provider));
+
+        dynamic_certs.update(certs);
+        connector.get();
+        let (version, config) = connector.config.read().unwrap().clone();
+        assert_eq!(version, 2);
+        assert!(Arc::ptr_eq(config.crypto_provider(), &provider));
     }
 
     #[asyncs::test]

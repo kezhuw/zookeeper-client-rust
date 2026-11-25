@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use derive_where::derive_where;
 use ignore_result::Ignore;
+use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
 use rustls::RootCertStore;
 
@@ -239,6 +240,7 @@ pub struct TlsOptions {
     identity: Option<TlsIdentity>,
     certs: Option<TlsCertsOptions>,
     hostname_verification: bool,
+    crypto_provider: Option<Arc<CryptoProvider>>,
     #[cfg(all(feature = "fips", not(feature = "fips-only")))]
     fips: bool,
 }
@@ -258,6 +260,7 @@ impl TlsOptions {
             identity: None,
             certs: None,
             hostname_verification: true,
+            crypto_provider: None,
             #[cfg(all(feature = "fips", not(feature = "fips-only")))]
             fips: false,
         }
@@ -269,6 +272,20 @@ impl TlsOptions {
     /// This exposes risk to man-in-the-middle attacks.
     pub unsafe fn with_no_hostname_verification(mut self) -> Self {
         self.hostname_verification = false;
+        self
+    }
+
+    /// Specifies the rustls [CryptoProvider] for tls connection.
+    ///
+    /// Without this, the provider is chosen in order:
+    /// 1. The process-level default installed by [CryptoProvider::install_default].
+    /// 2. The built-in aws-lc-rs provider if crate feature `tls` is enabled.
+    /// 3. The one inferred by rustls from its crate features, which panics if there is no or multiple providers.
+    ///
+    /// In FIPS mode, the specified provider must be FIPS compliant, and `rustls::crypto::default_fips_provider`
+    /// is used if none is specified.
+    pub fn with_crypto_provider(mut self, provider: Arc<CryptoProvider>) -> Self {
+        self.crypto_provider = Some(provider);
         self
     }
 
@@ -326,6 +343,7 @@ impl TlsOptions {
         Ok(TlsClientOptions {
             certs,
             hostname_verification: self.hostname_verification,
+            crypto_provider: self.crypto_provider,
             #[cfg(all(feature = "fips", not(feature = "fips-only")))]
             fips: self.fips,
         })
@@ -340,6 +358,7 @@ impl TlsOptions {
 pub(super) struct TlsClientOptions<Certs> {
     pub certs: Certs,
     pub hostname_verification: bool,
+    pub crypto_provider: Option<Arc<CryptoProvider>>,
     #[cfg(all(feature = "fips", not(feature = "fips-only")))]
     pub fips: bool,
 }
